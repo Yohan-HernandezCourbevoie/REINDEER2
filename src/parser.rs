@@ -43,7 +43,7 @@ pub fn parse_args() -> ArgMatches {
                 .short('p')
                 .long("partitions")
                 .value_name("MINSIZE")
-                .help("For 'index' mode: Sets the number of partitions (default: 512)"),
+                .help("For 'index' mode: Sets the number of partitions (default: 4048)"),
         )
         .arg(
             Arg::new("bloomfilter")
@@ -64,7 +64,7 @@ pub fn parse_args() -> ArgMatches {
                 .short('A')
                 .long("abundance-max")
                 .value_name("ABUND_MAX")
-                .help("For 'index' mode: Sets the maximal abundance to take into account (default: 65024)"),
+                .help("For 'index' mode: Sets the maximal abundance to take into account (default: 65536)"),
         )
         .arg(
             Arg::new("dense")

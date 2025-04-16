@@ -40,7 +40,7 @@ fn main() -> io::Result<()> {
             let partitions = matches
                 .get_one::<String>("partitions")
                 .map(|s| s.parse::<usize>().expect("Invalid number of partitions"))
-                .unwrap_or(512); // default number of partitions
+                .unwrap_or(4048); // default number of partitions
 
             let bloomfilter = matches
                 .get_one::<String>("bloomfilter")
@@ -57,7 +57,7 @@ fn main() -> io::Result<()> {
             let abundance_max = matches
                 .get_one::<String>("abundance_max")
                 .map(|s| s.parse::<u16>().expect("Invalid maximal abundance"))
-                .unwrap_or(65024);
+                .unwrap_or(65535);
 
             let dense_option = matches
                 .get_one::<String>("dense")

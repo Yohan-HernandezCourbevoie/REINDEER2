@@ -43,21 +43,33 @@ pub fn build_index(
     let mut atomic_sparse_kmers_count = atomic::AtomicU64::new(0);
     let mut atomic_sparse_one_seen = atomic::AtomicU64::new(0);
     let mut atomic_sparse_fp_seen = atomic::AtomicU64::new(0);
-    let (chunks, color_chunks) = split_fof(&file_paths)?;
+    let (chunks, color_chunks) = split_fof(&file_paths, dense_option)?;
+    let max_map_size: usize = 1_000_000; // max size for flushing k-mers to bloom filter
     let base = compute_base(abundance_number, abundance_max);
+    if debug {
+        println!("In debug mode... the tool may take longer than usual to run.");
+    }
+    let partitioned_bf_size = (bf_size as usize) / partition_number;
+    println!("Initializing Bloom filter slices...");
     if debug {
         println!("Using log base {}", base);
     }
-    let partitioned_bf_size = (bf_size as usize) / partition_number;
-    if debug {
-        println!("In debug mode... the tool may take (much) longer than usual.");
-    }
-    println!("Initializing Bloom filter slices...");
 
     let (_, dir_path) = create_dir_and_files(partition_number, output_dir)?;
 
     // Shared data structures protected by Mutex for safe parallel access
     let maybe_dense_indexes: Option<Arc<Vec<Mutex<HashMap<u64, Vec<u8>>>>>> = 
+        if dense_option {
+            Some(Arc::new(
+            (0..partition_number)
+                .map(|_| Mutex::new(HashMap::new()))
+                .collect::<Vec<_>>()
+            ))
+        } else {
+            None
+        };
+    
+    let maybe_first_dense_indexes: Option<Arc<Vec<Mutex<HashMap<u64, u64>>>>> = 
         if dense_option {
             Some(Arc::new(
             (0..partition_number)
@@ -75,7 +87,7 @@ pub fn build_index(
     );
 
     for (chunk_i, chunk) in chunks.iter().enumerate() {
-        // For each file in this chunk, process in *parallel* (soon)
+        // For each file in this chunk, process in *parallel*
         // TODO build the appropriate iterator to parallelize (or not) if dense is set
         chunk.par_iter().enumerate().for_each(|(path_num, path)| {
             match std::fs::metadata(path) {
@@ -101,10 +113,12 @@ pub fn build_index(
                                     return;
                                 }
                             };
+                            // TODO path_num not % chunk[0]
 
                             if let Err(e) = process_fasta_file(
                                 path,
                                 &maybe_dense_indexes,
+                                &maybe_first_dense_indexes,
                                 &bloom_filters,
                                 kmer_size,
                                 minimizer_size,
@@ -120,10 +134,11 @@ pub fn build_index(
                                 base,
                                 chunk_i,
                                 h_type, 
-                                1_000_000, // max size for flushing k-mers to bloom filter
+                                max_map_size, 
                                 &total_kmers,
                                 &atomic_dense_kmers_count,
                                 &atomic_sparse_kmers_count,
+                                dense_option,
                             ) {
                                 eprintln!("Error processing {}: {}", path, e);
                             }
@@ -137,6 +152,79 @@ pub fn build_index(
                 Err(_) => eprintln!("Path {} does not exist", path),
             }
         });
+        // flush the dense indexes made of u64 into either bfs or of final form of dense index
+        let _maybe_first_dense_indexes: Option<Arc<Vec<Mutex<HashMap<u64, u64>>>>> = if chunk_i == 0 && color_nb > 1{
+            match &maybe_first_dense_indexes {
+                Some(first_dense_indexes) => {
+                    match &maybe_dense_indexes {
+                        Some(dense_indexes) => {
+                            let mut partition_kmers: HashMap<usize, Vec<(u64, u16, usize, usize)>> = HashMap::new(); // keep kmer info to fill BFs
+                            for (partition_index, hashmap) in first_dense_indexes.iter().enumerate() {
+                                // let mut kmers_to_remove: Vec<u64> = Vec::new();
+                                let first_dense_index = hashmap // select the correct BF for the given partition
+                                    .lock()
+                                    .expect("Failed to lock the primary dense index");
+                                let mut dense_index = dense_indexes[partition_index]
+                                    .lock()
+                                    .expect("Failed to lock the dense index");
+                                for (kmer_hash, multi_u8_values) in first_dense_index.iter() {
+                                    // let number_of_zeros = count_zeros(&abundance_vector, path_num).expect("Unexpected behaviour in the dense index access");
+                                    let mut number_of_zeros: usize = 0;
+                                    let mut abundance_vector: Vec<u8> = Vec::with_capacity(8);
+                                    for i in 0..color_chunks[0] {
+                                        let masked_value = ((255 as u64) << ((7 - i)*8)) & multi_u8_values; // the masked value equals 0 if the abundance in file i is 0
+                                        if masked_value == 0 {
+                                            number_of_zeros += 1;
+                                        }
+                                        abundance_vector.push((masked_value >> ((7 - i)*8)) as u8)
+                                    }
+                                    if number_of_zeros > 0 {
+                                        // write in bfs
+                                        let color_count = color_chunks[0] - number_of_zeros;
+                                        atomic_dense_kmers_count.fetch_sub(color_count as u64, atomic::Ordering::Relaxed);
+                                        atomic_sparse_kmers_count.fetch_add(color_count as u64, atomic::Ordering::Relaxed);
+                                        // kmers_to_remove.push(*kmer_hash);
+                                        for (path_index, log_abundance) in abundance_vector.iter().take(color_chunks[0]).enumerate() {
+                                            if *log_abundance > 0 as u8 {
+                                                partition_kmers // separate the kmers per partition
+                                                    .entry(partition_index)
+                                                    .or_insert_with(Vec::new)
+                                                    .push((
+                                                        *kmer_hash,
+                                                        (*log_abundance - 1) as u16,
+                                                        path_index,
+                                                        chunk_i,
+                                                    ));
+                                                if partition_kmers.len() >= max_map_size {
+                                                    flush_map_into_bfs(&mut partition_kmers, &bloom_filters, partitioned_bf_size, color_chunks[0], abundance_number)?;
+                                                }
+                                            }
+                                        }
+                                    } else {
+                                        // write in the final dense index
+                                        let mut new_abundance_vector: Vec<u8> = Vec::with_capacity(color_nb);
+                                        new_abundance_vector.resize(color_nb, 0);
+                                        for (path_index, log_abundance) in abundance_vector.iter().take(color_chunks[0]).enumerate() {
+                                            new_abundance_vector[path_index] = *log_abundance;
+                                        }
+                                        dense_index.insert(*kmer_hash, new_abundance_vector);
+                                    }
+                                }
+                                // kmers_to_remove.into_iter().for_each(|key| {dense_index.remove(&key);});
+                                dense_index.shrink_to_fit();
+                            }
+                            // Flush remaining k-mers in the map by calling the earlier closure
+                            flush_map_into_bfs(&mut partition_kmers, &bloom_filters, partitioned_bf_size, color_chunks[0], abundance_number)?;
+                        },
+                        None => (),
+                    }
+                },
+                None => (),
+            }
+            None
+        } else {
+            None
+        };
         if debug {
             update_sparse_counts(&bloom_filters, &atomic_sparse_one_seen, &atomic_sparse_fp_seen, abundance_number)?;
         }
@@ -221,6 +309,7 @@ pub fn build_index(
 fn process_fasta_file(
     path: &str,
     maybe_dense_indexes: &Option<Arc<Vec<Mutex<HashMap<u64, Vec<u8>>>>>>,
+    maybe_first_dense_indexes: &Option<Arc<Vec<Mutex<HashMap<u64, u64>>>>>,
     bloom_filters: &Arc<Vec<Mutex<RoaringBitmap>>>,
     k: usize,
     m: usize,
@@ -240,33 +329,11 @@ fn process_fasta_file(
     total_kmers: &atomic::AtomicU64,
     atomic_dense_kmers_count: &atomic::AtomicU64,
     atomic_sparse_kmers_count: &atomic::AtomicU64,
+    dense_option: bool,
 ) -> io::Result<()> {
     let atomic_record_count = atomic::AtomicU64::new(0);
     let reader = read_file(path)?;
 
-    // this part fills the BFs per paritition
-    let flush_map = |partition_kmers: &mut HashMap<usize, Vec<(u64, u16, usize, usize)>>| {
-        for (partition_index, kmers) in partition_kmers.drain() {// iterates and empties the hash map when needed
-            
-
-            let mut kmer_hashes_to_update = Vec::new();
-            for (kmer_hash, log_abundance, path_num, _chunk_index) in kmers { // select the bit in the BF
-                let position = compute_location_filter(
-                    kmer_hash,
-                    partitioned_bf_size,
-                    color_number,
-                    path_num,
-                    abundance_number,
-                    log_abundance,
-                );
-                kmer_hashes_to_update.push(position as u32); // accumulate bits to be modified for this bf
-            }
-            let mut bloom_filter = bloom_filters[partition_index] // select the correct BF for the given partition
-                .lock()
-                .expect("Failed to lock bloom filter");
-            bloom_filter.extend(kmer_hashes_to_update);
-        }
-    };
 
     process_fasta_in_batches(reader, 10_000, |batch| { // read file 10_000 lines at once
         let mut partition_kmers: HashMap<usize, Vec<(u64, u16, usize, usize)>> = HashMap::new(); // keep kmer info to fill BFs
@@ -283,63 +350,95 @@ fn process_fasta_file(
                     //    .minimizer_size(m)
                     //    .width((k - m + 1).try_into().unwrap())
                     //    .iter(seq_str.as_bytes());
+
                     for (kmer_hash, minimizer) in kmer_minimizers_seq_level(seq_str.as_bytes(), k, m) {
                         //for (kmer_hash, (minimizer, _)) in nt_hash_iterator.zip(min_iter) { // iterate on both minimizer and hash for each kmer
                         let partition_index = (minimizer % (partition_number as u64)) as usize;
                         total_kmers.fetch_add(1, atomic::Ordering::Relaxed);
 
-                        match maybe_dense_indexes {
-                            Some(dense_indexes) => {
-                                let mut dense_index = dense_indexes[partition_index] 
-                                .lock()
-                                .expect("Failed to lock bloom filter");
-    
-                                // write in the dense index if the k-mer can be dense, else, put it in the hashmap for sparses
-                                if dense_index.contains_key(&kmer_hash) {
-                                    // update the vector with the right abundance
-                                    if let Some(abundance_vector) = dense_index.get_mut(&kmer_hash) {
-                                        abundance_vector[path_num_global] = (log_abundance + 1) as u8;
-                                    }
+                        if dense_option && chunk_index == 0 && color_number > 1 {
+                            match maybe_first_dense_indexes {
+                                Some(dense_indexes) => {
+                                    let mut dense_index = dense_indexes[partition_index] 
+                                        .lock()
+                                        .expect("Failed to lock bloom filter");
+                                    
+                                    // The dense index of the first chunk take all k-mers
+                                    let abundance_eight_values = dense_index
+                                        .entry(kmer_hash)
+                                        .or_insert(0);
+                                    let abundance_to_insert: u64 = ((log_abundance + 1) as u64) << ((7 - path_num_global) * 8);
+                                    // println!("data {} {}", abundance_to_insert, abundance_eight_values);
+                                    *abundance_eight_values |= abundance_to_insert;
+                                    // println!("result {}", abundance_eight_values);
+                                    // let jetemmerdebis = *abundance_eight_values;
+                                    // let jetemmerderust = dense_index.get(&kmer_hash).unwrap();
+                                    // assert_eq!(jetemmerdebis, *jetemmerderust);
+                                    // assert_ne!(*jetemmerderust, 0);
                                     atomic_dense_kmers_count.fetch_add(1, atomic::Ordering::Relaxed);
-                                } else if path_num_global <= threshold {
-                                    // create a new abundance vector for the k-mer
-                                    let mut abundance_vector: Vec<u8> = Vec::with_capacity(color_number_global);
-                                    abundance_vector.resize(color_number_global, 0);
-                                    abundance_vector[path_num_global] = (log_abundance + 1) as u8;
-                                    dense_index.insert(kmer_hash, abundance_vector);
-                                    atomic_dense_kmers_count.fetch_add(1, atomic::Ordering::Relaxed);
-                                } else {
-                                    // write the k-mer in a file of sparse k-mer from this color
-                                    partition_kmers // separate the kmers per partition
-                                        .entry(partition_index)
-                                        .or_insert_with(Vec::new)
-                                        .push((
-                                            kmer_hash,
-                                            log_abundance,
-                                            path_num,
-                                            chunk_index,
-                                        ));
-                                    atomic_sparse_kmers_count.fetch_add(1, atomic::Ordering::Relaxed);
+                                },
+                                None => {
+                                    eprintln!("Failed to lock the primary dense index.");
+                                    ()
                                 }
-                            },
-                            None => {
-                                // repeated part
-                                partition_kmers // separate the kmers per partition
-                                    .entry(partition_index)
-                                    .or_insert_with(Vec::new)
-                                    .push((
-                                        kmer_hash,
-                                        log_abundance,
-                                        path_num,
-                                        chunk_index,
-                                    ));
-                                atomic_sparse_kmers_count.fetch_add(1, atomic::Ordering::Relaxed);
                             }
+                        } else if dense_option && (chunk_index > 0 || color_number == 0) {
+                            match maybe_dense_indexes {
+                                Some(dense_indexes) => {
+                                    let mut dense_index = dense_indexes[partition_index] 
+                                        .lock()
+                                        .expect("Failed to lock bloom filter");
+        
+                                    // write in the dense index if the k-mer can be dense, else, put it in the hashmap for sparses
+                                    if dense_index.contains_key(&kmer_hash) {
+                                        // update the vector with the right abundance
+                                        if let Some(abundance_vector) = dense_index.get_mut(&kmer_hash) {
+                                            abundance_vector[path_num_global] = (log_abundance + 1) as u8;
+                                        }
+                                        atomic_dense_kmers_count.fetch_add(1, atomic::Ordering::Relaxed);
+                                    } else if path_num_global <= threshold {
+                                        // create a new abundance vector for the k-mer
+                                        let mut abundance_vector: Vec<u8> = Vec::with_capacity(color_number_global);
+                                        abundance_vector.resize(color_number_global, 0);
+                                        abundance_vector[path_num_global] = (log_abundance + 1) as u8;
+                                        dense_index.insert(kmer_hash, abundance_vector);
+                                        atomic_dense_kmers_count.fetch_add(1, atomic::Ordering::Relaxed);
+                                    } else {
+                                        // write the k-mer in a file of sparse k-mer from this color
+                                        partition_kmers // separate the kmers per partition
+                                            .entry(partition_index)
+                                            .or_insert_with(Vec::new)
+                                            .push((
+                                                kmer_hash,
+                                                log_abundance,
+                                                path_num,
+                                                chunk_index,
+                                            ));
+                                        atomic_sparse_kmers_count.fetch_add(1, atomic::Ordering::Relaxed);
+                                    }
+                                },
+                                None => {
+                                    eprintln!("Failed to lock the dense index.");
+                                    ()
+                                }
+                            }
+
+                        } else {
+                            // repeated part
+                            partition_kmers // separate the kmers per partition
+                            .entry(partition_index)
+                            .or_insert_with(Vec::new)
+                            .push((
+                                kmer_hash,
+                                log_abundance,
+                                path_num,
+                                chunk_index,
+                            ));
+                            atomic_sparse_kmers_count.fetch_add(1, atomic::Ordering::Relaxed);
                         }
 
-                        
                         if partition_kmers.len() >= max_map_size {
-                            flush_map(&mut partition_kmers);
+                            flush_map_into_bfs(&mut partition_kmers, bloom_filters, partitioned_bf_size, color_number, abundance_number).unwrap();
                         }
                     }
                 }
@@ -347,52 +446,8 @@ fn process_fasta_file(
             }
         }
         // Flush remaining k-mers in the map by calling the earlier closure
-        flush_map(&mut partition_kmers);
+        flush_map_into_bfs(&mut partition_kmers, bloom_filters, partitioned_bf_size, color_number, abundance_number).unwrap();
     })?;
-    // flush the dense indexes from sparse k-mers after each file *in the first chunk*
-    match maybe_dense_indexes {
-        Some(dense_indexes) => {
-            if chunk_index == 0 {
-                let mut partition_kmers: HashMap<usize, Vec<(u64, u16, usize, usize)>> = HashMap::new(); // keep kmer info to fill BFs
-                for (partition_index, hashmap) in dense_indexes.iter().enumerate() {
-                    let mut kmers_to_remove: Vec<u64> = Vec::new();
-                    let mut dense_index = hashmap // select the correct BF for the given partition
-                        .lock()
-                        .expect("Failed to lock bloom filter");
-                    for (kmer_hash, abundance_vector) in dense_index.iter() {
-                        let number_of_zeros = count_zeros(&abundance_vector, path_num).expect("Unexpected behaviour in the dense index access");
-                        if number_of_zeros > threshold {
-                            let color_count = path_num - number_of_zeros + 1;
-                            atomic_dense_kmers_count.fetch_sub(color_count as u64, atomic::Ordering::Relaxed);
-                            atomic_sparse_kmers_count.fetch_add(color_count as u64, atomic::Ordering::Relaxed);
-                            kmers_to_remove.push(*kmer_hash);
-                            for (path_index, log_abundance) in abundance_vector.iter().take(path_num).enumerate() {
-                                if *log_abundance > 0 as u8 {
-                                    partition_kmers // separate the kmers per partition
-                                        .entry(partition_index)
-                                        .or_insert_with(Vec::new)
-                                        .push((
-                                            *kmer_hash,
-                                            (*log_abundance - 1) as u16,
-                                            path_index,
-                                            chunk_index,
-                                        ));
-                                    if partition_kmers.len() >= max_map_size {
-                                        flush_map(&mut partition_kmers);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    kmers_to_remove.into_iter().for_each(|key| {dense_index.remove(&key);});
-                    dense_index.shrink_to_fit();
-                }
-                // Flush remaining k-mers in the map by calling the earlier closure
-                flush_map(&mut partition_kmers);
-            }
-        },
-        None => (),
-    }
     Ok(())
 }
 
@@ -442,7 +497,7 @@ fn process_fasta_record (
     Ok((seq, log_abundance))
 }
 
-fn count_zeros(
+fn _count_zeros(
     abundance_vector: &Vec<u8>,
     max_index: usize,
 ) -> io::Result<usize> {
@@ -548,7 +603,7 @@ fn query_sequences_in_batches(
                 partition_kmers
                     .entry(partition_index)
                     .or_insert_with(Vec::new)
-                    .push((full_header.clone(), kmer_hash));
+                    .push((full_header.clone(), kmer_hash)); // TODO not store the header for each kmer
             }
         }
 
@@ -1210,6 +1265,35 @@ fn update_sparse_counts(
     Ok(())
 }
 
+fn flush_map_into_bfs (
+    partition_kmers: &mut HashMap<usize, Vec<(u64, u16, usize, usize)>>,
+    bloom_filters: &Arc<Vec<Mutex<RoaringBitmap>>>,
+    partitioned_bf_size: usize,
+    color_number: usize,
+    abundance_number: usize,
+) -> io::Result<()> {
+    // this part fills the BFs per paritition
+    for (partition_index, kmers) in partition_kmers.drain() {// iterates and empties the hash map when needed
+        let mut kmer_hashes_to_update = Vec::new();
+        for (kmer_hash, log_abundance, path_num, _chunk_index) in kmers { // select the bit in the BF
+            let position = compute_location_filter(
+                kmer_hash,
+                partitioned_bf_size,
+                color_number,
+                path_num,
+                abundance_number,
+                log_abundance,
+            );
+            kmer_hashes_to_update.push(position as u32); // accumulate bits to be modified for this bf
+        }
+        let mut bloom_filter = bloom_filters[partition_index] // select the correct BF for the given partition
+            .lock()
+            .expect("Failed to lock bloom filter");
+        bloom_filter.extend(kmer_hashes_to_update);
+    };
+    Ok(())
+}
+
 
 // --- WRITE INDEX ON DISK ---
 
@@ -1399,23 +1483,43 @@ pub fn read_fof_file(file_path: &str) -> io::Result<(Vec<String>, usize)> {
     Ok((file_paths, color_number))
 }
 
-fn split_fof(lines: &Vec<String>) -> io::Result<(Vec<Vec<String>>, Vec<usize>)> {
+fn split_fof(lines: &Vec<String>, dense_option: bool) -> io::Result<(Vec<Vec<String>>, Vec<usize>)> {
     let total_colors = lines.len();
+
+    // if dense_option is set, we want the first chunk to have a maximal size of 8 in order to store the abundances of the 8 colors
+    // in a single u64 instead of a vec[u8] of size 8.
 
     // chunk max size
     let magic_nb_split = 128;
     // Determine split_factor 
-    let split_factor = if total_colors < magic_nb_split {
-        1
+    let split_factor = if dense_option {
+        if total_colors < 8 {
+            1
+        } else {
+            (total_colors - 8 + magic_nb_split - 1) / magic_nb_split + 1
+        }
     } else {
-        (total_colors + magic_nb_split - 1) / magic_nb_split
+        if total_colors < magic_nb_split {
+            1
+        } else {
+            (total_colors + magic_nb_split - 1) / magic_nb_split
+        }
     };
 
     let mut fof_chunks = vec![vec![]; split_factor];
     let mut chunk_sizes = vec![0; split_factor]; // store the number of colors in each chunk
-
+    
+    
     for (i, line) in lines.iter().enumerate() {
-        let chunk_index = i / magic_nb_split; 
+        let chunk_index = if dense_option {
+            if i <= 7 {
+                0
+            } else {
+                (i - 7) / magic_nb_split + 1
+            }
+        } else {
+            i / magic_nb_split
+        };
         fof_chunks[chunk_index].push(line.clone());
         chunk_sizes[chunk_index] += 1; // increment of file paths
     }
@@ -3544,7 +3648,7 @@ mod tests {
         let reader = BufReader::new(file);
         let lines: Vec<String> = reader.lines().collect::<Result<_, _>>()?;
 
-        let result = split_fof(&lines);
+        let result = split_fof(&lines, false);
 
         assert!(result.is_ok(), "split_fof returned an error");
 
