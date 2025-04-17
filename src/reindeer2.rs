@@ -153,7 +153,7 @@ pub fn build_index(
             }
         });
         // flush the dense indexes made of u64 into either bfs or of final form of dense index
-        let _maybe_first_dense_indexes: Option<Arc<Vec<Mutex<HashMap<u64, u64>>>>> = if chunk_i == 0 && color_nb > 1{
+        let _maybe_first_dense_indexes: Option<Arc<Vec<Mutex<HashMap<u64, u64>>>>> = if dense_option && chunk_i == 0 && color_nb > 8 {
             match &maybe_first_dense_indexes {
                 Some(first_dense_indexes) => {
                     match &maybe_dense_indexes {
@@ -215,12 +215,13 @@ pub fn build_index(
                             }
                             // Flush remaining k-mers in the map by calling the earlier closure
                             flush_map_into_bfs(&mut partition_kmers, &bloom_filters, partitioned_bf_size, color_chunks[0], abundance_number)?;
+                            
                         },
                         None => (),
-                    }
+                    };
                 },
                 None => (),
-            }
+            };
             None
         } else {
             None
@@ -241,11 +242,18 @@ pub fn build_index(
     };
 
     // After processing all chunks, write the dense indexes to disk
-    match maybe_dense_indexes {
-        Some(dense_indexes) => {
-            write_dense_indexes_to_disk(&dir_path, &dense_indexes)?;
-        },
-        None => (),
+    if dense_option {
+        if color_nb <= 8 {
+            match maybe_first_dense_indexes {
+                Some(first_dense_indexes) => write_dense_indexes_to_disk_light(&dir_path, &first_dense_indexes).expect("Failed to save the dense index on disk."),
+                None => eprintln!("Failed to save the light dense index on disk."),
+            }
+        } else {
+            match maybe_dense_indexes {
+                Some(dense_indexes) => write_dense_indexes_to_disk(&dir_path, &dense_indexes).expect("Failed to save the dense index on disk."),
+                None => eprintln!("Failed to save the dense index on disk."),
+            }
+        }
     }
 
     if debug {
@@ -356,74 +364,78 @@ fn process_fasta_file(
                         let partition_index = (minimizer % (partition_number as u64)) as usize;
                         total_kmers.fetch_add(1, atomic::Ordering::Relaxed);
 
-                        if dense_option && chunk_index == 0 && color_number > 1 {
-                            match maybe_first_dense_indexes {
-                                Some(dense_indexes) => {
-                                    let mut dense_index = dense_indexes[partition_index] 
-                                        .lock()
-                                        .expect("Failed to lock bloom filter");
-                                    
-                                    // The dense index of the first chunk take all k-mers
-                                    let abundance_eight_values = dense_index
-                                        .entry(kmer_hash)
-                                        .or_insert(0);
-                                    let abundance_to_insert: u64 = ((log_abundance + 1) as u64) << ((7 - path_num_global) * 8);
-                                    // println!("data {} {}", abundance_to_insert, abundance_eight_values);
-                                    *abundance_eight_values |= abundance_to_insert;
-                                    // println!("result {}", abundance_eight_values);
-                                    // let jetemmerdebis = *abundance_eight_values;
-                                    // let jetemmerderust = dense_index.get(&kmer_hash).unwrap();
-                                    // assert_eq!(jetemmerdebis, *jetemmerderust);
-                                    // assert_ne!(*jetemmerderust, 0);
-                                    atomic_dense_kmers_count.fetch_add(1, atomic::Ordering::Relaxed);
-                                },
-                                None => {
-                                    eprintln!("Failed to lock the primary dense index.");
-                                    ()
-                                }
-                            }
-                        } else if dense_option && (chunk_index > 0 || color_number == 0) {
-                            match maybe_dense_indexes {
-                                Some(dense_indexes) => {
-                                    let mut dense_index = dense_indexes[partition_index] 
-                                        .lock()
-                                        .expect("Failed to lock bloom filter");
-        
-                                    // write in the dense index if the k-mer can be dense, else, put it in the hashmap for sparses
-                                    if dense_index.contains_key(&kmer_hash) {
-                                        // update the vector with the right abundance
-                                        if let Some(abundance_vector) = dense_index.get_mut(&kmer_hash) {
-                                            abundance_vector[path_num_global] = (log_abundance + 1) as u8;
-                                        }
+                        if dense_option {
+                            if chunk_index == 0 {
+                                // light dense index for first chunk
+                                match maybe_first_dense_indexes {
+                                    Some(dense_indexes) => {
+                                        let mut dense_index = dense_indexes[partition_index] 
+                                            .lock()
+                                            .expect("Failed to lock bloom filter");
+                                        
+                                        // The dense index of the first chunk take all k-mers
+                                        let abundance_eight_values = dense_index
+                                            .entry(kmer_hash)
+                                            .or_insert(0);
+                                        let abundance_to_insert: u64 = ((log_abundance + 1) as u64) << ((7 - path_num_global) * 8);
+                                        // println!("data {} {}", abundance_to_insert, abundance_eight_values);
+                                        *abundance_eight_values |= abundance_to_insert;
+                                        // println!("result {}", abundance_eight_values);
+                                        // let jetemmerdebis = *abundance_eight_values;
+                                        // let jetemmerderust = dense_index.get(&kmer_hash).unwrap();
+                                        // assert_eq!(jetemmerdebis, *jetemmerderust);
+                                        // assert_ne!(*jetemmerderust, 0);
                                         atomic_dense_kmers_count.fetch_add(1, atomic::Ordering::Relaxed);
-                                    } else if path_num_global <= threshold {
-                                        // create a new abundance vector for the k-mer
-                                        let mut abundance_vector: Vec<u8> = Vec::with_capacity(color_number_global);
-                                        abundance_vector.resize(color_number_global, 0);
-                                        abundance_vector[path_num_global] = (log_abundance + 1) as u8;
-                                        dense_index.insert(kmer_hash, abundance_vector);
-                                        atomic_dense_kmers_count.fetch_add(1, atomic::Ordering::Relaxed);
-                                    } else {
-                                        // write the k-mer in a file of sparse k-mer from this color
-                                        partition_kmers // separate the kmers per partition
-                                            .entry(partition_index)
-                                            .or_insert_with(Vec::new)
-                                            .push((
-                                                kmer_hash,
-                                                log_abundance,
-                                                path_num,
-                                                chunk_index,
-                                            ));
-                                        atomic_sparse_kmers_count.fetch_add(1, atomic::Ordering::Relaxed);
+                                    },
+                                    None => {
+                                        eprintln!("Failed to lock the primary dense index.");
+                                        ()
                                     }
-                                },
-                                None => {
-                                    eprintln!("Failed to lock the dense index.");
-                                    ()
+                                }
+                            } else {
+                                // heavy dense index for the other chunks
+                                match maybe_dense_indexes {
+                                    Some(dense_indexes) => {
+                                        let mut dense_index = dense_indexes[partition_index] 
+                                            .lock()
+                                            .expect("Failed to lock bloom filter");
+            
+                                        // write in the dense index if the k-mer can be dense, else, put it in the hashmap for sparses
+                                        if dense_index.contains_key(&kmer_hash) {
+                                            // update the vector with the right abundance
+                                            if let Some(abundance_vector) = dense_index.get_mut(&kmer_hash) {
+                                                abundance_vector[path_num_global] = (log_abundance + 1) as u8;
+                                            }
+                                            atomic_dense_kmers_count.fetch_add(1, atomic::Ordering::Relaxed);
+                                        } else if path_num_global <= threshold {
+                                            // create a new abundance vector for the k-mer
+                                            let mut abundance_vector: Vec<u8> = Vec::with_capacity(color_number_global);
+                                            abundance_vector.resize(color_number_global, 0);
+                                            abundance_vector[path_num_global] = (log_abundance + 1) as u8;
+                                            dense_index.insert(kmer_hash, abundance_vector);
+                                            atomic_dense_kmers_count.fetch_add(1, atomic::Ordering::Relaxed);
+                                        } else {
+                                            // write the k-mer in a file of sparse k-mer from this color
+                                            partition_kmers // separate the kmers per partition
+                                                .entry(partition_index)
+                                                .or_insert_with(Vec::new)
+                                                .push((
+                                                    kmer_hash,
+                                                    log_abundance,
+                                                    path_num,
+                                                    chunk_index,
+                                                ));
+                                            atomic_sparse_kmers_count.fetch_add(1, atomic::Ordering::Relaxed);
+                                        }
+                                    },
+                                    None => {
+                                        eprintln!("Failed to lock the dense index.");
+                                        ()
+                                    }
                                 }
                             }
-
                         } else {
+                            // only sparse index
                             // repeated part
                             partition_kmers // separate the kmers per partition
                             .entry(partition_index)
@@ -621,27 +633,54 @@ fn query_sequences_in_batches(
                     let maybe_bf = load_bloom_filter(&path_bf);
 
                     if let Ok((bitmap, _maybe_aux_data)) = maybe_bf {
-                        let hashmap: HashMap<u64, Box<Vec<u8>>> = if dense_option {
-                            let path_dense_index = format!("{}/partition_dense_index_p{}.txt", bf_dir, partition_index);
-                            load_dense_index(&path_dense_index).expect(&format!("Failed to load dense index for partition {}", partition_index))
-                        } else {
-                            HashMap::new()
-                        };
                         //  For each k-mer in this partition
                         for (sequence_id, kmer_hash) in kmers {
-                            let color_abundances = 
-                                if hashmap.contains_key(&kmer_hash) {
-                                    let log_abundance_vector = hashmap.get(&kmer_hash).expect("failed to read the hashmap");
-                                    let mut color_abundances = vec![Vec::new(); color_number];
-                                    for (color, log_abundance) in log_abundance_vector.iter().enumerate() {
-                                            if *log_abundance == 0 as u8 {
-                                                color_abundances[color].push(666 as usize);
-                                            } else {
-                                                color_abundances[color].push((*log_abundance - 1) as usize);
-                                            }
-                                        };
-                                    color_abundances
+                            let maybe_color_abundances = 
+                                // if hashmap.contains_key(&kmer_hash) {
+                                if dense_option {
+                                    if color_number <= 8 {
+                                        let path_dense_index = format!("{}/partition_dense_index_p{}.txt", bf_dir, partition_index);
+                                        let hashmap: HashMap<u64, u64> = load_dense_index_light(&path_dense_index).expect(&format!("Failed to load dense index for partition {}", partition_index));
+                                        let maybe_multi_u8_values = hashmap.get(&kmer_hash);
+                                        match maybe_multi_u8_values {
+                                            Some(multi_u8_values) => {
+                                                let mut color_abundances = vec![Vec::new(); color_number];
+                                                multi_u8_values.to_be_bytes().iter().take(color_number).enumerate().for_each( |(color_i, log_abundance)| {
+                                                    if *log_abundance == 0 as u8 {
+                                                        color_abundances[color_i].push(666 as usize);
+                                                    } else {
+                                                        color_abundances[color_i].push((log_abundance - 1) as usize);
+                                                    }
+                                                });
+                                                Some(color_abundances)
+                                            },
+                                            None => None,
+                                        }
+                                    } else {
+                                        let path_dense_index = format!("{}/partition_dense_index_p{}.txt", bf_dir, partition_index);
+                                        let hashmap: HashMap<u64, Vec<u8>> = load_dense_index(&path_dense_index).expect(&format!("Failed to load dense index for partition {}", partition_index));
+                                        let maybe_log_abundance_vector = hashmap.get(&kmer_hash);
+                                        match maybe_log_abundance_vector {
+                                            Some(log_abundance_vector) => {
+                                                let mut color_abundances = vec![Vec::new(); color_number];
+                                                for (color, log_abundance) in log_abundance_vector.iter().enumerate() {
+                                                    if *log_abundance == 0 as u8 {
+                                                        color_abundances[color].push(666 as usize);
+                                                    } else {
+                                                        color_abundances[color].push((*log_abundance - 1) as usize);
+                                                    }
+                                                };
+                                                Some(color_abundances)
+                                            },
+                                            None => None,
+                                        }
+                                    }
                                 } else {
+                                    None
+                                };
+                            let color_abundances = match maybe_color_abundances {
+                                Some(color_abundances) => color_abundances,
+                                None => {
                                     // Compute base position
                                     let base_position = compute_base_position(
                                         kmer_hash,
@@ -660,7 +699,8 @@ fn query_sequences_in_batches(
                                         &mut color_abundances,
                                     );
                                     color_abundances
-                                };
+                                },
+                            };
 
                             // Convert log abundances to approximate integer counts
                             let approximate_counts: Vec<Vec<u16>> = color_abundances
@@ -698,7 +738,6 @@ fn query_sequences_in_batches(
                 || HashMap::<String, Vec<Vec<u16>>>::new(),
                 merge_results,
             );
-
         // Now `sequence_results` has the combined data for this batch.
         // Either color a graph or compute medians and output them.
         if color_graph {
@@ -1389,6 +1428,22 @@ fn write_dense_indexes_to_disk(
     Ok(())
 }
 
+fn write_dense_indexes_to_disk_light(
+    dir_path: &str,
+    first_dense_indexes: &Arc<Vec<Mutex<HashMap<u64, u64>>>>
+ ) -> io::Result<()> {
+    for (partition, hashmap) in first_dense_indexes.iter().enumerate() {
+        let file_path = Path::new(dir_path).join(format!("partition_dense_index_p{}.txt", partition));
+        let file = File::create(&file_path)?;
+        let mut writer = BufWriter::new(file);
+        let mut locked_hashmap = hashmap.lock().unwrap();
+        let binary_encoded = bincode::serialize(&locked_hashmap.clone()).unwrap();
+        writer.write_all(&binary_encoded)?;
+        locked_hashmap.clear();
+    }
+    Ok(())
+}
+
 fn write_partition_to_csv(
     bf_dir: &str,
     k: usize,
@@ -1439,7 +1494,18 @@ fn load_bloom_filter(file_path: &str) -> io::Result<(RoaringBitmap, usize)> {
     Ok((bitmap, local_color_nb))
 }
 
-fn load_dense_index(file_path: &str) -> io::Result<HashMap<u64, Box<Vec<u8>>>> {
+fn load_dense_index(file_path: &str) -> io::Result<HashMap<u64, Vec<u8>>> {
+    let mut file = File::open(file_path)?;
+
+    // Read the rest of the file to deserialize the hashmap
+    let mut buffer = Vec::new();
+    file.read_to_end(&mut buffer)?;
+    let hashmap = bincode::deserialize_from(&buffer[..])
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "Failed to deserialize hashmap"))?;
+    Ok(hashmap)
+}
+
+fn load_dense_index_light(file_path: &str) -> io::Result<HashMap<u64, u64>> {
     let mut file = File::open(file_path)?;
 
     // Read the rest of the file to deserialize the hashmap

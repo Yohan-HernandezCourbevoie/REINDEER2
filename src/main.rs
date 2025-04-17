@@ -82,7 +82,7 @@ fn main() -> io::Result<()> {
 
             // CHECKS
             if dense_option {
-                rayon::ThreadPoolBuilder::new().num_threads(1).build_global().unwrap();
+                // rayon::ThreadPoolBuilder::new().num_threads(1).build_global().unwrap();
                 if kmer > 32 {
                     panic!("ERROR : With the '--dense' option set to 'true', the k-mer size must be <= 32.")
                 }
