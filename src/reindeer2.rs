@@ -58,7 +58,7 @@ pub fn build_index(
     let (_, dir_path) = create_dir_and_files(partition_number, output_dir)?;
 
     // Shared data structures protected by Mutex for safe parallel access
-    let maybe_dense_indexes: Option<Arc<Vec<Mutex<HashMap<u64, Vec<u8>>>>>> = 
+    let maybe_dense_indexes: Option<Arc<Vec<Mutex<HashMap<u32, Vec<u8>>>>>> = 
         if dense_option {
             Some(Arc::new(
             (0..partition_number)
@@ -69,7 +69,7 @@ pub fn build_index(
             None
         };
     
-    let maybe_first_dense_indexes: Option<Arc<Vec<Mutex<HashMap<u64, u64>>>>> = 
+    let maybe_first_dense_indexes: Option<Arc<Vec<Mutex<HashMap<u32, u64>>>>> = 
         if dense_option {
             Some(Arc::new(
             (0..partition_number)
@@ -153,12 +153,12 @@ pub fn build_index(
             }
         });
         // flush the dense indexes made of u64 into either bfs or of final form of dense index
-        let _maybe_first_dense_indexes: Option<Arc<Vec<Mutex<HashMap<u64, u64>>>>> = if dense_option && chunk_i == 0 && color_nb > 8 {
+        let _maybe_first_dense_indexes: Option<Arc<Vec<Mutex<HashMap<u32, u64>>>>> = if dense_option && chunk_i == 0 && color_nb > 8 {
             match &maybe_first_dense_indexes {
                 Some(first_dense_indexes) => {
                     match &maybe_dense_indexes {
                         Some(dense_indexes) => {
-                            let mut partition_kmers: HashMap<usize, Vec<(u64, u16, usize, usize)>> = HashMap::new(); // keep kmer info to fill BFs
+                            let mut partition_kmers: HashMap<usize, Vec<(u32, u16, usize, usize)>> = HashMap::new(); // keep kmer info to fill BFs
                             for (partition_index, hashmap) in first_dense_indexes.iter().enumerate() {
                                 // let mut kmers_to_remove: Vec<u64> = Vec::new();
                                 let first_dense_index = hashmap // select the correct BF for the given partition
@@ -316,8 +316,8 @@ pub fn build_index(
 
 fn process_fasta_file(
     path: &str,
-    maybe_dense_indexes: &Option<Arc<Vec<Mutex<HashMap<u64, Vec<u8>>>>>>,
-    maybe_first_dense_indexes: &Option<Arc<Vec<Mutex<HashMap<u64, u64>>>>>,
+    maybe_dense_indexes: &Option<Arc<Vec<Mutex<HashMap<u32, Vec<u8>>>>>>,
+    maybe_first_dense_indexes: &Option<Arc<Vec<Mutex<HashMap<u32, u64>>>>>,
     bloom_filters: &Arc<Vec<Mutex<RoaringBitmap>>>,
     k: usize,
     m: usize,
@@ -344,7 +344,7 @@ fn process_fasta_file(
 
 
     process_fasta_in_batches(reader, 10_000, |batch| { // read file 10_000 lines at once
-        let mut partition_kmers: HashMap<usize, Vec<(u64, u16, usize, usize)>> = HashMap::new(); // keep kmer info to fill BFs
+        let mut partition_kmers: HashMap<usize, Vec<(u32, u16, usize, usize)>> = HashMap::new(); // keep kmer info to fill BFs
 
         // this part reads the batches of sequences and records kmers info until the structure is too large in memory
         for record in batch {
@@ -361,6 +361,7 @@ fn process_fasta_file(
 
                     for (kmer_hash, minimizer) in kmer_minimizers_seq_level(seq_str.as_bytes(), k, m) {
                         //for (kmer_hash, (minimizer, _)) in nt_hash_iterator.zip(min_iter) { // iterate on both minimizer and hash for each kmer
+                        let kmer_hash_smaller = kmer_hash as u32;
                         let partition_index = (minimizer % (partition_number as u64)) as usize;
                         total_kmers.fetch_add(1, atomic::Ordering::Relaxed);
 
@@ -375,7 +376,7 @@ fn process_fasta_file(
                                         
                                         // The dense index of the first chunk take all k-mers
                                         let abundance_eight_values = dense_index
-                                            .entry(kmer_hash)
+                                            .entry(kmer_hash_smaller)
                                             .or_insert(0);
                                         let abundance_to_insert: u64 = ((log_abundance + 1) as u64) << ((7 - path_num_global) * 8);
                                         // println!("data {} {}", abundance_to_insert, abundance_eight_values);
@@ -401,9 +402,9 @@ fn process_fasta_file(
                                             .expect("Failed to lock bloom filter");
             
                                         // write in the dense index if the k-mer can be dense, else, put it in the hashmap for sparses
-                                        if dense_index.contains_key(&kmer_hash) {
+                                        if dense_index.contains_key(&kmer_hash_smaller) {
                                             // update the vector with the right abundance
-                                            if let Some(abundance_vector) = dense_index.get_mut(&kmer_hash) {
+                                            if let Some(abundance_vector) = dense_index.get_mut(&kmer_hash_smaller) {
                                                 abundance_vector[path_num_global] = (log_abundance + 1) as u8;
                                             }
                                             atomic_dense_kmers_count.fetch_add(1, atomic::Ordering::Relaxed);
@@ -412,7 +413,7 @@ fn process_fasta_file(
                                             let mut abundance_vector: Vec<u8> = Vec::with_capacity(color_number_global);
                                             abundance_vector.resize(color_number_global, 0);
                                             abundance_vector[path_num_global] = (log_abundance + 1) as u8;
-                                            dense_index.insert(kmer_hash, abundance_vector);
+                                            dense_index.insert(kmer_hash_smaller, abundance_vector);
                                             atomic_dense_kmers_count.fetch_add(1, atomic::Ordering::Relaxed);
                                         } else {
                                             // write the k-mer in a file of sparse k-mer from this color
@@ -420,7 +421,7 @@ fn process_fasta_file(
                                                 .entry(partition_index)
                                                 .or_insert_with(Vec::new)
                                                 .push((
-                                                    kmer_hash,
+                                                    kmer_hash_smaller,
                                                     log_abundance,
                                                     path_num,
                                                     chunk_index,
@@ -441,7 +442,7 @@ fn process_fasta_file(
                             .entry(partition_index)
                             .or_insert_with(Vec::new)
                             .push((
-                                kmer_hash,
+                                kmer_hash_smaller,
                                 log_abundance,
                                 path_num,
                                 chunk_index,
@@ -1210,7 +1211,7 @@ fn update_color_abundances(
 }
 
 fn compute_location_filter(
-    hash_kmer: u64, 
+    hash_kmer: u32, 
     partitioned_bf_size: usize, 
     color_number: usize, // the total nb of indexed fastas (in a chunk)
     path_color_number:usize, // the index of the current indexed fasta
@@ -1220,7 +1221,7 @@ fn compute_location_filter(
     
     // compute the position to write
     let position_to_write = (
-        hash_kmer % (partitioned_bf_size as u64)) 
+        (hash_kmer as u64) % (partitioned_bf_size as u64)) 
         * (color_number as u64) 
         * (abundance_number as u64) 
         + (path_color_number as u64) 
@@ -1312,7 +1313,7 @@ fn update_sparse_counts(
 }
 
 fn flush_map_into_bfs (
-    partition_kmers: &mut HashMap<usize, Vec<(u64, u16, usize, usize)>>,
+    partition_kmers: &mut HashMap<usize, Vec<(u32, u16, usize, usize)>>,
     bloom_filters: &Arc<Vec<Mutex<RoaringBitmap>>>,
     partitioned_bf_size: usize,
     color_number: usize,
@@ -1421,7 +1422,7 @@ fn _write_bloom_filters_to_disk_nochunk(
 
 fn write_dense_indexes_to_disk(
     dir_path: &str,
-    dense_indexes: &Arc<Vec<Mutex<HashMap<u64, Vec<u8>>>>>
+    dense_indexes: &Arc<Vec<Mutex<HashMap<u32, Vec<u8>>>>>
  ) -> io::Result<()> {
     for (partition, hashmap) in dense_indexes.iter().enumerate() {
         let file_path = Path::new(dir_path).join(format!("partition_dense_index_p{}.txt", partition));
@@ -1437,7 +1438,7 @@ fn write_dense_indexes_to_disk(
 
 fn write_dense_indexes_to_disk_light(
     dir_path: &str,
-    first_dense_indexes: &Arc<Vec<Mutex<HashMap<u64, u64>>>>
+    first_dense_indexes: &Arc<Vec<Mutex<HashMap<u32, u64>>>>
  ) -> io::Result<()> {
     for (partition, hashmap) in first_dense_indexes.iter().enumerate() {
         let file_path = Path::new(dir_path).join(format!("partition_dense_index_p{}.txt", partition));
@@ -1858,6 +1859,7 @@ fn kmer_minimizers_seq_level<'a>(
     i=3
         m_hashes[2] = 5 m_hashes[3] = 1
         5 > 3, pop index 2 from deque// [1]
+        ?? 5 > 1, pop index 2 from deque// [1] ??
         m_hashes[1] = 2, m_hashes[3] = 1
         2 > 1, pop index 1 // []
         deque.push_back(3) //[3]
@@ -3630,7 +3632,7 @@ mod tests {
     
         let partition_index_insert = (minimizer % (partition_number as u64)) as usize;
         let position_to_write = compute_location_filter(
-            kmer_hash,
+            kmer_hash as u32,
             partitioned_bf_size,
             color_number,
             path_color_number,
