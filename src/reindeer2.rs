@@ -630,7 +630,18 @@ fn query_sequences_in_batches(
                 |mut local_results, (partition_index, kmers)| {
                     // Load the partition's Bloom filter
                     let path_bf = format!("{}/partition_bloom_filters_p{}.txt",bf_dir, partition_index);
+                    let path_dense_index = format!("{}/partition_dense_index_p{}.txt", bf_dir, partition_index);
                     let maybe_bf = load_bloom_filter(&path_bf);
+                    let light_hashmap = if dense_option && color_number <= 8 {
+                        load_dense_index_light(&path_dense_index).expect(&format!("Failed to load dense index for partition {}", partition_index))
+                    } else {
+                        HashMap::new()
+                    };
+                    let standard_hashmap = if dense_option && color_number > 8 {
+                        load_dense_index(&path_dense_index).expect(&format!("Failed to load dense index for partition {}", partition_index))
+                    } else {
+                        HashMap::new()
+                    };
 
                     if let Ok((bitmap, _maybe_aux_data)) = maybe_bf {
                         //  For each k-mer in this partition
@@ -638,10 +649,8 @@ fn query_sequences_in_batches(
                             let maybe_color_abundances = 
                                 // if hashmap.contains_key(&kmer_hash) {
                                 if dense_option {
-                                    if color_number <= 8 {
-                                        let path_dense_index = format!("{}/partition_dense_index_p{}.txt", bf_dir, partition_index);
-                                        let hashmap: HashMap<u64, u64> = load_dense_index_light(&path_dense_index).expect(&format!("Failed to load dense index for partition {}", partition_index));
-                                        let maybe_multi_u8_values = hashmap.get(&kmer_hash);
+                                    if false && color_number <= 8 {
+                                        let maybe_multi_u8_values = light_hashmap.get(&kmer_hash);
                                         match maybe_multi_u8_values {
                                             Some(multi_u8_values) => {
                                                 let mut color_abundances = vec![Vec::new(); color_number];
@@ -657,9 +666,7 @@ fn query_sequences_in_batches(
                                             None => None,
                                         }
                                     } else {
-                                        let path_dense_index = format!("{}/partition_dense_index_p{}.txt", bf_dir, partition_index);
-                                        let hashmap: HashMap<u64, Vec<u8>> = load_dense_index(&path_dense_index).expect(&format!("Failed to load dense index for partition {}", partition_index));
-                                        let maybe_log_abundance_vector = hashmap.get(&kmer_hash);
+                                        let maybe_log_abundance_vector = standard_hashmap.get(&kmer_hash);
                                         match maybe_log_abundance_vector {
                                             Some(log_abundance_vector) => {
                                                 let mut color_abundances = vec![Vec::new(); color_number];
