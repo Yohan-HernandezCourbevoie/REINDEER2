@@ -64,6 +64,11 @@ fn main() -> io::Result<()> {
                 .map(|s| s.parse::<bool>().expect("Invalid color option"))
                 .unwrap_or(false);
 
+            let threshold = matches
+                .get_one::<String>("threshold")
+                .map(|s| s.parse::<f64>().expect("Invalid threshold option"))
+                .unwrap_or(0.95);
+
             // TODO add threads
 
             let output_dir = match matches.get_one::<String>("output_dir") {
@@ -83,9 +88,9 @@ fn main() -> io::Result<()> {
             // CHECKS
             if dense_option {
                 // rayon::ThreadPoolBuilder::new().num_threads(1).build_global().unwrap();
-                if kmer > 32 {
-                    panic!("ERROR : With the '--dense' option set to 'true', the k-mer size must be <= 32.")
-                }
+                // if kmer > 32 {
+                //     panic!("ERROR : With the '--dense' option set to 'true', the k-mer size must be <= 32.")
+                // }
                 if abundance > 255 {
                     println!("WARNING : the abundance granularity exceeds the requirements of the '--dense' (<256). The abundance granularity is now set to 255.");
 
@@ -97,14 +102,13 @@ fn main() -> io::Result<()> {
                 } else {
                     minimizer
                 };
-            println!("");
 
             let start_time = Instant::now();
 
             // read the file of files  and extract file paths and color count
             let (file_paths, color_nb) = read_fof_file(fof_file)?;
 
-            let threshold = color_nb;
+            let nb_zeros_tolerated = (color_nb as f64 * (1.0 - threshold)) as usize;
 
             // run the index construction process: build and fill BFs per partitions and in chunks, serialize, merge chunks
             build_index(
@@ -118,7 +122,7 @@ fn main() -> io::Result<()> {
                 abundance_max,
                 output_dir, //pass optional output dir, todo in passed arguments
                 dense_option,
-                threshold,
+                nb_zeros_tolerated,
                 debug,
             )?;
 
