@@ -64,10 +64,11 @@ fn main() -> io::Result<()> {
                 .map(|s| s.parse::<bool>().expect("Invalid color option"))
                 .unwrap_or(false);
 
-            let threshold = matches
-                .get_one::<String>("threshold")
-                .map(|s| s.parse::<f64>().expect("Invalid threshold option"))
-                .unwrap_or(0.95);
+            // let threshold = matches
+            //     .get_one::<String>("threshold")
+            //     .map(|s| s.parse::<f64>().expect("Invalid threshold option"))
+            //     .unwrap_or(0.95);
+            let threshold: f64 = 0.95;
 
             // TODO add threads
 

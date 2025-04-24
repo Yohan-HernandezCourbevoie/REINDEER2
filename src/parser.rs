@@ -75,14 +75,14 @@ pub fn parse_args() -> ArgMatches {
                 .help("For 'index' mode: If set, allows to index dense k-mers - i.e. shared k-mers among datasets - more efficiently, at the cost of higher RAM consumption, 
                 limited parameters (k-mer size <= 32, number of abundance levels <= 255) and limited multithreading on small datasets (default: false)")
         )
-        .arg(
-            Arg::new("threshold")
-                .short('T')
-                .long("threshold")
-                .value_name("THRESHOLD")
-                .action(ArgAction::Set)
-                .help("For 'index' mode (with --dense true): Minimum proportion of occurrence in samples for a k-mer to be considered omnipresent, 0 < T <= 1 (default: 0.95)")
-        )
+        // .arg(
+        //     Arg::new("threshold")
+        //         .short('T')
+        //         .long("threshold")
+        //         .value_name("THRESHOLD")
+        //         .action(ArgAction::Set)
+        //         .help("For 'index' mode (with --dense true): Minimum proportion of occurrence in samples for a k-mer to be considered omnipresent, 0 < T <= 1 (default: 0.95)")
+        // )
         .arg(
             Arg::new("output_dir")
                 .short('o')
