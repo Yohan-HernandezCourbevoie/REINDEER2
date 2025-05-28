@@ -10,7 +10,7 @@ use std::error::Error;
 use flate2::read::GzDecoder;
 use rayon::prelude::*;
 use bio::io::fasta;
-use zstd::stream::decode_all;
+use zstd::stream::{decode_all, encode_all};
 use roaring::RoaringBitmap;
 use nthash::NtHashIterator;
 use csv::Writer;
@@ -43,7 +43,7 @@ pub fn build_index(
     let mut atomic_sparse_kmers_count = atomic::AtomicU64::new(0);
     let mut atomic_sparse_one_seen = atomic::AtomicU64::new(0);
     let mut atomic_sparse_fp_seen = atomic::AtomicU64::new(0);
-    let kmer_counts_vector: Arc<Mutex<Vec<usize>>> = Arc::new(Mutex::new(vec![color_nb, 0]));
+    let kmer_counts_vector: Arc<Mutex<Vec<usize>>> = Arc::new(Mutex::new(vec![0; color_nb]));
     let (chunks, color_chunks) = split_fof(&file_paths)?;
     let base = compute_base(abundance_number, abundance_max);
     if debug {
@@ -238,7 +238,7 @@ pub fn build_index_muset(
     let mut atomic_sparse_kmers_count = atomic::AtomicU64::new(0);
     let mut atomic_sparse_one_seen = atomic::AtomicU64::new(0);
     let mut atomic_sparse_fp_seen = atomic::AtomicU64::new(0);
-    let kmer_counts_vector: Arc<Mutex<Vec<usize>>> = Arc::new(Mutex::new(vec![color_nb, 0]));
+    let kmer_counts_vector: Arc<Mutex<Vec<usize>>> = Arc::new(Mutex::new(vec![0; color_nb]));
     let base = compute_base(abundance_number, abundance_max);
     let max_map_size = 1_000_000;
     if debug {
@@ -618,7 +618,7 @@ fn process_fasta_file(
     kmer_counts_vector 
         .lock()
         .expect("Failed to lock the counts vector")
-        [color_number_global] = kmer_count; // add the kmer count
+        [path_num_global] = kmer_count; // add the kmer count
     Ok(())
 }
 
@@ -1523,20 +1523,25 @@ fn write_bloom_filters_to_disk(
             // let c = get_current_chunk_index(i, chunks, partition_nb); // chunk idx
             let p = i % partition_nb; // TOUN
             let file_path = Path::new(dir_path).join(format!(
-                "partition_bloom_filters_c{}_p{}.txt",
+                "partition_bloom_filters_c{}_p{}.txt.zst",
                 chunk_id, p
             ));
             let file = File::create(&file_path)?;
             let mut writer = BufWriter::new(file);
             let chunk_colors = chunks[chunk_id];
+
             // write the number of colors as a u64 to the file first
-            writer.write_all(&chunk_colors.to_le_bytes())?;
+            // writer.write_all(&chunk_colors.to_le_bytes())?;
             // serialize the bitmap into the file
-            let mut locked_bitmap = bitmap.lock().unwrap();
-            locked_bitmap.serialize_into(&mut writer)?;
+            let mut locked_bitmap: std::sync::MutexGuard<'_, RoaringBitmap> = bitmap.lock().unwrap();
+            // locked_bitmap.serialize_into(&mut writer)?;
+            
+            writer.write_all(&encode_all(io::Cursor::new(&chunk_colors.to_le_bytes()), 0)?)?;
+            let mut buffer = Vec::new();
+            locked_bitmap.serialize_into(&mut buffer)?;
+            writer.write_all(&encode_all(io::Cursor::new(buffer), 0).expect("Failed to zstd encode bloom filters"))?;
+
             locked_bitmap.clear();
-            // bitmap.serialize_into(&mut writer)?;
-            // bitmap.clear();
         }
     
     Ok(())
@@ -1567,7 +1572,7 @@ fn write_dense_indexes_to_disk(
         let mut writer = BufWriter::new(file);
         let mut locked_hashmap = hashmap.lock().unwrap();
         let binary_encoded = bincode::serialize(&locked_hashmap.clone()).unwrap();
-        writer.write_all(&binary_encoded)?;
+        writer.write_all(&encode_all(io::Cursor::new(&binary_encoded), 0).expect("Failed to zstd encode the dense index"))?;
         locked_hashmap.clear();
     }
     Ok(())
@@ -1632,7 +1637,7 @@ fn load_bloom_filter(file_path: &str) -> io::Result<(RoaringBitmap, usize)> {
     // Rread the rest of the file to deserialize the Bloom filter
     let mut buffer = Vec::new();
     file.read_to_end(&mut buffer)?;
-    let bitmap = RoaringBitmap::deserialize_from(&buffer[..])
+    let bitmap = RoaringBitmap::deserialize_from(&decode_all(io::Cursor::new(buffer)).expect("Failed to zstd decode the bloom filters")[..])
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "Failed to deserialize bitmap"))?;
     Ok((bitmap, local_color_nb))
 }
@@ -1643,7 +1648,7 @@ fn load_dense_index(file_path: &str) -> io::Result<HashMap<u64, Box<Vec<u8>>>> {
     // Read the rest of the file to deserialize the hashmap
     let mut buffer = Vec::new();
     file.read_to_end(&mut buffer)?;
-    let hashmap = bincode::deserialize_from(&buffer[..])
+    let hashmap = bincode::deserialize_from(&decode_all(io::Cursor::new(buffer)).expect("Failed to zstd decode the dense index")[..])
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "Failed to deserialize hashmap"))?;
     Ok(hashmap)
 }
