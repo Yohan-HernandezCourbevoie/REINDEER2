@@ -1,5 +1,6 @@
-use clap::{Arg, ArgAction, Command, ArgMatches};
+use clap::{Arg, ArgAction, ArgMatches, Command};
 
+// TODO discuss utiliser un struct ici
 pub fn parse_args() -> ArgMatches {
     Command::new("REINDEER 2")
         .bin_name("Reindeer2")

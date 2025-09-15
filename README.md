@@ -26,7 +26,7 @@ git clone https://github.com/Yohan-HernandezCourbevoie/REINDEER2.git
 Then build :
 
 ```
-cd REINDEER2 && cargo build
+cd REINDEER2 && RUSTFLAGS="-C target-cpu=native" cargo build --release
 ```
 
 Alternatively, the tool can be installed globally in the system using :

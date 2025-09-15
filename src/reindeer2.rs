@@ -14,7 +14,6 @@ use zstd::stream::decode_all;
 use roaring::RoaringBitmap;
 use nthash::NtHashIterator;
 use csv::Writer;
-use bincode;
 use thousands::Separable;
 use num_format::{Locale, ToFormattedString};
 
@@ -33,7 +32,7 @@ pub fn build_index(
     color_nb: usize,
     abundance_number: usize,
     abundance_max: u16,
-    output_dir: &String,
+    output_dir: &str,
     dense_option: bool,
     threshold: usize,
     debug: bool,
@@ -155,11 +154,8 @@ pub fn build_index(
     };
 
     // After processing all chunks, write the dense indexes to disk
-    match maybe_dense_indexes {
-        Some(dense_indexes) => {
-            write_dense_indexes_to_disk(&dir_path, &dense_indexes)?;
-        },
-        None => (),
+    if let Some(dense_indexes) = maybe_dense_indexes {
+        write_dense_indexes_to_disk(&dir_path, &dense_indexes)?;
     }
 
     write_kmer_counts_to_disk(&dir_path, &kmer_counts_vector)?;
@@ -228,7 +224,7 @@ pub fn build_index_muset(
     color_nb: usize,
     abundance_number: usize,
     abundance_max: u16,
-    output_dir: &String,
+    output_dir: &str,
     dense_option: bool,
     threshold: usize,
     debug: bool,
@@ -302,7 +298,7 @@ pub fn build_index_muset(
         let abundance_vector_plusone = abundance_iter.enumerate().map(|(i, ab_value_str)| {
             let ab_value = ab_value_str.parse::<f64>().expect("Failed to parse the abundance values in the matrix") as u16;
             if ab_value == 0 {
-                0 as u8
+                0
             } else {
                 kmer_counts_vector_locked[i] += 1; // select the count corresponding to the right color
                 (compute_log_abundance(
@@ -343,7 +339,7 @@ pub fn build_index_muset(
                 atomic_sparse_kmers_count.fetch_add(new_kmers_added, atomic::Ordering::Relaxed);
                 let kmers_entry = partition_kmers // separate the kmers per partition
                     .entry(partition_index)
-                    .or_insert_with(Vec::new);
+                    .or_default();
 
                 for (path_num, log_plusone) in abundance_vector_plusone.iter().enumerate() {
                     let real_log_abundance = (log_plusone - 1) as u16;
@@ -386,11 +382,8 @@ pub fn build_index_muset(
     }
 
     // After processing all chunks, write the dense indexes to disk
-    match maybe_dense_indexes {
-        Some(dense_indexes) => {
-            write_dense_indexes_to_disk(&dir_path, &dense_indexes)?;
-        },
-        None => (),
+    if let Some(dense_indexes) = maybe_dense_indexes {
+        write_dense_indexes_to_disk(&dir_path, &dense_indexes)?;
     }
 
     write_kmer_counts_to_disk(&dir_path, &kmer_counts_vector)?;
@@ -470,11 +463,11 @@ fn process_fasta_file(
     let reader = read_file(path)?;
 
     // this part fills the BFs per partition
-    let flush_map = |partition_kmers: &mut HashMap<usize, Vec<(u64, u16, usize, usize)>>| {
+    fn flush_map(partition_kmers: &mut HashMap<usize, Vec<(u64, u16, usize, usize)>>, partitioned_bf_size: usize, color_number: usize, abundance_number: usize, bloom_filters: &Arc<Vec<Mutex<RoaringBitmap>>>) {
         for (partition_index, kmers) in partition_kmers.drain() {// iterates and empties the hash map when needed
             
 
-            let mut kmer_hashes_to_update = Vec::new();
+            let mut kmer_hashes_to_update = Vec::with_capacity(kmers.len());
             for (kmer_hash, log_abundance, path_num, _chunk_index) in kmers { // select the bit in the BF
                 let position = compute_location_filter(
                     kmer_hash,
@@ -489,9 +482,10 @@ fn process_fasta_file(
             let mut bloom_filter = bloom_filters[partition_index] // select the correct BF for the given partition
                 .lock()
                 .expect("Failed to lock bloom filter");
+            // TODO this takes a lot of time
             bloom_filter.extend(kmer_hashes_to_update);
         }
-    };
+    }
 
     process_fasta_in_batches(reader, 10_000, |batch| { // read file 10_000 lines at once
         let mut partition_kmers: HashMap<usize, Vec<(u64, u16, usize, usize)>> = HashMap::new(); // keep kmer info to fill BFs
@@ -535,7 +529,7 @@ fn process_fasta_file(
                                         // write the k-mer in a file of sparse k-mer from this color
                                         partition_kmers // separate the kmers per partition
                                             .entry(partition_index)
-                                            .or_insert_with(Vec::new)
+                                            .or_default()
                                             .push((
                                                 kmer_hash,
                                                 log_abundance,
@@ -549,7 +543,7 @@ fn process_fasta_file(
                                     // repeated part
                                     partition_kmers // separate the kmers per partition
                                         .entry(partition_index)
-                                        .or_insert_with(Vec::new)
+                                        .or_default()
                                         .push((
                                             kmer_hash,
                                             log_abundance,
@@ -562,7 +556,7 @@ fn process_fasta_file(
 
                             
                             if partition_kmers.len() >= max_map_size {
-                                flush_map(&mut partition_kmers);
+                                flush_map(&mut partition_kmers, partitioned_bf_size, color_number, abundance_number, bloom_filters);
                             }
                         }
                     }
@@ -571,51 +565,47 @@ fn process_fasta_file(
             }
         }
         // Flush remaining k-mers in the map by calling the earlier closure
-        flush_map(&mut partition_kmers);
+        flush_map(&mut partition_kmers, partitioned_bf_size, color_number, abundance_number, bloom_filters);
     })?;
     // flush the dense indexes from sparse k-mers after each file *in the first chunk*
     if chunk_index == 0 {
-        match maybe_dense_indexes {
-            Some(dense_indexes) => {
-                let mut partition_kmers: HashMap<usize, Vec<(u64, u16, usize, usize)>> = HashMap::new(); // keep kmer info to fill BFs
-                for (partition_index, hashmap) in dense_indexes.iter().enumerate() {
-                    let mut kmers_to_remove: Vec<u64> = Vec::new();
-                    let mut dense_index = hashmap // select the correct BF for the given partition
-                        .lock()
-                        .expect("Failed to lock bloom filter");
-                    for (kmer_hash, abundance_vector) in dense_index.iter() {
-                        let number_of_zeros = count_zeros(&abundance_vector, path_num).expect("Unexpected behaviour in the dense index access");
-                        if number_of_zeros > threshold {
-                            let color_count = path_num - number_of_zeros + 1;
-                            atomic_dense_kmers_count.fetch_sub(color_count as u64, atomic::Ordering::Relaxed);
-                            atomic_sparse_kmers_count.fetch_add(color_count as u64, atomic::Ordering::Relaxed);
-                            kmers_to_remove.push(*kmer_hash);
-                            for (path_index, log_abundance) in abundance_vector.iter().take(path_num).enumerate() {
-                                if *log_abundance > 0 as u8 {
-                                    partition_kmers // separate the kmers per partition
-                                        .entry(partition_index)
-                                        .or_insert_with(Vec::new)
-                                        .push((
-                                            *kmer_hash,
-                                            (*log_abundance - 1) as u16,
-                                            path_index,
-                                            chunk_index,
-                                        ));
-                                }
-                            }
-                            if partition_kmers.len() >= max_map_size {
-                                flush_map(&mut partition_kmers);
+        if let Some(dense_indexes) = maybe_dense_indexes {
+            let mut partition_kmers: HashMap<usize, Vec<(u64, u16, usize, usize)>> = HashMap::new(); // keep kmer info to fill BFs
+            for (partition_index, hashmap) in dense_indexes.iter().enumerate() {
+                let mut kmers_to_remove: Vec<u64> = Vec::new();
+                let mut dense_index = hashmap // select the correct BF for the given partition
+                    .lock()
+                    .expect("Failed to lock bloom filter");
+                for (kmer_hash, abundance_vector) in dense_index.iter() {
+                    let number_of_zeros = count_zeros(abundance_vector, path_num).expect("Unexpected behaviour in the dense index access");
+                    if number_of_zeros > threshold {
+                        let color_count = path_num - number_of_zeros + 1;
+                        atomic_dense_kmers_count.fetch_sub(color_count as u64, atomic::Ordering::Relaxed);
+                        atomic_sparse_kmers_count.fetch_add(color_count as u64, atomic::Ordering::Relaxed);
+                        kmers_to_remove.push(*kmer_hash);
+                        for (path_index, log_abundance) in abundance_vector.iter().take(path_num).enumerate() {
+                            if *log_abundance > 0 {
+                                partition_kmers // separate the kmers per partition
+                                    .entry(partition_index)
+                                    .or_default()
+                                    .push((
+                                        *kmer_hash,
+                                        (*log_abundance - 1) as u16,
+                                        path_index,
+                                        chunk_index,
+                                    ));
                             }
                         }
+                        if partition_kmers.len() >= max_map_size {
+                            flush_map(&mut partition_kmers, partitioned_bf_size, color_number, abundance_number, bloom_filters);
+                        }
                     }
-                    kmers_to_remove.into_iter().for_each(|key| {dense_index.remove(&key);});
-                    dense_index.shrink_to_fit();
                 }
-                // Flush remaining k-mers in the map by calling the earlier closure
-                flush_map(&mut partition_kmers);
-            },
-            None => (),
-        }
+                kmers_to_remove.into_iter().for_each(|key| {dense_index.remove(&key);});
+                dense_index.shrink_to_fit();
+            }
+            // Flush remaining k-mers in the map by calling the earlier closure
+flush_map(&mut partition_kmers, partitioned_bf_size, color_number, abundance_number, bloom_filters);        }
     }
     kmer_counts_vector 
         .lock()
@@ -661,7 +651,7 @@ fn process_fasta_record (
     let header = header_option.unwrap_or("no header found");
     let count_value = match extract_count(header, header_type) {
         Ok(count_value) => count_value,
-        Err(_) => return Err(io::Error::new(io::ErrorKind::Other, "count not found!")),
+        Err(_) => return Err(io::Error::other("count not found!")),
     };
 
     // compute the lossy abundance value
@@ -675,7 +665,7 @@ fn process_fasta_record (
 }
 
 fn count_zeros(
-    abundance_vector: &Vec<u8>,
+    abundance_vector: &[u8],
     max_index: usize,
 ) -> io::Result<usize> {
     Ok(abundance_vector
@@ -785,7 +775,7 @@ fn query_sequences_in_batches(
                 let partition_index = (minimizer % (partition_number as u64)) as usize;
                 partition_kmers
                     .entry(partition_index)
-                    .or_insert_with(Vec::new)
+                    .or_default()
                     .push((full_header.clone(), kmer_hash));
             }
         }
@@ -797,7 +787,7 @@ fn query_sequences_in_batches(
             .into_par_iter()
             // 1) Create a local HashMap in each thread
             .fold(
-                || HashMap::<String, Vec<Vec<u16>>>::new(),
+                HashMap::<String, Vec<Vec<u16>>>::new,
                 |mut local_results, (partition_index, kmers)| {
                     // Load the partition's Bloom filter
                     let path_bf = format!("{}/partition_bloom_filters_p{}.txt",bf_dir, partition_index);
@@ -817,8 +807,9 @@ fn query_sequences_in_batches(
                                     let log_abundance_vector = hashmap.get(&kmer_hash).expect("failed to read the hashmap");
                                     let mut color_abundances = vec![Vec::new(); color_number];
                                     for (color, log_abundance) in log_abundance_vector.iter().enumerate() {
-                                            if *log_abundance == 0 as u8 {
-                                                color_abundances[color].push(666 as usize);
+                                            if *log_abundance == 0 {
+                                                // TODO discuss weird value
+                                                color_abundances[color].push(666);
                                             } else {
                                                 color_abundances[color].push((*log_abundance - 1) as usize);
                                             }
@@ -878,7 +869,7 @@ fn query_sequences_in_batches(
             )
             // 2) Reduce all local HashMaps into a single HashMap
             .reduce(
-                || HashMap::<String, Vec<Vec<u16>>>::new(),
+                HashMap::<String, Vec<Vec<u16>>>::new,
                 merge_results,
             );
 
@@ -896,7 +887,7 @@ fn query_sequences_in_batches(
             );
         } else {
             let kmer_counts = if normalize_option {
-                load_kmer_counts_vector(&bf_dir).expect("Failed to load from disk the kmer counts vector")
+                load_kmer_counts_vector(bf_dir).expect("Failed to load from disk the kmer counts vector")
             } else {
                 vec![color_number, 0]
             };
@@ -1033,6 +1024,7 @@ pub fn graph_coloring(
                 // join info like
                 // ">seq1 col:0:12 col:1:29"
                 let new_header = header_parts.join(" ");
+                // TODO discuss why ok() here ? pretty sure it has no effect)
                 writeln!(writer, "{}", new_header).ok();
                 writeln!(writer, "{}", seq_str).ok();
 
@@ -1269,7 +1261,7 @@ fn merge_partition_slices_interleaved(
     chunk_files: &[String],
     partitioned_bf_size: usize,
     abundance_number: usize,
-    color_counts: &Vec<usize>, // number of colors in each chunk
+    color_counts: &[usize], // number of colors in each chunk
 ) -> RoaringBitmap {
     // preload all Bfs
     let loaded_bfs: Vec<Option<(RoaringBitmap, usize)>> = chunk_files
@@ -1318,9 +1310,7 @@ fn merge_partition_slices_interleaved(
         }
     }
 
-    let r = RoaringBitmap::from_sorted_iter(final_positions).expect("Attempt to merge with unsorted positions");
-    // let r = RoaringBitmap::new()
-    r
+    RoaringBitmap::from_sorted_iter(final_positions).expect("Attempt to merge with unsorted positions")
 }
 
 
@@ -1361,7 +1351,8 @@ fn update_color_abundances(
                 break; // keep the minimum
             }
         }
-        if insert==false{
+        if !insert{
+            // TODO weird discuss value
             color_abundances[color].push(666); // important to record absent k-mers, to compute the median value, also, todo test 
         }
     }
@@ -1377,14 +1368,9 @@ fn compute_location_filter(
     -> u64 {
     
     // compute the position to write
-    let position_to_write = (
-        hash_kmer % (partitioned_bf_size as u64)) 
-        * (color_number as u64) 
-        * (abundance_number as u64) 
-        + (path_color_number as u64) 
-        * (abundance_number as u64) 
-        + (log_abundance as u64);
-    position_to_write
+    (hash_kmer % (partitioned_bf_size as u64)) * (color_number as u64) * (abundance_number as u64) 
+        + (path_color_number as u64) * (abundance_number as u64) 
+        + (log_abundance as u64)
     /* example
                         c0  c1  c2  c3	      
         color 0   abund 0   0   1   1
@@ -1462,7 +1448,7 @@ fn update_sparse_counts(
     let mut writer = BufWriter::new(file);
     let tmp_vector: std::sync::MutexGuard<'_, Vec<(usize, usize)>> = ones_by_partition.lock().unwrap();
     for (a1, a2) in tmp_vector.iter() {
-        writer.write(format!("{},{}\n", a1, a2).as_bytes())?;
+        writer.write_all(format!("{},{}\n", a1, a2).as_bytes())?;
     }
     writer.flush()?;
 
@@ -1535,7 +1521,7 @@ fn create_dir_and_files(num_partition: usize, output_dir: &str) -> io::Result<(V
 fn write_bloom_filters_to_disk(
     dir_path: &str,
     bloom_filters: &Arc<Vec<Mutex<RoaringBitmap>>>,
-    chunks: &Vec<usize>, //  number of colors for each chunk
+    chunks: &[usize], //  number of colors for each chunk
     partition_nb: usize,
     chunk_id:usize
 ) -> io::Result<()> {
@@ -1622,7 +1608,7 @@ fn write_partition_to_csv(
 
     let mut csv_writer = Writer::from_writer(BufWriter::new(File::create(&output_path)?));
 
-    csv_writer.write_record(&["k", "m", "bf_size", "partition_number", "color_number", "abundance_number", "abundance_max", "dense_option"])?;
+    csv_writer.write_record(["k", "m", "bf_size", "partition_number", "color_number", "abundance_number", "abundance_max", "dense_option"])?;
     csv_writer.write_record(&[
             k.to_string(),
             m.to_string(),
@@ -1642,7 +1628,7 @@ fn write_partition_to_csv(
 
 /// load a Bloom filter from disk
 fn load_bloom_filter(file_path: &str) -> io::Result<(RoaringBitmap, usize)> {
-    let mut file = File::open(&file_path)?;
+    let mut file = File::open(file_path)?;
 
     // read the first 8 bytes as a u64 to get the number of colors
     let mut color_buffer = [0u8; 8];
@@ -1657,6 +1643,7 @@ fn load_bloom_filter(file_path: &str) -> io::Result<(RoaringBitmap, usize)> {
     Ok((bitmap, local_color_nb))
 }
 
+// TODO Box<Vec<u8>> est surprenant
 fn load_dense_index(file_path: &str) -> io::Result<HashMap<u64, Box<Vec<u8>>>> {
     let mut file = File::open(file_path)?;
 
@@ -1686,7 +1673,7 @@ fn read_partition_from_csv(bf_dir: &str, output_csv: &str) -> io::Result<(usize,
 }
 
 fn load_kmer_counts_vector(dir_path: &str) -> io::Result<Vec<usize>> {
-    let mut file = File::open(&Path::new(dir_path).join("kmer_counts_per_color.txt"))?;
+    let mut file = File::open(Path::new(dir_path).join("kmer_counts_per_color.txt"))?;
 
     // Read the rest of the file to deserialize the hashmap
     let mut buffer = Vec::new();
@@ -1712,7 +1699,7 @@ pub fn read_fof_file(file_path: &str) -> io::Result<(Vec<String>, usize)> {
     Ok((file_paths, color_number))
 }
 
-fn split_fof(lines: &Vec<String>) -> io::Result<(Vec<Vec<String>>, Vec<usize>)> {
+fn split_fof(lines: &[String]) -> io::Result<(Vec<Vec<String>>, Vec<usize>)> {
     let total_colors = lines.len();
 
     // chunk max size
@@ -1721,7 +1708,7 @@ fn split_fof(lines: &Vec<String>) -> io::Result<(Vec<Vec<String>>, Vec<usize>)> 
     let split_factor = if total_colors < magic_nb_split {
         1
     } else {
-        (total_colors + magic_nb_split - 1) / magic_nb_split
+        total_colors.div_ceil(magic_nb_split)
     };
 
     let mut fof_chunks = vec![vec![]; split_factor];
@@ -1736,7 +1723,8 @@ fn split_fof(lines: &Vec<String>) -> io::Result<(Vec<Vec<String>>, Vec<usize>)> 
     Ok((fof_chunks, chunk_sizes))
 }
 
-pub fn explore_muset_dir(dir_str: &str) -> io::Result<(String, String, usize)> {
+// TODO discuss: used to return a Result, but only the OK variant was returnd
+pub fn explore_muset_dir(dir_str: &str) -> (String, String, usize) {
     let dir_path = Path::new(dir_str);
     if !dir_path.is_dir() {
         panic!("{} is not a directory", dir_str);
@@ -1753,8 +1741,11 @@ pub fn explore_muset_dir(dir_str: &str) -> io::Result<(String, String, usize)> {
     let reader = BufReader::new(File::open(&abundance_path).expect(&format!("Failed to open {:#?}", abundance_path)));
     let err = &format!("Failed to read {:#?}", abundance_path);
     let firstline = reader.lines().next().expect(err).expect(err);
-    let color_nb = firstline.split("\t").into_iter().map(|e| e).collect::<Vec<&str>>().len() - 1;
-    Ok((unitigs_path.to_string_lossy().to_string(), abundance_path.to_string_lossy().to_string(), color_nb))
+    
+    // number of color == number of \t in the first line ?
+    // TODO check it's the same
+    let color_nb = firstline.chars().filter(|c| *c == '\t').count();
+    (unitigs_path.to_string_lossy().to_string(), abundance_path.to_string_lossy().to_string(), color_nb)
 }
 
 
@@ -1769,7 +1760,8 @@ fn is_gz_file(file_path: &str) -> io::Result<bool> {
     // If not by extension, check first two bytes for GZ magic number
     let mut file = File::open(file_path)?;
     let mut magic = [0u8; 2];
-    if let Ok(_) = file.read_exact(&mut magic) {
+    if file.read_exact(&mut magic).is_ok() {
+        // TODO magic number
         return Ok(magic == [0x1F, 0x8B]);
     }
     Ok(false)
@@ -1815,8 +1807,7 @@ fn determine_header_type(header: &str) -> Result<HeaderType, io::Error> {
     } else if header.contains("ka:f:") {
         Ok(HeaderType::Logan)
     } else {
-        Err(io::Error::new(
-            io::ErrorKind::Other,
+        Err(io::Error::other(
             "Header does not contain a recognized count field (km:f: or ka:f:)",
         ))
     }
@@ -1836,7 +1827,7 @@ fn extract_count_from_bcalm_header(header: &str) -> Result<u16, io::Error> {
             km_part.trim_start_matches("km:f:").parse::<f32>().ok()
         })
         .map(|float_val| float_val as u16) //any value over max u16 will be clamped to the maximum possible value
-        .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "km:f: value not found in header or could not be parsed"))
+        .ok_or_else(|| io::Error::other("km:f: value not found in header or could not be parsed"))
 }
 
 fn extract_count_from_logan_header(header: &str) -> Result<u16, io::Error> {
@@ -1846,7 +1837,7 @@ fn extract_count_from_logan_header(header: &str) -> Result<u16, io::Error> {
             ka_part.trim_start_matches("ka:f:").parse::<f32>().ok()
         })
         .map(|float_val| float_val as u16) 
-        .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "ka:f: value not found in header or could not be parsed"))
+        .ok_or_else(|| io::Error::other("ka:f: value not found in header or could not be parsed"))
 }
 
 
@@ -1889,9 +1880,13 @@ fn compute_base(abundance_number: usize, abundance_max: u16) -> f64 {
     const TOL: f64 = 1e-9;
     let abundance_maxf = abundance_max as f64;
 
+    // TODO pourquoi ce test ? C'est pas possible non ?
+    // TODO voir si utiliser assert est possible
     if abundance_numberf <= 0.0 {
         panic!("abundance number must be greater than 0");
     }
+
+    // TODO pourquoi <= et pas == ?
     if abundance_max <= 0 {
         panic!("Maximal abundance must be greater than 0");
     }
@@ -2065,7 +2060,7 @@ fn kmer_minimizers_seq_level<'a>(
         panic!("Error creating NtHashIterator for k-mers: {:?}", err)
     });
     // return an iterator over (hashed k-mers,corresponding minimizers)
-    kmer_hash_iter.zip(minima.into_iter())
+    kmer_hash_iter.zip(minima)
 }
 
 
@@ -2210,6 +2205,7 @@ fn _display_progress(total_kmers: u64, start_time: Instant) {
 /* TESTS */
 
 #[allow(unused_imports)]
+#[cfg(test)]
 mod tests {
     
     use super::*;
@@ -2619,7 +2615,7 @@ mod tests {
             color_number,
             abundance_number,
             abundance_max,
-            &String::from(test_dir),
+            test_dir,
             dense_option,
             threshold,
             false,
@@ -2711,7 +2707,7 @@ mod tests {
             color_number,
             abundance_number,
             abundance_max,
-            &String::from(test_dir),
+            test_dir,
             dense_option,
             threshold,
             false,
@@ -2812,7 +2808,7 @@ mod tests {
             color_number,
             abundance_number,
             abundance_max,
-            &String::from(test_dir),
+            test_dir,
             dense_option,
             threshold,
             false,
@@ -2910,7 +2906,7 @@ mod tests {
             color_number,
             abundance_number,
             abundance_max,
-            &String::from(test_dir),
+            test_dir,
             dense_option,
             threshold,
             false,
@@ -3009,7 +3005,7 @@ mod tests {
             color_number,
             abundance_number,
             abundance_max,
-            &String::from(test_dir),
+            test_dir,
             dense_option,
             threshold,
             false,
@@ -3101,7 +3097,7 @@ mod tests {
             color_number,
             abundance_number,
             abundance_max,
-            &String::from(test_dir),
+            test_dir,
             dense_option,
             threshold,
             false,
@@ -3198,7 +3194,7 @@ mod tests {
             color_number,
             abundance_number,
             abundance_max,
-            &String::from(test_dir),
+            test_dir,
             dense_option,
             threshold,
             false,
@@ -3212,7 +3208,7 @@ mod tests {
         fs::rename("test_files_bq2/partitioned_bloom_filters_c0_p3.txt", "test_files_bq2/partitioned_bloom_filters_p3.txt");
         */
         let query_results_path = format!("{}/query_results.csv", index_dir);
-        query_index(&file2_path, &test_dir, &query_results_path, false, false, 0.5) // query sequences from file1
+        query_index(&file2_path, test_dir, &query_results_path, false, false, 0.5) // query sequences from file1
             .expect("Failed to query sequences");
 
         
@@ -3304,7 +3300,7 @@ mod tests {
             color_number,
             abundance_number,
             abundance_max,
-            &String::from(test_dir),
+            test_dir,
             dense_option,
             threshold,
             false,
@@ -3318,7 +3314,7 @@ mod tests {
         fs::rename("test_files_bq2/partitioned_bloom_filters_c0_p3.txt", "test_files_bq2/partitioned_bloom_filters_p3.txt");
         */
         let query_results_path = format!("{}/query_results.csv", index_dir);
-        query_index(&file2_path, &test_dir, &query_results_path, false, false, 0.5) // query sequences from file1
+        query_index(&file2_path, test_dir, &query_results_path, false, false, 0.5) // query sequences from file1
             .expect("Failed to query sequences");
 
         
@@ -3410,7 +3406,7 @@ mod tests {
             color_number,
             abundance_number,
             abundance_max,
-            &String::from(test_dir),
+            test_dir,
             dense_option,
             threshold,
             false,
@@ -3423,7 +3419,7 @@ mod tests {
         fs::rename("test_files_bq3/partitioned_bloom_filters_c0_p3.txt", "test_files_bq3/partitioned_bloom_filters_p3.txt");
         */
         let query_results_path = format!("{}/query_results.csv", index_dir);
-        query_index(&file1_path, &test_dir, &query_results_path, false, false, 0.5) // query sequences from file1
+        query_index(&file1_path, test_dir, &query_results_path, false, false, 0.5) // query sequences from file1
             .expect("Failed to query sequences");
 
         
@@ -3517,7 +3513,7 @@ mod tests {
             color_number,
             abundance_number,
             abundance_max,
-            &String::from(test_dir),
+            test_dir,
             dense_option,
             threshold,
             false,
@@ -3530,7 +3526,7 @@ mod tests {
         fs::rename("test_files_bq3/partitioned_bloom_filters_c0_p3.txt", "test_files_bq3/partitioned_bloom_filters_p3.txt");
         */
         let query_results_path = format!("{}/query_results.csv", index_dir);
-        query_index(&file1_path, &test_dir, &query_results_path, false, false, 0.5) // query sequences from file1
+        query_index(&file1_path, test_dir, &query_results_path, false, false, 0.5) // query sequences from file1
             .expect("Failed to query sequences");
 
         
@@ -3618,7 +3614,7 @@ mod tests {
             color_number,
             abundance_number,
             abundance_max,
-            &String::from(test_dir),
+            test_dir,
             dense_option,
             threshold,
             false,
@@ -3631,7 +3627,7 @@ mod tests {
         fs::rename("test_files_bq3/partitioned_bloom_filters_c0_p3.txt", "test_files_bq3/partitioned_bloom_filters_p3.txt");
         */
         let query_results_path = format!("{}/query_results.csv", index_dir);
-        query_index(&file1_path, &test_dir, &query_results_path, false, false, 0.5) // query sequences from file1
+        query_index(&file1_path, test_dir, &query_results_path, false, false, 0.5) // query sequences from file1
             .expect("Failed to query sequences");
 
        
@@ -3718,7 +3714,7 @@ mod tests {
             color_number,
             abundance_number,
             abundance_max,
-            &String::from(test_dir),
+            test_dir,
             dense_option,
             threshold,
             false,
@@ -3731,7 +3727,7 @@ mod tests {
         fs::rename("test_files_bq3/partitioned_bloom_filters_c0_p3.txt", "test_files_bq3/partitioned_bloom_filters_p3.txt");
         */
         let query_results_path = format!("{}/query_results.csv", index_dir);
-        query_index(&file1_path, &test_dir, &query_results_path, false, false, 0.5) // query sequences from file1
+        query_index(&file1_path, test_dir, &query_results_path, false, false, 0.5) // query sequences from file1
             .expect("Failed to query sequences");
 
        
@@ -4031,7 +4027,7 @@ mod tests {
             color_number,
             abundance_number,
             abundance_max,
-            &String::from(test_dir),
+            test_dir,
             dense_option,
             threshold,
              false,
@@ -4039,7 +4035,7 @@ mod tests {
         .expect("Failed to build index");
         let query_results_path = format!("{}/query_results.csv", index_dir);
 
-        query_index(&file1_path, &test_dir, &query_results_path, false, false, 0.5)
+        query_index(&file1_path, test_dir, &query_results_path, false, false, 0.5)
             .expect("Failed to query sequences");
 
         let mut reader =
@@ -4196,7 +4192,7 @@ mod tests {
             color_number,
             abundance_number,
             abundance_max,
-            &String::from(test_dir),
+            test_dir,
             dense_option,
             threshold,
             false,
@@ -4320,7 +4316,7 @@ mod tests {
             color_number,
             abundance_number,
             abundance_max,
-            &String::from(test_dir),
+            test_dir,
             dense_option,
             threshold,
             false,
@@ -4328,7 +4324,7 @@ mod tests {
         .expect("Failed to build index");
         let query_results_path = format!("{}/query_results.csv", index_dir);
 
-        query_index(&file5_path, &test_dir, &query_results_path, false, false, 0.5)
+        query_index(&file5_path, test_dir, &query_results_path, false, false, 0.5)
             .expect("Failed to query sequences");
 
         let mut reader =
@@ -4450,14 +4446,14 @@ mod tests {
             color_number,
             abundance_number,
             abundance_max,
-            &String::from(test_dir),
+            test_dir,
             dense_option,
             threshold,
             false,
         )
         .expect("Failed to build index");
         let query_results_path = format!("{}/query_results.csv", index_dir);
-        query_index(&file5_path, &test_dir, &query_results_path, false, false, 0.5)
+        query_index(&file5_path, test_dir, &query_results_path, false, false, 0.5)
             .expect("Failed to query sequences");
 
         
@@ -4661,7 +4657,7 @@ mod tests {
             color_number,
             abundance_number,
             abundance_max,
-            &String::from(test_dir),
+            test_dir,
             dense_option,
             threshold,
             false,
@@ -4747,7 +4743,7 @@ mod tests {
             color_number,
             abundance_number,
             abundance_max,
-            &String::from(test_dir),
+            test_dir,
             dense_option,
             threshold,
             false,
