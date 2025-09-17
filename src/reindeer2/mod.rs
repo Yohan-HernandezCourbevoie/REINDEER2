@@ -1,3 +1,6 @@
+mod query;
+mod index;
+
 use std::collections::{HashMap, VecDeque};
 use std::io::{self, BufRead, BufReader,Write, BufWriter,Read};
 use std::panic;
