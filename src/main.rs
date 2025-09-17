@@ -100,8 +100,6 @@ fn main() -> io::Result<()> {
                 );
                 index.build(
                     file_paths,
-                    abundance,
-                    abundance_max,
                     &output_dir,
                     dense_option,
                     tolerated_number_of_zeros,

@@ -83,8 +83,6 @@ impl Reindeer2 {
     pub fn build(
         &self,
         file_paths: Vec<String>,
-        abundance_number: usize,
-        abundance_max: u16,
         output_dir: &str,
         dense_option: bool,
         threshold: usize,
@@ -98,7 +96,7 @@ impl Reindeer2 {
         let kmer_counts_vector: Arc<Mutex<Vec<usize>>> =
             Arc::new(Mutex::new(vec![0; self.nb_color]));
         let (chunks, color_chunks) = split_fof(&file_paths)?;
-        let base = compute_base(abundance_number, abundance_max);
+        let base = compute_base(self.abundance_number, self.abundance_max);
         if debug {
             println!("Using log base {}", base);
         }
@@ -168,8 +166,8 @@ impl Reindeer2 {
                                     color_chunks[chunk_i],
                                     self.nb_color,
                                     threshold,
-                                    abundance_number,
-                                    abundance_max,
+                                    self.abundance_number,
+                                    self.abundance_max,
                                     path_num % color_chunks[0],
                                     path_num,
                                     base,
@@ -198,7 +196,7 @@ impl Reindeer2 {
                     &bloom_filters,
                     &atomic_sparse_one_seen,
                     &atomic_sparse_fp_seen,
-                    abundance_number,
+                    self.abundance_number,
                 )?;
             }
             if let Err(e) = write_bloom_filters_to_disk(
@@ -244,7 +242,7 @@ impl Reindeer2 {
                 &dir_path,
                 &dir_path, // output
                 partitioned_bf_size,
-                abundance_number,
+                self.abundance_number,
                 color_chunks,
                 self.partition_number,
                 self.nb_color,
@@ -272,8 +270,8 @@ impl Reindeer2 {
             self.bf_size,
             self.partition_number,
             self.nb_color,
-            abundance_number,
-            abundance_max,
+            self.abundance_number,
+            self.abundance_max,
             dense_option,
         );
 
@@ -1218,6 +1216,7 @@ fn load_dense_index(file_path: &str) -> io::Result<HashMap<u64, Box<Vec<u8>>>> {
 /// Rload index metadata from the CSV.
 // TODO why output_csv ?
 // TODO we could return a Reindeer2 directly
+// TODO why is 0 the default ?
 fn read_partition_from_csv(
     bf_dir: &str,
     output_csv: &str,
@@ -2048,6 +2047,8 @@ mod tests {
         fs::remove_dir_all(bf_dir).expect("Failed to remove test directory");
     }
 
+    /// Helper function for tests
+    /// Creates an index indexing `file_paths`, load it from disk, and query file `file_paths[query_file_id]`.
     fn create_build_query(
         bf_size: u64,
         partition_number: usize,
@@ -2075,8 +2076,6 @@ mod tests {
         let (_file_paths, index_dir) = index
             .build(
                 file_paths.clone(),
-                abundance_number,
-                abundance_max,
                 test_dir,
                 dense_option,
                 threshold,
@@ -2147,8 +2146,6 @@ mod tests {
         let (_file_paths, index_dir) = index
             .build(
                 vec![file1_path.clone()],
-                abundance_number,
-                abundance_max,
                 test_dir,
                 dense_option,
                 threshold,
@@ -4145,8 +4142,6 @@ mod tests {
         let (_file_paths, index_dir) = index
             .build(
                 vec![fasta_path.clone()],
-                abundance_number,
-                abundance_max,
                 test_dir,
                 dense_option,
                 threshold,
