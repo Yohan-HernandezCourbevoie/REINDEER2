@@ -688,6 +688,7 @@ pub fn query_index(
     color_graph: bool,
     normalize_option: bool,
     coverage: f32,
+    rd1_like:bool
 ) -> io::Result<()> {
     //load index metadata from CSV
     let (k, m, bf_size, partition_number, color_number, abundance_number, abundance_max, dense_option) =
@@ -711,6 +712,7 @@ pub fn query_index(
         dense_option,
         normalize_option,
         coverage,
+        rd1_like,
     )?;
     println!("Writing results in {}", output_file);
     //write_query_results_to_csv(&query_results, bf_dir)
@@ -720,33 +722,8 @@ pub fn query_index(
 
 // --- QUERY FUNCTIONS ---
 
-fn query_sequences_in_batches(
-    fasta_file: &str,
-    bf_dir: &str,
-    k: usize,
-    m: usize,
-    bf_size: u64,
-    partition_number: usize,
-    color_number: usize,
-    abundance_number: usize,
-    abundance_max: u16,
-    batch_size: usize,
-    output_file: &str,
-    color_graph: bool,
-    dense_option: bool,
-    normalize_option: bool,
-    coverage: f32,
-) -> io::Result<()> {
-    let reader = read_file(fasta_file)?;
-    let mut writer = BufWriter::new(File::create(output_file)?);
-    let base = compute_base(abundance_number, abundance_max);
-
-    // write the headr of the output csv file
-    writeln!(writer, "header,file,abundance")?;
-
-    // Process FASTA in chunks of `batch_size` records
-    process_fasta_in_batches(reader, batch_size, |batch| {
-        // Build a map from partition_index -> Vec of (sequence_id, kmer_hash).
+/// Builds a map from partition_index -> Vec of (sequence_id, kmer_hash).
+fn build_partitions_kmers(batch: Vec<fasta::Record>, k:usize, m: usize,partition_number: u64) -> HashMap<usize, Vec<(String, u64)>> {
         let mut partition_kmers: HashMap<usize, Vec<(String, u64)>> = HashMap::new();
 
         // Build all partition-kmers upfront
@@ -772,29 +749,33 @@ fn query_sequences_in_batches(
 
             for (kmer_hash, minimizer) in kmer_minimizers_seq_level(seq_str.as_bytes(), k, m) {
                 //for (kmer_hash, (minimizer, _position)) in nt_hash_iterator.zip(min_iter) {
-                let partition_index = (minimizer % (partition_number as u64)) as usize;
+                let partition_index = (minimizer % partition_number) as usize;
                 partition_kmers
                     .entry(partition_index)
                     .or_default()
                     .push((full_header.clone(), kmer_hash));
             }
         }
+        partition_kmers
+}
 
-        // --- PARALLEL PHASE: process each partition's k-mers in parallel ---
-        // This will store final results for *all* sequences in this batch.
-        // Key: sequence header; Value: vector of vector of abundances
-        let sequence_results = partition_kmers
-            .into_par_iter()
-            // 1) Create a local HashMap in each thread
-            .fold(
-                HashMap::<String, Vec<Vec<u16>>>::new,
-                |mut local_results, (partition_index, kmers)| {
+// TODO rename
+fn fold_into_hashmap(mut local_results: HashMap::<String, Vec<Vec<u16>>>,
+     partition_index:usize,
+    kmers:Vec<(String, u64)>,
+    base: f64,
+    bf_dir: &str,
+    bf_size: u64,
+    partition_number: usize,
+    color_number: usize,
+    abundance_number: usize,
+    is_dense: bool) -> HashMap::<String, Vec<Vec<u16>>> {
                     // Load the partition's Bloom filter
                     let path_bf = format!("{}/partition_bloom_filters_p{}.txt",bf_dir, partition_index);
                     let maybe_bf = load_bloom_filter(&path_bf);
 
                     if let Ok((bitmap, _maybe_aux_data)) = maybe_bf {
-                        let hashmap: HashMap<u64, Box<Vec<u8>>> = if dense_option {
+                        let hashmap: HashMap<u64, Box<Vec<u8>>> = if is_dense {
                             let path_dense_index = format!("{}/partition_dense_index_p{}.txt", bf_dir, partition_index);
                             load_dense_index(&path_dense_index).expect(&format!("Failed to load dense index for partition {}", partition_index))
                         } else {
@@ -865,7 +846,47 @@ fn query_sequences_in_batches(
                     }
 
                     local_results
-                }
+}
+
+fn query_sequences_in_batches(
+    fasta_file: &str,
+    bf_dir: &str,
+    k: usize,
+    m: usize,
+    bf_size: u64,
+    partition_number: usize,
+    color_number: usize,
+    abundance_number: usize,
+    abundance_max: u16,
+    batch_size: usize,
+    output_file: &str,
+    color_graph: bool,
+    dense_option: bool,
+    normalize_option: bool,
+    coverage: f32,
+    rd1_like:bool,
+) -> io::Result<()> {
+    let reader = read_file(fasta_file)?;
+    let mut writer = BufWriter::new(File::create(output_file)?);
+        // write the headr of the output csv file
+    writeln!(writer, "header,file,abundance")?;
+    let base = compute_base(abundance_number, abundance_max);
+
+
+
+    // Process FASTA in chunks of `batch_size` records
+    process_fasta_in_batches(reader, batch_size, |batch| {
+        let partition_kmers = build_partitions_kmers(batch ,k, m, partition_number as u64);
+
+        // --- PARALLEL PHASE: process each partition's k-mers in parallel ---
+        // This will store final results for *all* sequences in this batch.
+        // Key: sequence header; Value: vector of vector of abundances
+        let sequence_results = partition_kmers
+            .into_par_iter()
+            // 1) Create a local HashMap in each thread
+            .fold(
+                HashMap::<String, Vec<Vec<u16>>>::new,
+                |local_results, (partition_index, kmers)| fold_into_hashmap(local_results, partition_index,kmers, base, bf_dir, bf_size, partition_number, color_number, abundance_number, dense_option)
             )
             // 2) Reduce all local HashMaps into a single HashMap
             .reduce(
@@ -889,7 +910,7 @@ fn query_sequences_in_batches(
             let kmer_counts = if normalize_option {
                 load_kmer_counts_vector(bf_dir).expect("Failed to load from disk the kmer counts vector")
             } else {
-                vec![color_number, 0]
+                vec![color_number, 0]// TODO bizarre
             };
             // Compute medians for each sequence and each color, then write them out
             for (seq_header, color_vectors) in &sequence_results {
@@ -2624,7 +2645,7 @@ mod tests {
     
         let query_results_path = format!("{}/query_results.csv", index_dir);
         
-        query_index(&file1_path, &index_dir, &query_results_path, false, false, 0.5)
+        query_index(&file1_path, &index_dir, &query_results_path, false, false, 0.5, false)
             .expect("Failed to query sequences");
     
         let mut reader = csv::Reader::from_reader(File::open(&query_results_path).expect("Failed to open query results"));
@@ -2716,7 +2737,7 @@ mod tests {
     
         let query_results_path = format!("{}/query_results.csv", index_dir);
         
-        query_index(&file1_path, &index_dir, &query_results_path, false, false, 0.5)
+        query_index(&file1_path, &index_dir, &query_results_path, false, false, 0.5, false)
             .expect("Failed to query sequences");
     
         let mut reader = csv::Reader::from_reader(File::open(&query_results_path).expect("Failed to open query results"));
@@ -2817,7 +2838,7 @@ mod tests {
     
         let query_results_path = format!("{}/query_results.csv", index_dir);
         
-        query_index(&file1_path, &index_dir, &query_results_path, false, false, 0.5)
+        query_index(&file1_path, &index_dir, &query_results_path, false, false, 0.5, false)
             .expect("Failed to query sequences");
     
         let mut reader = csv::Reader::from_reader(File::open(&query_results_path).expect("Failed to open query results"));
@@ -2915,7 +2936,7 @@ mod tests {
     
         let query_results_path = format!("{}/query_results.csv", index_dir);
         
-        query_index(&file1_path, &index_dir, &query_results_path, false, false, 0.5)
+        query_index(&file1_path, &index_dir, &query_results_path, false, false, 0.5, false)
             .expect("Failed to query sequences");
     
         let mut reader = csv::Reader::from_reader(File::open(&query_results_path).expect("Failed to open query results"));
@@ -3014,7 +3035,7 @@ mod tests {
 
         let query_results_path = format!("{}/query_results.csv", index_dir);
 
-        query_index(&file2_path, &index_dir, &query_results_path, false, false, 0.5)
+        query_index(&file2_path, &index_dir, &query_results_path, false, false, 0.5, false)
             .expect("Failed to query sequences");
 
         // Validate the results written to the query results CSV file
@@ -3106,7 +3127,7 @@ mod tests {
 
         let query_results_path = format!("{}/query_results.csv", index_dir);
 
-        query_index(&file2_path, &index_dir, &query_results_path, false, false, 0.5)
+        query_index(&file2_path, &index_dir, &query_results_path, false, false, 0.5, false)
             .expect("Failed to query sequences");
 
         // Validate the results written to the query results CSV file
@@ -3208,7 +3229,7 @@ mod tests {
         fs::rename("test_files_bq2/partitioned_bloom_filters_c0_p3.txt", "test_files_bq2/partitioned_bloom_filters_p3.txt");
         */
         let query_results_path = format!("{}/query_results.csv", index_dir);
-        query_index(&file2_path, test_dir, &query_results_path, false, false, 0.5) // query sequences from file1
+        query_index(&file2_path, test_dir, &query_results_path, false, false, 0.5, false) // query sequences from file1
             .expect("Failed to query sequences");
 
         
@@ -3314,7 +3335,7 @@ mod tests {
         fs::rename("test_files_bq2/partitioned_bloom_filters_c0_p3.txt", "test_files_bq2/partitioned_bloom_filters_p3.txt");
         */
         let query_results_path = format!("{}/query_results.csv", index_dir);
-        query_index(&file2_path, test_dir, &query_results_path, false, false, 0.5) // query sequences from file1
+        query_index(&file2_path, test_dir, &query_results_path, false, false, 0.5, false) // query sequences from file1
             .expect("Failed to query sequences");
 
         
@@ -3419,7 +3440,7 @@ mod tests {
         fs::rename("test_files_bq3/partitioned_bloom_filters_c0_p3.txt", "test_files_bq3/partitioned_bloom_filters_p3.txt");
         */
         let query_results_path = format!("{}/query_results.csv", index_dir);
-        query_index(&file1_path, test_dir, &query_results_path, false, false, 0.5) // query sequences from file1
+        query_index(&file1_path, test_dir, &query_results_path, false, false, 0.5, false) // query sequences from file1
             .expect("Failed to query sequences");
 
         
@@ -3526,7 +3547,7 @@ mod tests {
         fs::rename("test_files_bq3/partitioned_bloom_filters_c0_p3.txt", "test_files_bq3/partitioned_bloom_filters_p3.txt");
         */
         let query_results_path = format!("{}/query_results.csv", index_dir);
-        query_index(&file1_path, test_dir, &query_results_path, false, false, 0.5) // query sequences from file1
+        query_index(&file1_path, test_dir, &query_results_path, false, false, 0.5, false) // query sequences from file1
             .expect("Failed to query sequences");
 
         
@@ -3627,7 +3648,7 @@ mod tests {
         fs::rename("test_files_bq3/partitioned_bloom_filters_c0_p3.txt", "test_files_bq3/partitioned_bloom_filters_p3.txt");
         */
         let query_results_path = format!("{}/query_results.csv", index_dir);
-        query_index(&file1_path, test_dir, &query_results_path, false, false, 0.5) // query sequences from file1
+        query_index(&file1_path, test_dir, &query_results_path, false, false, 0.5, false) // query sequences from file1
             .expect("Failed to query sequences");
 
        
@@ -3727,7 +3748,7 @@ mod tests {
         fs::rename("test_files_bq3/partitioned_bloom_filters_c0_p3.txt", "test_files_bq3/partitioned_bloom_filters_p3.txt");
         */
         let query_results_path = format!("{}/query_results.csv", index_dir);
-        query_index(&file1_path, test_dir, &query_results_path, false, false, 0.5) // query sequences from file1
+        query_index(&file1_path, test_dir, &query_results_path, false, false, 0.5, false) // query sequences from file1
             .expect("Failed to query sequences");
 
        
@@ -4035,7 +4056,7 @@ mod tests {
         .expect("Failed to build index");
         let query_results_path = format!("{}/query_results.csv", index_dir);
 
-        query_index(&file1_path, test_dir, &query_results_path, false, false, 0.5)
+        query_index(&file1_path, test_dir, &query_results_path, false, false, 0.5, false)
             .expect("Failed to query sequences");
 
         let mut reader =
@@ -4199,7 +4220,7 @@ mod tests {
         )
         .expect("Failed to build index");
         let query_results_path = format!("{}/query_results.csv", index_dir);
-        query_index(&file6_path, &test_dir, &query_results_path, false, false, 0.5)
+        query_index(&file6_path, &test_dir, &query_results_path, false, false, 0.5, false)
             .expect("Failed to query sequences");
 
        
@@ -4324,7 +4345,7 @@ mod tests {
         .expect("Failed to build index");
         let query_results_path = format!("{}/query_results.csv", index_dir);
 
-        query_index(&file5_path, test_dir, &query_results_path, false, false, 0.5)
+        query_index(&file5_path, test_dir, &query_results_path, false, false, 0.5, false)
             .expect("Failed to query sequences");
 
         let mut reader =
@@ -4453,7 +4474,7 @@ mod tests {
         )
         .expect("Failed to build index");
         let query_results_path = format!("{}/query_results.csv", index_dir);
-        query_index(&file5_path, test_dir, &query_results_path, false, false, 0.5)
+        query_index(&file5_path, test_dir, &query_results_path, false, false, 0.5, false)
             .expect("Failed to query sequences");
 
         
@@ -4665,7 +4686,7 @@ mod tests {
         .expect("Failed to build index");
         let query_results_path = format!("{}/query_results.csv", index_dir);
 
-        query_index(&file2_path, &test_dir, &query_results_path, false, false, 0.5)
+        query_index(&file2_path, &test_dir, &query_results_path, false, false, 0.5, false)
             .expect("Failed to query sequences");
 
         let mut reader =
@@ -4756,6 +4777,7 @@ mod tests {
             true, //  graph coloring
             false, 
             0.5,
+            false
         )
         .expect("Failed to color graph");
 
