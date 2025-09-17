@@ -31,6 +31,7 @@ pub struct Cli {
     // pub help: bool,
 }
 
+// TODO name the modes
 #[derive(Subcommand, Debug)]
 pub enum Command {
     /// Index file
@@ -126,6 +127,10 @@ pub struct QueryArgs {
     /// bool for normalizing abundances based on sequencing depth estimates (default: false)
     #[arg(short = 'n', long = "normalize", default_value_t = false)]
     pub normalize: bool,
+
+    /// Print abundace per k-mer, like REINDEER 1? (default: false)
+    #[arg(long, default_value_t = false)]
+    pub rd1_like: bool,
 
     /// Minimum proportion of kmers that must be present in the query sequence in order to propose an abundance value, 0 < C <= 1 (default: 0.5)
     #[arg(

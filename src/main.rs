@@ -120,6 +120,7 @@ fn main() -> io::Result<()> {
             let color_graph = args.color;
             let coverage = args.coverage;
             let normalize_option = args.normalize;
+            let rd1_like = args.rd1_like;
 
             println!("Index directory: {}", index_dir);
 
@@ -136,6 +137,7 @@ fn main() -> io::Result<()> {
                 color_graph,
                 normalize_option,
                 coverage,
+                rd1_like,
             )
             .expect("Failed to query sequences");
 
