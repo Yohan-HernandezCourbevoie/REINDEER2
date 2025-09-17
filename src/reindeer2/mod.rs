@@ -8,8 +8,6 @@ use std::fs::{self, File};
 use std::path::Path;
 use std::time::Instant;
 use std::sync::{Arc, Mutex, atomic};
-use std::error::Error;
-
 use flate2::read::GzDecoder;
 use rayon::prelude::*;
 use bio::io::fasta;
@@ -132,7 +130,7 @@ pub fn build(
                                 }
                             };
 
-                            if let Err(e) = process_fasta_file(
+                            if let Err(e) = index::process_fasta_file(
                                 path,
                                 &maybe_dense_indexes,
                                 &bloom_filters,
@@ -256,7 +254,7 @@ pub fn query(
     coverage: f32,
     rd1_like:bool
 ) -> io::Result<()> {
-    let query_results = query_sequences_in_batches(
+    let query_results = query::query_sequences_in_batches(
         fasta_file,
         bf_dir,
         self.k,
@@ -279,8 +277,33 @@ pub fn query(
     Ok(query_results)
 }
 }
-// --- MAIN FUNCTION ---
 
+
+fn process_fasta_in_batches<R: io::BufRead>(
+    reader: R,
+    batch_size: usize,
+    mut process_batch: impl FnMut(Vec<fasta::Record>),
+) -> io::Result<()> {
+    let fasta_reader = fasta::Reader::new(reader);
+    let mut batch = Vec::with_capacity(batch_size);
+
+    for result in fasta_reader.records() {
+        let record = result?;
+        batch.push(record);
+
+        if batch.len() >= batch_size {
+            process_batch(batch);
+            batch = Vec::with_capacity(batch_size); // reset
+        }
+    }
+
+    // final batch
+    if !batch.is_empty() {
+        process_batch(batch);
+    }
+
+    Ok(())
+}
 
 pub fn build_index_muset(
     unitigs_file: String, 
@@ -500,598 +523,9 @@ pub fn build_index_muset(
 }
 
 
-// --- INDEX FUNCTIONS ---
-
-fn process_fasta_file(
-    path: &str,
-    maybe_dense_indexes: &Option<Arc<Vec<Mutex<HashMap<u64, Vec<u8>>>>>>,
-    bloom_filters: &Arc<Vec<Mutex<RoaringBitmap>>>,
-    k: usize,
-    m: usize,
-    partitioned_bf_size: usize,
-    partition_number: usize,
-    color_number: usize,
-    color_number_global: usize,
-    threshold: usize,
-    abundance_number: usize,
-    abundance_max: u16,
-    path_num: usize,
-    path_num_global: usize,
-    base: f64,
-    chunk_index: usize,
-    header_type: HeaderType,
-    max_map_size: usize, // Maximum size for the hash map
-    total_kmers: &atomic::AtomicU64,
-    atomic_dense_kmers_count: &atomic::AtomicU64,
-    atomic_sparse_kmers_count: &atomic::AtomicU64,
-    kmer_counts_vector: &Arc<Mutex<Vec<usize>>>,
-) -> io::Result<()> {
-    let atomic_record_count = atomic::AtomicU64::new(0);
-    let mut kmer_count: usize = 0;
-    let reader = read_file(path)?;
-
-    // this part fills the BFs per partition
-    fn flush_map(partition_kmers: &mut HashMap<usize, Vec<(u64, u16, usize, usize)>>, partitioned_bf_size: usize, color_number: usize, abundance_number: usize, bloom_filters: &Arc<Vec<Mutex<RoaringBitmap>>>) {
-        for (partition_index, kmers) in partition_kmers.drain() {// iterates and empties the hash map when needed
-            
-
-            let mut kmer_hashes_to_update = Vec::with_capacity(kmers.len());
-            for (kmer_hash, log_abundance, path_num, _chunk_index) in kmers { // select the bit in the BF
-                let position = compute_location_filter(
-                    kmer_hash,
-                    partitioned_bf_size,
-                    color_number,
-                    path_num,
-                    abundance_number,
-                    log_abundance,
-                );
-                kmer_hashes_to_update.push(position as u32); // accumulate bits to be modified for this bf
-            }
-            let mut bloom_filter = bloom_filters[partition_index] // select the correct BF for the given partition
-                .lock()
-                .expect("Failed to lock bloom filter");
-            // TODO this takes a lot of time
-            bloom_filter.extend(kmer_hashes_to_update);
-        }
-    }
-
-    process_fasta_in_batches(reader, 10_000, |batch| { // read file 10_000 lines at once
-        let mut partition_kmers: HashMap<usize, Vec<(u64, u16, usize, usize)>> = HashMap::new(); // keep kmer info to fill BFs
-
-        // this part reads the batches of sequences and records kmers info until the structure is too large in memory
-        for record in batch {
-            let processed = process_fasta_record(Ok(record), base, abundance_max, &header_type); //read fasta
-            match processed {
-                Ok((seq, log_abundance, count_value)) => {
-                    if log_abundance != 666 { // case where the abundance value of the kmers in the unitigs file was < 1
-                        atomic_record_count.fetch_add(1, atomic::Ordering::Relaxed);
-                        let seq_str = std::str::from_utf8(&seq).expect("Invalid UTF-8 sequence");
-
-                        for (kmer_hash, minimizer) in kmer_minimizers_seq_level(seq_str.as_bytes(), k, m) {
-                            kmer_count += count_value as usize;
-                            //for (kmer_hash, (minimizer, _)) in nt_hash_iterator.zip(min_iter) { // iterate on both minimizer and hash for each kmer
-                            let partition_index = (minimizer % (partition_number as u64)) as usize;
-                            total_kmers.fetch_add(1, atomic::Ordering::Relaxed);
-
-                            match maybe_dense_indexes {
-                                Some(dense_indexes) => {
-                                    let mut dense_index = dense_indexes[partition_index] 
-                                        .lock()
-                                        .expect("Failed to lock the dense index");
-        
-                                    // write in the dense index if the k-mer can be dense, else, put it in the hashmap for sparses
-                                    if dense_index.contains_key(&kmer_hash) {
-                                        // update the vector with the right abundance
-                                        if let Some(abundance_vector) = dense_index.get_mut(&kmer_hash) {
-                                            abundance_vector[path_num_global] = (log_abundance + 1) as u8;
-                                        }
-                                        atomic_dense_kmers_count.fetch_add(1, atomic::Ordering::Relaxed);
-                                    } else if path_num_global <= threshold {
-                                        // create a new abundance vector for the k-mer
-                                        let mut abundance_vector: Vec<u8> = Vec::with_capacity(color_number_global);
-                                        abundance_vector.resize(color_number_global, 0);
-                                        abundance_vector[path_num_global] = (log_abundance + 1) as u8;
-                                        dense_index.insert(kmer_hash, abundance_vector);
-                                        atomic_dense_kmers_count.fetch_add(1, atomic::Ordering::Relaxed);
-                                    } else {
-                                        // write the k-mer in a file of sparse k-mer from this color
-                                        partition_kmers // separate the kmers per partition
-                                            .entry(partition_index)
-                                            .or_default()
-                                            .push((
-                                                kmer_hash,
-                                                log_abundance,
-                                                path_num,
-                                                chunk_index,
-                                            ));
-                                        atomic_sparse_kmers_count.fetch_add(1, atomic::Ordering::Relaxed);
-                                    }
-                                },
-                                None => {
-                                    // repeated part
-                                    partition_kmers // separate the kmers per partition
-                                        .entry(partition_index)
-                                        .or_default()
-                                        .push((
-                                            kmer_hash,
-                                            log_abundance,
-                                            path_num,
-                                            chunk_index,
-                                        ));
-                                    atomic_sparse_kmers_count.fetch_add(1, atomic::Ordering::Relaxed);
-                                }
-                            }
-
-                            
-                            if partition_kmers.len() >= max_map_size {
-                                flush_map(&mut partition_kmers, partitioned_bf_size, color_number, abundance_number, bloom_filters);
-                            }
-                        }
-                    }
-                }
-                Err(e) => eprintln!("Error processing fasta: {}", e),
-            }
-        }
-        // Flush remaining k-mers in the map by calling the earlier closure
-        flush_map(&mut partition_kmers, partitioned_bf_size, color_number, abundance_number, bloom_filters);
-    })?;
-    // flush the dense indexes from sparse k-mers after each file *in the first chunk*
-    if chunk_index == 0 {
-        if let Some(dense_indexes) = maybe_dense_indexes {
-            let mut partition_kmers: HashMap<usize, Vec<(u64, u16, usize, usize)>> = HashMap::new(); // keep kmer info to fill BFs
-            for (partition_index, hashmap) in dense_indexes.iter().enumerate() {
-                let mut kmers_to_remove: Vec<u64> = Vec::new();
-                let mut dense_index = hashmap // select the correct BF for the given partition
-                    .lock()
-                    .expect("Failed to lock bloom filter");
-                for (kmer_hash, abundance_vector) in dense_index.iter() {
-                    let number_of_zeros = count_zeros(abundance_vector, path_num).expect("Unexpected behaviour in the dense index access");
-                    if number_of_zeros > threshold {
-                        let color_count = path_num - number_of_zeros + 1;
-                        atomic_dense_kmers_count.fetch_sub(color_count as u64, atomic::Ordering::Relaxed);
-                        atomic_sparse_kmers_count.fetch_add(color_count as u64, atomic::Ordering::Relaxed);
-                        kmers_to_remove.push(*kmer_hash);
-                        for (path_index, log_abundance) in abundance_vector.iter().take(path_num).enumerate() {
-                            if *log_abundance > 0 {
-                                partition_kmers // separate the kmers per partition
-                                    .entry(partition_index)
-                                    .or_default()
-                                    .push((
-                                        *kmer_hash,
-                                        (*log_abundance - 1) as u16,
-                                        path_index,
-                                        chunk_index,
-                                    ));
-                            }
-                        }
-                        if partition_kmers.len() >= max_map_size {
-                            flush_map(&mut partition_kmers, partitioned_bf_size, color_number, abundance_number, bloom_filters);
-                        }
-                    }
-                }
-                kmers_to_remove.into_iter().for_each(|key| {dense_index.remove(&key);});
-                dense_index.shrink_to_fit();
-            }
-            // Flush remaining k-mers in the map by calling the earlier closure
-flush_map(&mut partition_kmers, partitioned_bf_size, color_number, abundance_number, bloom_filters);        }
-    }
-    kmer_counts_vector 
-        .lock()
-        .expect("Failed to lock the counts vector")
-        [path_num_global] = kmer_count; // add the kmer count
-    Ok(())
-}
-
-fn process_fasta_in_batches<R: io::BufRead>(
-    reader: R,
-    batch_size: usize,
-    mut process_batch: impl FnMut(Vec<fasta::Record>),
-) -> io::Result<()> {
-    let fasta_reader = fasta::Reader::new(reader);
-    let mut batch = Vec::with_capacity(batch_size);
-
-    for result in fasta_reader.records() {
-        let record = result?; 
-        batch.push(record);
-
-        if batch.len() >= batch_size {
-            process_batch(batch);
-            batch = Vec::with_capacity(batch_size); // reset
-        }
-    }
-
-    // final batch
-    if !batch.is_empty() {
-        process_batch(batch);
-    }
-
-    Ok(())
-}
-
-fn process_fasta_record (
-    result: Result<fasta::Record, io::Error>,
-    base: f64,
-    abundance_max: u16,
-    header_type: &HeaderType, 
-) -> Result<(Vec<u8>, u16, u16), io::Error> {
-    let record = result.expect("error during fasta parsing");
-    let header_option = record.desc();
-    let header = header_option.unwrap_or("no header found");
-    let count_value = match extract_count(header, header_type) {
-        Ok(count_value) => count_value,
-        Err(_) => return Err(io::Error::other("count not found!")),
-    };
-
-    // compute the lossy abundance value
-    let log_abundance = if count_value > 0 {
-        compute_log_abundance(count_value, base, abundance_max)
-    } else {
-        666
-    };
-    let seq = record.seq().to_vec();
-    Ok((seq, log_abundance, count_value))
-}
-
-fn count_zeros(
-    abundance_vector: &[u8],
-    max_index: usize,
-) -> io::Result<usize> {
-    Ok(abundance_vector
-        .iter()
-        .take(max_index+1)
-        .filter(|&&val| val == 0)
-        .count())
-}
 
 
 
-// === QUERY ===
-
-// --- MAIN FUNCTION ---
-
-
-
-
-// --- QUERY FUNCTIONS ---
-
-/// Builds a map from partition_index -> Vec of (sequence_id, kmer_hash).
-fn build_partitions_kmers(batch: Vec<fasta::Record>, k:usize, m: usize,partition_number: u64) -> HashMap<usize, Vec<(String, u64)>> {
-        let mut partition_kmers: HashMap<usize, Vec<(String, u64)>> = HashMap::new();
-
-        // Build all partition-kmers upfront
-        for record in batch {
-            let id = record.id();
-            let desc = record.desc().unwrap_or("");
-            // Build the header string only once per record
-            let full_header = format!(">{} {}", id, desc).trim().to_string();
-            // let full_header = format!(">{}", id).trim().to_string();
-
-            let seq_str = std::str::from_utf8(record.seq())
-                .map_err(|_| {
-                    io::Error::new(io::ErrorKind::InvalidData, "Invalid UTF-8 sequence")
-                })
-                .unwrap(); // or handle error gracefully
-
-            // k-mer hash + minimizer
-            //let nt_hash_iterator = NtHashIterator::new(seq_str.as_bytes(), k).unwrap(); 
-            //let min_iter = MinimizerBuilder::<u64>::new()
-            //    .minimizer_size(m)
-            //    .width((k - m + 1).try_into().unwrap())
-            //    .iter(seq_str.as_bytes());
-
-            for (kmer_hash, minimizer) in kmer_minimizers_seq_level(seq_str.as_bytes(), k, m) {
-                //for (kmer_hash, (minimizer, _position)) in nt_hash_iterator.zip(min_iter) {
-                let partition_index = (minimizer % partition_number) as usize;
-                partition_kmers
-                    .entry(partition_index)
-                    .or_default()
-                    .push((full_header.clone(), kmer_hash));
-            }
-        }
-        partition_kmers
-}
-
-// TODO rename
-fn fold_into_hashmap(mut local_results: HashMap::<String, Vec<Vec<u16>>>,
-     partition_index:usize,
-    kmers:Vec<(String, u64)>,
-    base: f64,
-    bf_dir: &str,
-    bf_size: u64,
-    partition_number: usize,
-    color_number: usize,
-    abundance_number: usize,
-    is_dense: bool) -> HashMap::<String, Vec<Vec<u16>>> {
-                    // Load the partition's Bloom filter
-                    let path_bf = format!("{}/partition_bloom_filters_p{}.txt",bf_dir, partition_index);
-                    let maybe_bf = load_bloom_filter(&path_bf);
-
-                    if let Ok((bitmap, _maybe_aux_data)) = maybe_bf {
-                        let hashmap: HashMap<u64, Box<Vec<u8>>> = if is_dense {
-                            let path_dense_index = format!("{}/partition_dense_index_p{}.txt", bf_dir, partition_index);
-                            load_dense_index(&path_dense_index).expect(&format!("Failed to load dense index for partition {}", partition_index))
-                        } else {
-                            HashMap::new()
-                        };
-                        //  For each k-mer in this partition
-                        for (sequence_id, kmer_hash) in kmers {
-                            let color_abundances = 
-                                if hashmap.contains_key(&kmer_hash) {
-                                    let log_abundance_vector = hashmap.get(&kmer_hash).expect("failed to read the hashmap");
-                                    let mut color_abundances = vec![Vec::new(); color_number];
-                                    for (color, log_abundance) in log_abundance_vector.iter().enumerate() {
-                                            if *log_abundance == 0 {
-                                                // TODO discuss weird value
-                                                color_abundances[color].push(666);
-                                            } else {
-                                                color_abundances[color].push((*log_abundance - 1) as usize);
-                                            }
-                                        };
-                                    color_abundances
-                                } else {
-                                    // Compute base position
-                                    let base_position = compute_base_position(
-                                        kmer_hash,
-                                        (bf_size as usize) / partition_number,
-                                        color_number,
-                                        abundance_number,
-                                    );
-        
-                                    // color_abundances[color] -> Vec of (log) counts for that color
-                                    let mut color_abundances = vec![Vec::new(); color_number];
-                                    update_color_abundances(
-                                        &bitmap,
-                                        base_position,
-                                        color_number,
-                                        abundance_number,
-                                        &mut color_abundances,
-                                    );
-                                    color_abundances
-                                };
-
-                            // Convert log abundances to approximate integer counts
-                            let approximate_counts: Vec<Vec<u16>> = color_abundances
-                                .into_iter()
-                                .map(|abunds_for_color| {
-                                    abunds_for_color
-                                        .into_iter()
-                                        .map(|log_abund| if log_abund == 666 {
-                                                0
-                                            } else {
-                                                approximate_value(log_abund, base)
-                                            })
-                                        .collect()
-                                })
-                                .collect();
-
-                            // Accumulate results in local_results
-                            let entry = local_results
-                                .entry(sequence_id.clone())
-                                .or_insert_with(|| vec![Vec::new(); color_number]);
-                            for (color_idx, approx_values) in approximate_counts.into_iter().enumerate() {
-                                entry[color_idx].push(*approx_values.iter().min().expect("An abundance vector returned empty"));
-                            }
-                        }
-                        
-                    } else {
-                        eprintln!("Failed to load Bloom filter for partition {}", partition_index);
-                    }
-
-                    local_results
-}
-
-fn query_sequences_in_batches(
-    fasta_file: &str,
-    bf_dir: &str,
-    k: usize,
-    m: usize,
-    bf_size: u64,
-    partition_number: usize,
-    color_number: usize,
-    abundance_number: usize,
-    abundance_max: u16,
-    batch_size: usize,
-    output_file: &str,
-    color_graph: bool,
-    dense_option: bool,
-    normalize_option: bool,
-    coverage: f32,
-    rd1_like:bool,
-) -> io::Result<()> {
-    let reader = read_file(fasta_file)?;
-    let mut writer = BufWriter::new(File::create(output_file)?);
-        // write the headr of the output csv file
-    writeln!(writer, "header,file,abundance")?;
-    let base = compute_base(abundance_number, abundance_max);
-
-
-
-    // Process FASTA in chunks of `batch_size` records
-    process_fasta_in_batches(reader, batch_size, |batch| {
-        let partition_kmers = build_partitions_kmers(batch ,k, m, partition_number as u64);
-
-        // --- PARALLEL PHASE: process each partition's k-mers in parallel ---
-        // This will store final results for *all* sequences in this batch.
-        // Key: sequence header; Value: vector of vector of abundances
-        let sequence_results = partition_kmers
-            .into_par_iter()
-            // 1) Create a local HashMap in each thread
-            .fold(
-                HashMap::<String, Vec<Vec<u16>>>::new,
-                |local_results, (partition_index, kmers)| fold_into_hashmap(local_results, partition_index,kmers, base, bf_dir, bf_size, partition_number, color_number, abundance_number, dense_option)
-            )
-            // 2) Reduce all local HashMaps into a single HashMap
-            .reduce(
-                HashMap::<String, Vec<Vec<u16>>>::new,
-                merge_results,
-            );
-
-        // Now `sequence_results` has the combined data for this batch.
-        // Either color a graph or compute medians and output them.
-        if color_graph {
-            // If your graph coloring wants to read from `sequence_results`:
-            // Flush the writer to separate batch outputs if needed
-            let _ = writer.flush();
-            let _ = graph_coloring(
-                fasta_file,
-                batch_size,
-                output_file,
-                &sequence_results
-            );
-        } else {
-            let kmer_counts = if normalize_option {
-                load_kmer_counts_vector(bf_dir).expect("Failed to load from disk the kmer counts vector")
-            } else {
-                vec![color_number, 0]// TODO bizarre
-            };
-            // Compute medians for each sequence and each color, then write them out
-            for (seq_header, color_vectors) in &sequence_results {
-                for (color_idx, abund_values) in color_vectors.iter().enumerate() {
-                    if !abund_values.is_empty() {
-                        let mut zeros_count = 0;
-                        let mut non_zero_values: Vec<u16> = Vec::new();
-                        abund_values.iter().for_each(|value|
-                            if *value == 0 {
-                                zeros_count += 1;
-                            } else {
-                                non_zero_values.push(*value);
-                            }
-                        );
-                        if !non_zero_values.is_empty() && (((zeros_count as f32) / (abund_values.len() as f32)) < coverage) {
-                            let mut abund_sorted = non_zero_values.clone();
-                            abund_sorted.sort_unstable();
-                            let median = 
-                                if abund_sorted.iter().all(|&x| x == 0) {
-                                    0
-                                } else if abund_sorted.len() == 1 {
-                                    abund_sorted[0]
-                                } else {
-                                    let mid = abund_sorted.len() / 2;
-                                    if abund_sorted.len() % 2 == 1 {
-                                        abund_sorted[mid]
-                                    } else {
-                                        (abund_sorted[mid - 1] + abund_sorted[mid]) / 2
-                                    }
-                                };
-                            if median > 0 {
-                                let median = if normalize_option {
-                                    median as f64 / kmer_counts[color_idx] as f64 * 1_000_000 as f64
-                                } else {
-                                    median as f64
-                                };
-                                let _ = writeln!(
-                                    writer,
-                                    "{},{},{}",
-                                    seq_header,
-                                    color_idx,
-                                    median
-                                );
-                            }
-                        }
-                    }
-                }
-            }
-            let _ = writer.flush();
-        }
-    })?;
-    
-    Ok(())
-}
-
-fn merge_results(
-    mut acc: HashMap<String, Vec<Vec<u16>>>,
-    local: HashMap<String, Vec<Vec<u16>>>
-) -> HashMap<String, Vec<Vec<u16>>> {
-    for (seq_id, color_vecs) in local {
-        let entry = acc
-            .entry(seq_id)
-            .or_insert_with(|| vec![Vec::new(); color_vecs.len()]);
-
-        // Merge each color's abundances
-        for (color_idx, local_abunds) in color_vecs.iter().enumerate() {
-            entry[color_idx].extend(local_abunds.iter().copied());
-        }
-    }
-    acc
-}
-
-// rewrites a bcalm-like graph so that headers have abund info (one of the possible query operations)
-pub fn graph_coloring(
-    fasta_file: &str,
-    batch_size: usize,
-    output_file: &str,
-    sequence_results: &HashMap<String, Vec<Vec<u16>>>,
-) -> Result<(), Box<dyn Error>> {
-    let reader = read_file(fasta_file)?; // your existing read_file
-    let mut writer = BufWriter::new(File::create(output_file)?);
-
-    process_fasta_in_batches(reader, batch_size, |batch| {
-        for record in batch {
-            let id = record.id();
-            let desc = record.desc().unwrap_or("");
-            let full_header = format!(">{} {}", id, desc).trim().to_string();
-            let seq_str = std::str::from_utf8(record.seq())
-                .expect("Invalid UTF-8 sequence");
-
-            // If the sequence is in sequence_results, we fetch the vec of vec
-            if let Some(color_vectors) = sequence_results.get(&full_header) {
-                // color_vectors is a Vec<Vec<u16>>. Each index = a color,
-                // each inner Vec<u16> = all abundance values for that color
-                // if no data, just write the original header
-                if color_vectors.iter().all(|vals| vals.is_empty()) {
-                    writeln!(writer, "{}", full_header).ok();
-                    writeln!(writer, "{}", seq_str).ok();
-                    continue;
-                }
-                // otherwise, build an augmented header
-                let mut header_parts = Vec::with_capacity(color_vectors.len() + 1);
-                header_parts.push(full_header.clone());
-
-                // for each color, we do the median of all values:
-                for (color_idx, vals) in color_vectors.iter().enumerate() {
-                    if vals.is_empty() {
-                        // skip color if it has no data
-                        continue;
-                    }
-                    // compute median
-                    let mut abund_sorted = vals.clone();
-                        abund_sorted.sort_unstable();
-                        let median = 
-                            if abund_sorted.iter().all(|&x| x == 0) {
-                                0
-                            } else if abund_sorted.len() == 1 {
-                                abund_sorted[0]
-                            } else {
-                                let mid = abund_sorted.len() / 2;
-                                if abund_sorted.len() % 2 == 1 {
-                                    abund_sorted[mid]
-                                } else {
-                                    (abund_sorted[mid - 1] + abund_sorted[mid]) / 2
-                                }
-                            };
-
-                    // push e.g. "col:1:12"
-                    header_parts.push(format!("col:{}:{}", color_idx, median));
-                }
-
-                // join info like
-                // ">seq1 col:0:12 col:1:29"
-                let new_header = header_parts.join(" ");
-                // TODO discuss why ok() here ? pretty sure it has no effect)
-                writeln!(writer, "{}", new_header).ok();
-                writeln!(writer, "{}", seq_str).ok();
-
-            } else {
-                //if not found in the map, writing the original
-                writeln!(writer, "{}", full_header).ok();
-                writeln!(writer, "{}", seq_str).ok();
-            }
-        }
-    })?;
-
-    writer.flush()?; 
-    Ok(())
-}
 
 
 
@@ -1727,16 +1161,7 @@ fn read_partition_from_csv(bf_dir: &str, output_csv: &str) -> io::Result<(usize,
     Ok((k, m, bf_size, partition_number, color_number, abundance_number, abundance_max, dense_option))
 }
 
-fn load_kmer_counts_vector(dir_path: &str) -> io::Result<Vec<usize>> {
-    let mut file = File::open(Path::new(dir_path).join("kmer_counts_per_color.txt"))?;
 
-    // Read the rest of the file to deserialize the hashmap
-    let mut buffer = Vec::new();
-    file.read_to_end(&mut buffer)?;
-    let counts_vector = bincode::deserialize_from(&buffer[..])
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "Failed to deserialize the counts vector"))?;
-    Ok(counts_vector)
-}
 
 
 // --- FOF MANAGEMENT ---
@@ -2474,24 +1899,7 @@ mod tests {
   
 
 
-    #[test]
-    fn test_process_fasta_record() {
-        let fasta_input = ">0 ka:f:3.3   L:+:5:+ L:+:5392806:+  L:-:1:-\nAGGAGTAGATACCAGAGATAACGATACAGGTGCGA\n";
 
-        let reader = fasta::Reader::new(Cursor::new(fasta_input));
-        let result = reader.records().next().expect("failed to read record");
-
-        let base = 2.0; 
-        let processed = process_fasta_record(result, base, 65535, &HeaderType::Logan);
-
-        assert!(processed.is_ok(), "processing failed");
-        let (seq, log_abundance, _) = processed.unwrap();
-        let expected_seq = b"AGGAGTAGATACCAGAGATAACGATACAGGTGCGA".to_vec();
-        let expected_log_abundance = 1; // log2(3) rounds to 1
-
-        assert_eq!(seq, expected_seq, "sequence mismatch");
-        assert_eq!(log_abundance, expected_log_abundance, "log abundance mismatch");
-    }
    
     
 /*
