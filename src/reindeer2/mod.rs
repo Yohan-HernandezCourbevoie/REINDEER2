@@ -1,283 +1,320 @@
-mod query;
 mod index;
+mod query;
 
-use std::collections::{HashMap, VecDeque};
-use std::io::{self, BufRead, BufReader,Write, BufWriter,Read};
-use std::panic;
-use std::fs::{self, File};
-use std::path::Path;
-use std::time::Instant;
-use std::sync::{Arc, Mutex, atomic};
-use flate2::read::GzDecoder;
-use rayon::prelude::*;
 use bio::io::fasta;
-use zstd::stream::decode_all;
-use roaring::RoaringBitmap;
-use nthash::NtHashIterator;
 use csv::Writer;
-use thousands::Separable;
+use flate2::read::GzDecoder;
+use nthash::NtHashIterator;
 use num_format::{Locale, ToFormattedString};
-
-
+use rayon::prelude::*;
+use roaring::RoaringBitmap;
+use std::collections::{HashMap, VecDeque};
+use std::fs::{self, File};
+use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
+use std::panic;
+use std::path::Path;
+use std::sync::{atomic, Arc, Mutex};
+use std::time::Instant;
+use thousands::Separable;
+use zstd::stream::decode_all;
 
 // === INDEX ===
 
 pub struct Reindeer2 {
     bf_size: u64,
     partition_number: usize,
-    k:usize,
-    m:usize,
-    nb_color:usize,
-    abundance_number:usize,
-    abundance_max:u16,
-    dense_option: bool
+    k: usize,
+    m: usize,
+    nb_color: usize,
+    abundance_number: usize,
+    abundance_max: u16,
+    dense_option: bool,
 }
 
-
 impl Reindeer2 {
-    pub fn new(bf_size: u64,
-    partition_number: usize,     k:usize,
-    m:usize, nb_color:usize,    abundance_number:usize,
-    abundance_max:u16,
-    // TODO rename is_dense
-     dense_option: bool) -> Self {
-        Self { bf_size, partition_number, k, m, nb_color, abundance_max, abundance_number , dense_option}
-
+    pub fn new(
+        bf_size: u64,
+        partition_number: usize,
+        k: usize,
+        m: usize,
+        nb_color: usize,
+        abundance_number: usize,
+        abundance_max: u16,
+        // TODO rename is_dense
+        dense_option: bool,
+    ) -> Self {
+        Self {
+            bf_size,
+            partition_number,
+            k,
+            m,
+            nb_color,
+            abundance_max,
+            abundance_number,
+            dense_option,
+        }
     }
 
     pub fn from_csv(bf_dir: &str) -> io::Result<Self> {
         //load index metadata from CSV
         println!("Loaded index metadata for query.");
-        let (k, m, bf_size, partition_number, nb_color, abundance_number, abundance_max, dense_option) =
-        read_partition_from_csv(bf_dir, "index_info.csv")?;
-        Ok(Self { bf_size, partition_number ,k, m, nb_color,     abundance_number,
-    abundance_max, dense_option})
+        let (
+            k,
+            m,
+            bf_size,
+            partition_number,
+            nb_color,
+            abundance_number,
+            abundance_max,
+            dense_option,
+        ) = read_partition_from_csv(bf_dir, "index_info.csv")?;
+        Ok(Self {
+            bf_size,
+            partition_number,
+            k,
+            m,
+            nb_color,
+            abundance_number,
+            abundance_max,
+            dense_option,
+        })
     }
 
+    pub fn build(
+        &self,
+        file_paths: Vec<String>,
+        abundance_number: usize,
+        abundance_max: u16,
+        output_dir: &str,
+        dense_option: bool,
+        threshold: usize,
+        debug: bool,
+    ) -> io::Result<(Vec<String>, String)> {
+        let mut total_kmers = atomic::AtomicU64::new(0);
+        let mut atomic_dense_kmers_count = atomic::AtomicU64::new(0);
+        let mut atomic_sparse_kmers_count = atomic::AtomicU64::new(0);
+        let mut atomic_sparse_one_seen = atomic::AtomicU64::new(0);
+        let mut atomic_sparse_fp_seen = atomic::AtomicU64::new(0);
+        let kmer_counts_vector: Arc<Mutex<Vec<usize>>> =
+            Arc::new(Mutex::new(vec![0; self.nb_color]));
+        let (chunks, color_chunks) = split_fof(&file_paths)?;
+        let base = compute_base(abundance_number, abundance_max);
+        if debug {
+            println!("Using log base {}", base);
+        }
+        let partitioned_bf_size = (self.bf_size as usize) / self.partition_number;
+        if debug {
+            println!("In debug mode... the tool may take (much) longer than usual.");
+        }
+        println!("Initializing Bloom filter slices...");
 
-pub fn build(
-    &self,
-    file_paths: Vec<String>, 
-    abundance_number: usize,
-    abundance_max: u16,
-    output_dir: &str,
-    dense_option: bool,
-    threshold: usize,
-    debug: bool,
-) -> io::Result<(Vec<String>, String)> {
-    let mut total_kmers = atomic::AtomicU64::new(0);
-    let mut atomic_dense_kmers_count = atomic::AtomicU64::new(0);
-    let mut atomic_sparse_kmers_count = atomic::AtomicU64::new(0);
-    let mut atomic_sparse_one_seen = atomic::AtomicU64::new(0);
-    let mut atomic_sparse_fp_seen = atomic::AtomicU64::new(0);
-    let kmer_counts_vector: Arc<Mutex<Vec<usize>>> = Arc::new(Mutex::new(vec![0; self.nb_color]));
-    let (chunks, color_chunks) = split_fof(&file_paths)?;
-    let base = compute_base(abundance_number, abundance_max);
-    if debug {
-        println!("Using log base {}", base);
-    }
-    let partitioned_bf_size = (self.bf_size as usize) / self.partition_number;
-    if debug {
-        println!("In debug mode... the tool may take (much) longer than usual.");
-    }
-    println!("Initializing Bloom filter slices...");
+        let (_, dir_path) = create_dir_and_files(self.partition_number, output_dir)?;
 
-    let (_, dir_path) = create_dir_and_files(self.partition_number, output_dir)?;
-
-    // Shared data structures protected by Mutex for safe parallel access
-    let maybe_dense_indexes: Option<Arc<Vec<Mutex<HashMap<u64, Vec<u8>>>>>> = 
-        if dense_option {
+        // Shared data structures protected by Mutex for safe parallel access
+        let maybe_dense_indexes: Option<Arc<Vec<Mutex<HashMap<u64, Vec<u8>>>>>> = if dense_option {
             Some(Arc::new(
-            (0..self.partition_number)
-                .map(|_| Mutex::new(HashMap::with_capacity(200_000_000/self.partition_number)))
-                .collect::<Vec<_>>()
+                (0..self.partition_number)
+                    .map(|_| {
+                        Mutex::new(HashMap::with_capacity(200_000_000 / self.partition_number))
+                    })
+                    .collect::<Vec<_>>(),
             ))
         } else {
             None
         };
 
-    let bloom_filters = Arc::new(
-        (0..self.partition_number)
-            .map(|_| Mutex::new(RoaringBitmap::new()))
-            .collect::<Vec<_>>()
-    );
+        let bloom_filters = Arc::new(
+            (0..self.partition_number)
+                .map(|_| Mutex::new(RoaringBitmap::new()))
+                .collect::<Vec<_>>(),
+        );
 
-    for (chunk_i, chunk) in chunks.iter().enumerate() {
-        // For each file in this chunk, process in *parallel* (soon)
-        // TODO build the appropriate iterator to parallelize (or not) if dense is set
-        chunk.par_iter().enumerate().for_each(|(path_num, path)| {
-            match std::fs::metadata(path) {
-                Ok(metadata) => {
-                    if metadata.is_file() {
-                        let reader = match read_file(path) {
-                            Ok(r) => r,
-                            Err(e) => {
-                                eprintln!("Failed to open file {}: {}", path, e);
-                                return;
-                            }
-                        };
-                        let fasta_reader = fasta::Reader::new(reader);
-                        let first_record = fasta_reader.records().next();
-
-                        if let Some(Ok(record)) = first_record {
-                            let header_option = record.desc();
-                            let header = header_option.unwrap_or("no header found");
-                            let h_type = match determine_header_type(header) {
-                                Ok(ht) => ht,
+        for (chunk_i, chunk) in chunks.iter().enumerate() {
+            // For each file in this chunk, process in *parallel* (soon)
+            // TODO build the appropriate iterator to parallelize (or not) if dense is set
+            chunk.par_iter().enumerate().for_each(|(path_num, path)| {
+                match std::fs::metadata(path) {
+                    Ok(metadata) => {
+                        if metadata.is_file() {
+                            let reader = match read_file(path) {
+                                Ok(r) => r,
                                 Err(e) => {
-                                    eprintln!("Unsupported header type ({}): {}", path, e);
+                                    eprintln!("Failed to open file {}: {}", path, e);
                                     return;
                                 }
                             };
+                            let fasta_reader = fasta::Reader::new(reader);
+                            let first_record = fasta_reader.records().next();
 
-                            if let Err(e) = index::process_fasta_file(
-                                path,
-                                &maybe_dense_indexes,
-                                &bloom_filters,
-                                self.k,
-                                self.m,
-                                partitioned_bf_size,
-                                self.partition_number,
-                                color_chunks[chunk_i],
-                                self.nb_color,
-                                threshold,
-                                abundance_number,
-                                abundance_max,
-                                path_num % color_chunks[0],
-                                path_num,
-                                base,
-                                chunk_i,
-                                h_type, 
-                                1_000_000, // max size for flushing k-mers to bloom filter
-                                &total_kmers,
-                                &atomic_dense_kmers_count,
-                                &atomic_sparse_kmers_count,
-                                &kmer_counts_vector,
-                            ) {
-                                eprintln!("Error processing {}: {}", path, e);
+                            if let Some(Ok(record)) = first_record {
+                                let header_option = record.desc();
+                                let header = header_option.unwrap_or("no header found");
+                                let h_type = match determine_header_type(header) {
+                                    Ok(ht) => ht,
+                                    Err(e) => {
+                                        eprintln!("Unsupported header type ({}): {}", path, e);
+                                        return;
+                                    }
+                                };
+
+                                if let Err(e) = index::process_fasta_file(
+                                    path,
+                                    &maybe_dense_indexes,
+                                    &bloom_filters,
+                                    self.k,
+                                    self.m,
+                                    partitioned_bf_size,
+                                    self.partition_number,
+                                    color_chunks[chunk_i],
+                                    self.nb_color,
+                                    threshold,
+                                    abundance_number,
+                                    abundance_max,
+                                    path_num % color_chunks[0],
+                                    path_num,
+                                    base,
+                                    chunk_i,
+                                    h_type,
+                                    1_000_000, // max size for flushing k-mers to bloom filter
+                                    &total_kmers,
+                                    &atomic_dense_kmers_count,
+                                    &atomic_sparse_kmers_count,
+                                    &kmer_counts_vector,
+                                ) {
+                                    eprintln!("Error processing {}: {}", path, e);
+                                }
+                            } else {
+                                eprintln!("Failed to determine header type for {}", path);
                             }
                         } else {
-                            eprintln!("Failed to determine header type for {}", path);
+                            eprintln!("Path {} exists but is not a file", path);
                         }
-                    } else {
-                        eprintln!("Path {} exists but is not a file", path);
                     }
+                    Err(_) => eprintln!("Path {} does not exist", path),
                 }
-                Err(_) => eprintln!("Path {} does not exist", path),
+            });
+            if debug {
+                update_sparse_counts(
+                    &bloom_filters,
+                    &atomic_sparse_one_seen,
+                    &atomic_sparse_fp_seen,
+                    abundance_number,
+                )?;
             }
-        });
+            if let Err(e) = write_bloom_filters_to_disk(
+                &dir_path,
+                &bloom_filters,
+                &color_chunks,
+                self.partition_number,
+                chunk_i,
+            ) {
+                eprintln!("Error writing Bloom filters for chunk {}: {}", chunk_i, e);
+            }
+            println!("Chunk {} done", chunk_i);
+        }
+
+        // After processing all chunks, write the dense indexes to disk
+        if let Some(dense_indexes) = maybe_dense_indexes {
+            write_dense_indexes_to_disk(&dir_path, &dense_indexes)?;
+        }
+
+        write_kmer_counts_to_disk(&dir_path, &kmer_counts_vector)?;
+
         if debug {
-            update_sparse_counts(&bloom_filters, &atomic_sparse_one_seen, &atomic_sparse_fp_seen, abundance_number)?;
-        }
-        if let Err(e) = write_bloom_filters_to_disk(
-            &dir_path, 
-            &bloom_filters,
-            &color_chunks,
-            self.partition_number,
-            chunk_i
-        ) {
-            eprintln!("Error writing Bloom filters for chunk {}: {}", chunk_i, e);
-        }
-        println!("Chunk {} done", chunk_i);
-    };
-
-    // After processing all chunks, write the dense indexes to disk
-    if let Some(dense_indexes) = maybe_dense_indexes {
-        write_dense_indexes_to_disk(&dir_path, &dense_indexes)?;
-    }
-
-    write_kmer_counts_to_disk(&dir_path, &kmer_counts_vector)?;
-
-    if debug {
-        // k-mers repartition between dense and sparse index
-        println!("The index contains {:?} 'dense' k-mers and {:?} 'sparse' k-mers (total k-mers: {:?})", 
+            // k-mers repartition between dense and sparse index
+            println!("The index contains {:?} 'dense' k-mers and {:?} 'sparse' k-mers (total k-mers: {:?})", 
             atomic_dense_kmers_count.get_mut().separate_with_commas(), 
             atomic_sparse_kmers_count.get_mut().separate_with_commas(), 
             total_kmers.get_mut().separate_with_commas());
 
-        let ones = atomic_sparse_one_seen.get_mut();
-        let silent = *atomic_sparse_kmers_count.get_mut() - *ones;
-        let fp = atomic_sparse_fp_seen.get_mut();
-        // k-mers indexed in the sparse index, FP silent and FP seen
-        println!("Among the {:?} k-mers added in the 'sparse' index, {:?} encountered hash collisions ({:?} silent and {:?} misleading).", 
+            let ones = atomic_sparse_one_seen.get_mut();
+            let silent = *atomic_sparse_kmers_count.get_mut() - *ones;
+            let fp = atomic_sparse_fp_seen.get_mut();
+            // k-mers indexed in the sparse index, FP silent and FP seen
+            println!("Among the {:?} k-mers added in the 'sparse' index, {:?} encountered hash collisions ({:?} silent and {:?} misleading).", 
             atomic_sparse_kmers_count.get_mut().separate_with_commas(), 
             (silent+*fp).separate_with_commas(),
             silent.separate_with_commas(), 
             fp.separate_with_commas());
-    }
+        }
 
-    // Merge the chunk-based bloom filters, if needed
-    if chunks.len() > 1 {
-        merge_all_partitions(
+        // Merge the chunk-based bloom filters, if needed
+        if chunks.len() > 1 {
+            merge_all_partitions(
+                &dir_path,
+                &dir_path, // output
+                partitioned_bf_size,
+                abundance_number,
+                color_chunks,
+                self.partition_number,
+                self.nb_color,
+            )?;
+        } else {
+            // If there was only one chunk, rename files directly
+            for partition_idx in 0..self.partition_number {
+                let input_path = format!(
+                    "{}/partition_bloom_filters_c0_p{}.txt",
+                    dir_path, partition_idx
+                );
+                let output_path = format!(
+                    "{}/partition_bloom_filters_p{}.txt",
+                    dir_path, partition_idx
+                );
+                std::fs::rename(&input_path, &output_path)?;
+            }
+        }
+
+        // write partition info to a CSV or your desired format
+        let _ = write_partition_to_csv(
             &dir_path,
-            &dir_path, // output
-            partitioned_bf_size,
-            abundance_number,
-            color_chunks,
+            self.k,
+            self.m,
+            self.bf_size,
             self.partition_number,
             self.nb_color,
+            abundance_number,
+            abundance_max,
+            dense_option,
+        );
+
+        Ok((file_paths, dir_path))
+    }
+
+    // TODO this only calls a function
+    // TODO store bf_dir in Reindeer2 ?
+    pub fn query(
+        &self,
+        fasta_file: &str,
+        bf_dir: &str,
+        output_file: &str,
+        color_graph: bool,
+        normalize_option: bool,
+        coverage: f32,
+        rd1_like: bool,
+    ) -> io::Result<()> {
+        let query_results = query::query_sequences_in_batches(
+            fasta_file,
+            bf_dir,
+            self.k,
+            self.m,
+            self.bf_size,
+            self.partition_number,
+            self.nb_color,
+            self.abundance_number,
+            self.abundance_max,
+            10_000_000,
+            &output_file,
+            color_graph,
+            self.dense_option,
+            normalize_option,
+            coverage,
+            rd1_like,
         )?;
-    } else {
-        // If there was only one chunk, rename files directly
-        for partition_idx in 0..self.partition_number {
-            let input_path = format!("{}/partition_bloom_filters_c0_p{}.txt", dir_path, partition_idx);
-            let output_path = format!("{}/partition_bloom_filters_p{}.txt", dir_path, partition_idx);
-            std::fs::rename(&input_path, &output_path)?;
-        }
-    } 
-
-    // write partition info to a CSV or your desired format
-    let _ = write_partition_to_csv(
-        &dir_path,
-        self.k,
-        self.m,
-        self.bf_size,
-        self.partition_number,
-        self.nb_color,
-        abundance_number,
-        abundance_max,
-        dense_option,
-    );
-
-    Ok((file_paths, dir_path))
+        println!("Writing results in {}", output_file);
+        //write_query_results_to_csv(&query_results, bf_dir)
+        Ok(query_results)
+    }
 }
-
-// TODO this only calls a function
-// TODO store bf_dir in Reindeer2 ?
-pub fn query(
-    &self,
-    fasta_file: &str,
-    bf_dir: &str,
-    output_file: &str,
-    color_graph: bool,
-    normalize_option: bool,
-    coverage: f32,
-    rd1_like:bool
-) -> io::Result<()> {
-    let query_results = query::query_sequences_in_batches(
-        fasta_file,
-        bf_dir,
-        self.k,
-        self.m,
-        self.bf_size,
-        self.partition_number,
-        self.nb_color,
-        self.abundance_number,
-        self.abundance_max,
-        10_000_000,
-        &output_file,
-        color_graph,
-        self.dense_option,
-        normalize_option,
-        coverage,
-        rd1_like,
-    )?;
-    println!("Writing results in {}", output_file);
-    //write_query_results_to_csv(&query_results, bf_dir)
-    Ok(query_results)
-}
-}
-
 
 fn process_fasta_in_batches<R: io::BufRead>(
     reader: R,
@@ -306,10 +343,10 @@ fn process_fasta_in_batches<R: io::BufRead>(
 }
 
 pub fn build_index_muset(
-    unitigs_file: String, 
-    matrix_file: String, 
-    kmer_size: usize, 
-    minimizer_size: usize, 
+    unitigs_file: String,
+    matrix_file: String,
+    kmer_size: usize,
+    minimizer_size: usize,
     bf_size: u64,
     partition_number: usize,
     color_nb: usize,
@@ -340,21 +377,20 @@ pub fn build_index_muset(
     let (_, dir_path) = create_dir_and_files(partition_number, output_dir)?;
 
     // Shared data structures protected by Mutex for safe parallel access
-    let maybe_dense_indexes: Option<Arc<Vec<Mutex<HashMap<u64, Vec<u8>>>>>> = 
-        if dense_option {
-            Some(Arc::new(
+    let maybe_dense_indexes: Option<Arc<Vec<Mutex<HashMap<u64, Vec<u8>>>>>> = if dense_option {
+        Some(Arc::new(
             (0..partition_number)
-                .map(|_| Mutex::new(HashMap::with_capacity(200_000_000/partition_number)))
-                .collect::<Vec<_>>()
-            ))
-        } else {
-            None
-        };
+                .map(|_| Mutex::new(HashMap::with_capacity(200_000_000 / partition_number)))
+                .collect::<Vec<_>>(),
+        ))
+    } else {
+        None
+    };
 
     let bloom_filters = Arc::new(
         (0..partition_number)
             .map(|_| Mutex::new(RoaringBitmap::new()))
-            .collect::<Vec<_>>()
+            .collect::<Vec<_>>(),
     );
 
     let unitigs_reader = match read_file(&unitigs_file) {
@@ -380,23 +416,28 @@ pub fn build_index_muset(
 
     let mut partition_kmers: HashMap<usize, Vec<(u64, u16, usize, usize)>> = HashMap::new(); // keep kmer info to fill BFs
 
-    let mut kmer_counts_vector_locked = kmer_counts_vector.lock().expect("Failed to lock the kmer counter hashmap");
+    let mut kmer_counts_vector_locked = kmer_counts_vector
+        .lock()
+        .expect("Failed to lock the kmer counter hashmap");
     for _ in 0..len_matrix {
         let abundance_line = matrix_lines.next().unwrap().unwrap();
         let mut abundance_iter = abundance_line.trim().split(" ").into_iter();
         let unitig_id: &str = abundance_iter.next().unwrap();
 
-        let abundance_vector_plusone = abundance_iter.enumerate().map(|(i, ab_value_str)| {
-            let ab_value = ab_value_str.parse::<f64>().expect("Failed to parse the abundance values in the matrix") as u16;
-            if ab_value == 0 {
-                0
-            } else {
-                kmer_counts_vector_locked[i] += 1; // select the count corresponding to the right color
-                (compute_log_abundance(
-                    ab_value,
-                    base,
-                    abundance_max) + 1) as u8
-            }})
+        let abundance_vector_plusone = abundance_iter
+            .enumerate()
+            .map(|(i, ab_value_str)| {
+                let ab_value = ab_value_str
+                    .parse::<f64>()
+                    .expect("Failed to parse the abundance values in the matrix")
+                    as u16;
+                if ab_value == 0 {
+                    0
+                } else {
+                    kmer_counts_vector_locked[i] += 1; // select the count corresponding to the right color
+                    (compute_log_abundance(ab_value, base, abundance_max) + 1) as u8
+                }
+            })
             .collect::<Vec<u8>>();
 
         let tmp_abundance_vector = abundance_vector_plusone.clone();
@@ -404,27 +445,34 @@ pub fn build_index_muset(
 
         let unitig_line = unitigs_lines.next().unwrap().unwrap();
         if &unitig_line.split(" ").next().unwrap()[1..] != unitig_id {
-            println!("{} vs {}", &unitig_line.split(" ").next().unwrap()[1..], unitig_id);
+            println!(
+                "{} vs {}",
+                &unitig_line.split(" ").next().unwrap()[1..],
+                unitig_id
+            );
             panic!("The unitig id dooesn't match between the unitigs file and the matrix file.")
         }
 
         let unitig_line = unitigs_lines.next().unwrap().unwrap();
         let seq_str = unitig_line.trim();
-        for (kmer_hash, minimizer) in kmer_minimizers_seq_level(seq_str.as_bytes(), kmer_size, minimizer_size) { 
+        for (kmer_hash, minimizer) in
+            kmer_minimizers_seq_level(seq_str.as_bytes(), kmer_size, minimizer_size)
+        {
             let partition_index = (minimizer % (partition_number as u64)) as usize;
             let new_kmers_added = (abundance_vector_plusone.len() - number_of_zeros) as u64;
             total_kmers.fetch_add(new_kmers_added, atomic::Ordering::Relaxed);
-            
+
             if dense_option && number_of_zeros <= threshold {
                 match &maybe_dense_indexes {
                     Some(dense_indexes) => {
-                        let mut dense_index = dense_indexes[partition_index] 
+                        let mut dense_index = dense_indexes[partition_index]
                             .lock()
                             .expect("Failed to lock the dense index");
-                        atomic_dense_kmers_count.fetch_add(new_kmers_added, atomic::Ordering::Relaxed);
+                        atomic_dense_kmers_count
+                            .fetch_add(new_kmers_added, atomic::Ordering::Relaxed);
                         dense_index.insert(kmer_hash, abundance_vector_plusone.clone());
-                    },
-                    None => panic!("Failed to build the dense index.")
+                    }
+                    None => panic!("Failed to build the dense index."),
                 }
             } else {
                 atomic_sparse_kmers_count.fetch_add(new_kmers_added, atomic::Ordering::Relaxed);
@@ -439,35 +487,45 @@ pub fn build_index_muset(
                             kmer_hash,
                             real_log_abundance,
                             path_num,
-                            0 // chunk index
+                            0, // chunk index
                         ))
                     }
                 }
-
             }
             if partition_kmers.len() >= max_map_size {
-                flush_map_into_bfs(&mut partition_kmers, &bloom_filters, partitioned_bf_size, color_nb, abundance_number)?;
+                flush_map_into_bfs(
+                    &mut partition_kmers,
+                    &bloom_filters,
+                    partitioned_bf_size,
+                    color_nb,
+                    abundance_number,
+                )?;
             }
         }
     }
     // Index remaining kmers
-    flush_map_into_bfs(&mut partition_kmers, &bloom_filters, partitioned_bf_size, color_nb, abundance_number)?;
-        
-
-        
-
-
-        
+    flush_map_into_bfs(
+        &mut partition_kmers,
+        &bloom_filters,
+        partitioned_bf_size,
+        color_nb,
+        abundance_number,
+    )?;
 
     if debug {
-        update_sparse_counts(&bloom_filters, &atomic_sparse_one_seen, &atomic_sparse_fp_seen, abundance_number)?;
+        update_sparse_counts(
+            &bloom_filters,
+            &atomic_sparse_one_seen,
+            &atomic_sparse_fp_seen,
+            abundance_number,
+        )?;
     }
     if let Err(e) = write_bloom_filters_to_disk(
-        &dir_path, 
+        &dir_path,
         &bloom_filters,
         &vec![color_nb],
         partition_number,
-        0
+        0,
     ) {
         eprintln!("Error writing Bloom filters on disk: {}", e);
     }
@@ -481,10 +539,12 @@ pub fn build_index_muset(
 
     if debug {
         // k-mers repartition between dense and sparse index
-        println!("The index contains {:?} 'dense' k-mers and {:?} 'sparse' k-mers (total k-mers: {:?})", 
-            atomic_dense_kmers_count.get_mut().separate_with_commas(), 
-            atomic_sparse_kmers_count.get_mut().separate_with_commas(), 
-            total_kmers.get_mut().separate_with_commas());
+        println!(
+            "The index contains {:?} 'dense' k-mers and {:?} 'sparse' k-mers (total k-mers: {:?})",
+            atomic_dense_kmers_count.get_mut().separate_with_commas(),
+            atomic_sparse_kmers_count.get_mut().separate_with_commas(),
+            total_kmers.get_mut().separate_with_commas()
+        );
 
         let ones = atomic_sparse_one_seen.get_mut();
         let silent = *atomic_sparse_kmers_count.get_mut() - *ones;
@@ -496,13 +556,18 @@ pub fn build_index_muset(
             silent.separate_with_commas(), 
             fp.separate_with_commas());
     }
-    
 
     // Merge the chunk-based bloom filters, if needed
     // If there was only one chunk, rename files directly
     for partition_idx in 0..partition_number {
-        let input_path = format!("{}/partition_bloom_filters_c0_p{}.txt", dir_path, partition_idx);
-        let output_path = format!("{}/partition_bloom_filters_p{}.txt", dir_path, partition_idx);
+        let input_path = format!(
+            "{}/partition_bloom_filters_c0_p{}.txt",
+            dir_path, partition_idx
+        );
+        let output_path = format!(
+            "{}/partition_bloom_filters_p{}.txt",
+            dir_path, partition_idx
+        );
         std::fs::rename(&input_path, &output_path)?;
     }
 
@@ -521,13 +586,6 @@ pub fn build_index_muset(
 
     Ok((vec!["".to_string()], dir_path))
 }
-
-
-
-
-
-
-
 
 // === MERGE ===
 
@@ -635,49 +693,49 @@ pub fn build_index_muset(
 // // --- MERGE FUNCTIONS ---
 
 fn merge_all_partitions(
-    chunk_files_dir: &str, 
-    output_dir: &str,      
+    chunk_files_dir: &str,
+    output_dir: &str,
     partitioned_bf_size: usize,
     abundance_number: usize,
     color_counts_per_chunk: Vec<usize>, // number of colors in each chunk
-    num_partitions: usize,  
+    num_partitions: usize,
     total_nb_colors: usize,
 ) -> io::Result<()> {
     let start_time = Instant::now();
 
     // for each partition in parallel
-    (0..num_partitions).into_par_iter().try_for_each(|partition_idx| {
+    (0..num_partitions)
+        .into_par_iter()
+        .try_for_each(|partition_idx| {
+            // collect chunk files for the current partition
+            let chunk_files_for_partition: Vec<String> = color_counts_per_chunk
+                .iter()
+                .enumerate()
+                .map(|(chunk_idx, _)| {
+                    format!(
+                        "{}/partition_bloom_filters_c{}_p{}.txt",
+                        chunk_files_dir, chunk_idx, partition_idx
+                    )
+                })
+                .collect();
 
-        // collect chunk files for the current partition
-        let chunk_files_for_partition: Vec<String> = color_counts_per_chunk
-            .iter()
-            .enumerate()
-            .map(|(chunk_idx, _)| {
-                format!(
-                    "{}/partition_bloom_filters_c{}_p{}.txt",
-                    chunk_files_dir, chunk_idx, partition_idx
-                )
-            })
-            .collect();
+            // bf for this partition
+            let mut partition_bf = RoaringBitmap::new();
 
-        // bf for this partition
-        let mut partition_bf =RoaringBitmap::new();
+            // merge all chunks for the current partition + serialize
+            merge_partition_bloom_filters(
+                chunk_files_for_partition,
+                partition_idx,
+                partitioned_bf_size,
+                abundance_number,
+                &color_counts_per_chunk,
+                &mut partition_bf,
+                output_dir,
+                total_nb_colors,
+            )?;
 
-        // merge all chunks for the current partition + serialize
-        merge_partition_bloom_filters(
-            chunk_files_for_partition,
-            partition_idx,
-            partitioned_bf_size,
-            abundance_number,
-            &color_counts_per_chunk,
-            &mut partition_bf,
-            output_dir,
-            total_nb_colors,
-        )?;
-
-
-        Ok::<(), io::Error>(())
-    })?;
+            Ok::<(), io::Error>(())
+        })?;
 
     let elapsed_time = start_time.elapsed();
     println!(
@@ -694,7 +752,7 @@ fn merge_partition_bloom_filters(
     partitioned_bf_size: usize,
     abundance_number: usize,
     color_counts: &Vec<usize>, // number of colors for each chunk
-    bloom_filter:  &mut RoaringBitmap,
+    bloom_filter: &mut RoaringBitmap,
     output_dir: &str,
     total_nb_colors: usize,
 ) -> io::Result<()> {
@@ -712,19 +770,20 @@ fn merge_partition_bloom_filters(
         abundance_number,
         color_counts,
     );
-    let output_file_path = format!("{}/partition_bloom_filters_p{}.txt", output_dir, partition_idx);
-    let  output_file = File::create(&output_file_path)?;
+    let output_file_path = format!(
+        "{}/partition_bloom_filters_p{}.txt",
+        output_dir, partition_idx
+    );
+    let output_file = File::create(&output_file_path)?;
     let mut writer = BufWriter::new(output_file);
     writer.write_all(&total_nb_colors.to_le_bytes())?;
     final_bf.serialize_into(&mut writer)?;
     // update the bloom filter for the partition
     *bloom_filter = final_bf;
     // Write the partition's Bloom filter to disk
-    
 
     Ok(())
 }
-
 
 /* example for build_new_bitset_with_gaps_from_merged + interleave_slices_with_zero_runs
  merged = 110001 000000 (2 "colums" in the partition, 2 datasets, 3 abundances)
@@ -797,11 +856,11 @@ fn merge_partition_slices_interleaved(
         }
     }
 
-    RoaringBitmap::from_sorted_iter(final_positions).expect("Attempt to merge with unsorted positions")
+    RoaringBitmap::from_sorted_iter(final_positions)
+        .expect("Attempt to merge with unsorted positions")
 }
 
-
-// === GENERAL === 
+// === GENERAL ===
 
 // --- BF MANAGEMENT ---
 
@@ -826,40 +885,38 @@ fn update_color_abundances(
     color_abundances: &mut Vec<Vec<usize>>,
 ) {
     for color in 0..color_number {
-        let mut insert=false;
+        let mut insert = false;
         for abundance in 0..abundance_number {
-            let position_to_check = base_position
-                + (color as u64) * (abundance_number as u64)
-                + (abundance as u64);
-            
+            let position_to_check =
+                base_position + (color as u64) * (abundance_number as u64) + (abundance as u64);
+
             if bitmap.contains(position_to_check as u32) {
                 color_abundances[color].push(abundance);
-                insert=true;
+                insert = true;
                 break; // keep the minimum
             }
         }
-        if !insert{
+        if !insert {
             // TODO weird discuss value
-            color_abundances[color].push(666); // important to record absent k-mers, to compute the median value, also, todo test 
+            color_abundances[color].push(666); // important to record absent k-mers, to compute the median value, also, todo test
         }
     }
 }
 
 fn compute_location_filter(
-    hash_kmer: u64, 
-    partitioned_bf_size: usize, 
-    color_number: usize, // the total nb of indexed fastas (in a chunk)
-    path_color_number:usize, // the index of the current indexed fasta
-    abundance_number: usize, 
-    log_abundance: u16,) 
-    -> u64 {
-    
+    hash_kmer: u64,
+    partitioned_bf_size: usize,
+    color_number: usize,      // the total nb of indexed fastas (in a chunk)
+    path_color_number: usize, // the index of the current indexed fasta
+    abundance_number: usize,
+    log_abundance: u16,
+) -> u64 {
     // compute the position to write
-    (hash_kmer % (partitioned_bf_size as u64)) * (color_number as u64) * (abundance_number as u64) 
-        + (path_color_number as u64) * (abundance_number as u64) 
+    (hash_kmer % (partitioned_bf_size as u64)) * (color_number as u64) * (abundance_number as u64)
+        + (path_color_number as u64) * (abundance_number as u64)
         + (log_abundance as u64)
     /* example
-                        c0  c1  c2  c3	      
+                        c0  c1  c2  c3
         color 0   abund 0   0   1   1
                   abund 1   0   0   0
         color 1   abund 0   0   1   0
@@ -867,23 +924,23 @@ fn compute_location_filter(
         color 2   abund 0   0   0   1
                   abund 1   0   1   0
         with two partitions becomes two files
-        f0=010101000000 
+        f0=010101000000
 
         f1=101001100110
 
         let's say a k-mer x is in color 2 with abund 0, hashed in column 2
-                        c0  c1  c2  c3	      
+                        c0  c1  c2  c3
         color 0   abund 0   0   1   1
                   abund 1   0   0   0
         color 1   abund 0   0   1   0
                   abund 1   0   0   1
         color 2   abund 0   0   X   1
                   abund 1   0   1   0
-        
+
         so we must do a modification so f1 becomes
         f1=1=1010X1100110 with X = 1, so index 4 in the vector
 
-        partition number is 1, and the partition size (number of columns) is 2, composed of column 2 and 3. 
+        partition number is 1, and the partition size (number of columns) is 2, composed of column 2 and 3.
         We'll have hash(x)%2=0, which means we're in the first chunk of the vector ((hash_k % partitioned_bf_size)*color_number*abundance_number = 0 here)
         then we want to go up to color 2, so we mus pass through color 0 and 1 that have two abundances each (path_color_number*abundance_number = 2*2 here)
         then go to the right abundance, here 0 that corresponds to log_abundance
@@ -891,16 +948,19 @@ fn compute_location_filter(
     */
 }
 
-fn _get_current_chunk_index(i: usize, chunk_sizes: &Vec<usize>,  partition_nb:usize) -> usize {
+fn _get_current_chunk_index(i: usize, chunk_sizes: &Vec<usize>, partition_nb: usize) -> usize {
     let mut cumulative_size = 0;
-    
+
     for (chunk_idx, &_chunk_size) in chunk_sizes.iter().enumerate() {
         cumulative_size += partition_nb;
         if i < cumulative_size {
             return chunk_idx;
         }
     }
-    panic!("Index {} out of bounds for chunk sizes {:?}", i, chunk_sizes);
+    panic!(
+        "Index {} out of bounds for chunk sizes {:?}",
+        i, chunk_sizes
+    );
 }
 
 fn update_sparse_counts(
@@ -909,7 +969,7 @@ fn update_sparse_counts(
     atomic_sparse_fp_seen: &atomic::AtomicU64,
     abundance_number: usize,
 ) -> io::Result<()> {
-    let ones_by_partition = Arc::new(Mutex::new(Vec::<(usize,usize)>::new()));
+    let ones_by_partition = Arc::new(Mutex::new(Vec::<(usize, usize)>::new()));
     bloom_filters.par_iter().for_each(|bitmap| {
         let locked_bitmap = bitmap.lock().unwrap();
         let mut color: usize = 0;
@@ -933,7 +993,8 @@ fn update_sparse_counts(
 
     let file = File::create("partitions_info.log")?;
     let mut writer = BufWriter::new(file);
-    let tmp_vector: std::sync::MutexGuard<'_, Vec<(usize, usize)>> = ones_by_partition.lock().unwrap();
+    let tmp_vector: std::sync::MutexGuard<'_, Vec<(usize, usize)>> =
+        ones_by_partition.lock().unwrap();
     for (a1, a2) in tmp_vector.iter() {
         writer.write_all(format!("{},{}\n", a1, a2).as_bytes())?;
     }
@@ -942,7 +1003,7 @@ fn update_sparse_counts(
     Ok(())
 }
 
-fn flush_map_into_bfs (
+fn flush_map_into_bfs(
     partition_kmers: &mut HashMap<usize, Vec<(u64, u16, usize, usize)>>,
     bloom_filters: &Arc<Vec<Mutex<RoaringBitmap>>>,
     partitioned_bf_size: usize,
@@ -950,9 +1011,11 @@ fn flush_map_into_bfs (
     abundance_number: usize,
 ) -> io::Result<()> {
     // this part fills the BFs per paritition
-    for (partition_index, kmers) in partition_kmers.drain() {// iterates and empties the hash map when needed
+    for (partition_index, kmers) in partition_kmers.drain() {
+        // iterates and empties the hash map when needed
         let mut kmer_hashes_to_update = Vec::new();
-        for (kmer_hash, log_abundance, path_num, _chunk_index) in kmers { // select the bit in the BF
+        for (kmer_hash, log_abundance, path_num, _chunk_index) in kmers {
+            // select the bit in the BF
             let position = compute_location_filter(
                 kmer_hash,
                 partitioned_bf_size,
@@ -967,15 +1030,17 @@ fn flush_map_into_bfs (
             .lock()
             .expect("Failed to lock bloom filter");
         bloom_filter.extend(kmer_hashes_to_update);
-    };
+    }
     Ok(())
 }
 
-
 // --- WRITE INDEX ON DISK ---
 
-fn create_dir_and_files(num_partition: usize, output_dir: &str) -> io::Result<(Vec<String>, String)> {
-    println!("Writing partitioned files in directory: {}", output_dir); 
+fn create_dir_and_files(
+    num_partition: usize,
+    output_dir: &str,
+) -> io::Result<(Vec<String>, String)> {
+    println!("Writing partitioned files in directory: {}", output_dir);
     let output_path = Path::new(output_dir);
     let partition_dir = match output_path.is_relative() {
         true => std::env::current_dir()?.join(output_path),
@@ -987,8 +1052,8 @@ fn create_dir_and_files(num_partition: usize, output_dir: &str) -> io::Result<(V
     let file_paths = Vec::with_capacity(num_partition);
     let partition_dir_string = partition_dir.to_string_lossy().into_owned();
     Ok((file_paths, partition_dir_string))
-    /* For instance, if this is the complete structure, 
-                            c0  c1  c2  c3	      
+    /* For instance, if this is the complete structure,
+                            c0  c1  c2  c3
             color 0   abund 0   0   1   1
                       abund 1   0   0   0
             color 1   abund 0   0   1   0
@@ -1010,28 +1075,26 @@ fn write_bloom_filters_to_disk(
     bloom_filters: &Arc<Vec<Mutex<RoaringBitmap>>>,
     chunks: &[usize], //  number of colors for each chunk
     partition_nb: usize,
-    chunk_id:usize
+    chunk_id: usize,
 ) -> io::Result<()> {
-        for (i, bitmap) in bloom_filters.iter().enumerate() {
-            // let c = get_current_chunk_index(i, chunks, partition_nb); // chunk idx
-            let p = i % partition_nb; // TOUN
-            let file_path = Path::new(dir_path).join(format!(
-                "partition_bloom_filters_c{}_p{}.txt",
-                chunk_id, p
-            ));
-            let file = File::create(&file_path)?;
-            let mut writer = BufWriter::new(file);
-            let chunk_colors = chunks[chunk_id];
-            // write the number of colors as a u64 to the file first
-            writer.write_all(&chunk_colors.to_le_bytes())?;
-            // serialize the bitmap into the file
-            let mut locked_bitmap = bitmap.lock().unwrap();
-            locked_bitmap.serialize_into(&mut writer)?;
-            locked_bitmap.clear();
-            // bitmap.serialize_into(&mut writer)?;
-            // bitmap.clear();
-        }
-    
+    for (i, bitmap) in bloom_filters.iter().enumerate() {
+        // let c = get_current_chunk_index(i, chunks, partition_nb); // chunk idx
+        let p = i % partition_nb; // TOUN
+        let file_path =
+            Path::new(dir_path).join(format!("partition_bloom_filters_c{}_p{}.txt", chunk_id, p));
+        let file = File::create(&file_path)?;
+        let mut writer = BufWriter::new(file);
+        let chunk_colors = chunks[chunk_id];
+        // write the number of colors as a u64 to the file first
+        writer.write_all(&chunk_colors.to_le_bytes())?;
+        // serialize the bitmap into the file
+        let mut locked_bitmap = bitmap.lock().unwrap();
+        locked_bitmap.serialize_into(&mut writer)?;
+        locked_bitmap.clear();
+        // bitmap.serialize_into(&mut writer)?;
+        // bitmap.clear();
+    }
+
     Ok(())
 }
 
@@ -1052,10 +1115,11 @@ fn _write_bloom_filters_to_disk_nochunk(
 
 fn write_dense_indexes_to_disk(
     dir_path: &str,
-    dense_indexes: &Arc<Vec<Mutex<HashMap<u64, Vec<u8>>>>>
- ) -> io::Result<()> {
+    dense_indexes: &Arc<Vec<Mutex<HashMap<u64, Vec<u8>>>>>,
+) -> io::Result<()> {
     for (partition, hashmap) in dense_indexes.iter().enumerate() {
-        let file_path = Path::new(dir_path).join(format!("partition_dense_index_p{}.txt", partition));
+        let file_path =
+            Path::new(dir_path).join(format!("partition_dense_index_p{}.txt", partition));
         let file = File::create(&file_path)?;
         let mut writer = BufWriter::new(file);
         let mut locked_hashmap = hashmap.lock().unwrap();
@@ -1069,7 +1133,7 @@ fn write_dense_indexes_to_disk(
 fn write_kmer_counts_to_disk(
     dir_path: &str,
     kmer_counts_vector: &Arc<Mutex<Vec<usize>>>,
- ) -> io::Result<()> {
+) -> io::Result<()> {
     let file_path = Path::new(dir_path).join("kmer_counts_per_color.txt");
     let file = File::create(&file_path)?;
     let mut writer = BufWriter::new(file);
@@ -1095,17 +1159,26 @@ fn write_partition_to_csv(
 
     let mut csv_writer = Writer::from_writer(BufWriter::new(File::create(&output_path)?));
 
-    csv_writer.write_record(["k", "m", "bf_size", "partition_number", "color_number", "abundance_number", "abundance_max", "dense_option"])?;
+    csv_writer.write_record([
+        "k",
+        "m",
+        "bf_size",
+        "partition_number",
+        "color_number",
+        "abundance_number",
+        "abundance_max",
+        "dense_option",
+    ])?;
     csv_writer.write_record(&[
-            k.to_string(),
-            m.to_string(),
-            bf_size.to_string(),
-            partition_number.to_string(),
-            color_number.to_string(),
-            abundance_number.to_string(),
-            abundance_max.to_string(),
-            dense_option.to_string(),
-        ])?;
+        k.to_string(),
+        m.to_string(),
+        bf_size.to_string(),
+        partition_number.to_string(),
+        color_number.to_string(),
+        abundance_number.to_string(),
+        abundance_max.to_string(),
+        dense_option.to_string(),
+    ])?;
 
     println!("Index information written to {}", output_path);
     Ok(())
@@ -1141,11 +1214,14 @@ fn load_dense_index(file_path: &str) -> io::Result<HashMap<u64, Box<Vec<u8>>>> {
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "Failed to deserialize hashmap"))?;
     Ok(hashmap)
 }
-   
+
 /// Rload index metadata from the CSV.
 // TODO why output_csv ?
 // TODO we could return a Reindeer2 directly
-fn read_partition_from_csv(bf_dir: &str, output_csv: &str) -> io::Result<(usize, usize, u64, usize, usize, usize, u16, bool)> {
+fn read_partition_from_csv(
+    bf_dir: &str,
+    output_csv: &str,
+) -> io::Result<(usize, usize, u64, usize, usize, usize, u16, bool)> {
     let csv_path = format!("{}/{}", bf_dir, output_csv);
     let mut reader = csv::Reader::from_reader(BufReader::new(File::open(csv_path)?));
     let values = reader.records().next().expect("Index CSV is empty")?;
@@ -1158,11 +1234,17 @@ fn read_partition_from_csv(bf_dir: &str, output_csv: &str) -> io::Result<(usize,
     let abundance_max = values[6].parse().unwrap_or(0);
     let dense_option = values[7].parse().unwrap_or(false);
 
-    Ok((k, m, bf_size, partition_number, color_number, abundance_number, abundance_max, dense_option))
+    Ok((
+        k,
+        m,
+        bf_size,
+        partition_number,
+        color_number,
+        abundance_number,
+        abundance_max,
+        dense_option,
+    ))
 }
-
-
-
 
 // --- FOF MANAGEMENT ---
 
@@ -1184,7 +1266,7 @@ fn split_fof(lines: &[String]) -> io::Result<(Vec<Vec<String>>, Vec<usize>)> {
 
     // chunk max size
     let magic_nb_split = 128;
-    // Determine split_factor 
+    // Determine split_factor
     let split_factor = if total_colors < magic_nb_split {
         1
     } else {
@@ -1195,7 +1277,7 @@ fn split_fof(lines: &[String]) -> io::Result<(Vec<Vec<String>>, Vec<usize>)> {
     let mut chunk_sizes = vec![0; split_factor]; // store the number of colors in each chunk
 
     for (i, line) in lines.iter().enumerate() {
-        let chunk_index = i / magic_nb_split; 
+        let chunk_index = i / magic_nb_split;
         fof_chunks[chunk_index].push(line.clone());
         chunk_sizes[chunk_index] += 1; // increment of file paths
     }
@@ -1218,16 +1300,21 @@ pub fn explore_muset_dir(dir_str: &str) -> (String, String, usize) {
         panic!("File not found : {:#?}", abundance_path);
     }
 
-    let reader = BufReader::new(File::open(&abundance_path).expect(&format!("Failed to open {:#?}", abundance_path)));
+    let reader = BufReader::new(
+        File::open(&abundance_path).expect(&format!("Failed to open {:#?}", abundance_path)),
+    );
     let err = &format!("Failed to read {:#?}", abundance_path);
     let firstline = reader.lines().next().expect(err).expect(err);
-    
+
     // number of color == number of \t in the first line ?
     // TODO check it's the same
     let color_nb = firstline.chars().filter(|c| *c == '\t').count();
-    (unitigs_path.to_string_lossy().to_string(), abundance_path.to_string_lossy().to_string(), color_nb)
+    (
+        unitigs_path.to_string_lossy().to_string(),
+        abundance_path.to_string_lossy().to_string(),
+        color_nb,
+    )
 }
-
 
 // --- FASTA FILES PARSING ---
 
@@ -1253,7 +1340,7 @@ fn is_zst_file(file_path: &str) -> io::Result<bool> {
     let mut file = File::open(file_path)?;
     let mut magic = [0u8; 4];
     file.read_exact(&mut magic)?;
-    Ok(magic == [0x28, 0xB5, 0x2F, 0xFD]) 
+    Ok(magic == [0x28, 0xB5, 0x2F, 0xFD])
 }
 
 /// reads input decompressing if in zst or gz format
@@ -1272,7 +1359,6 @@ fn read_file(file_path: &str) -> io::Result<Box<dyn BufRead>> {
         Ok(Box::new(BufReader::new(file)))
     }
 }
-
 
 // --- ABUNDANCE PARSING ---
 
@@ -1301,32 +1387,28 @@ fn extract_count(header: &str, header_type: &HeaderType) -> Result<u16, io::Erro
 }
 
 fn extract_count_from_bcalm_header(header: &str) -> Result<u16, io::Error> {
-    header.split_whitespace()
+    header
+        .split_whitespace()
         .find(|&part| part.starts_with("km:f:"))
-        .and_then(|km_part| {
-            km_part.trim_start_matches("km:f:").parse::<f32>().ok()
-        })
+        .and_then(|km_part| km_part.trim_start_matches("km:f:").parse::<f32>().ok())
         .map(|float_val| float_val as u16) //any value over max u16 will be clamped to the maximum possible value
         .ok_or_else(|| io::Error::other("km:f: value not found in header or could not be parsed"))
 }
 
 fn extract_count_from_logan_header(header: &str) -> Result<u16, io::Error> {
-    header.split_whitespace()
-        .find(|&part| part.starts_with("ka:f:")) 
-        .and_then(|ka_part| {
-            ka_part.trim_start_matches("ka:f:").parse::<f32>().ok()
-        })
-        .map(|float_val| float_val as u16) 
+    header
+        .split_whitespace()
+        .find(|&part| part.starts_with("ka:f:"))
+        .and_then(|ka_part| ka_part.trim_start_matches("ka:f:").parse::<f32>().ok())
+        .map(|float_val| float_val as u16)
         .ok_or_else(|| io::Error::other("ka:f: value not found in header or could not be parsed"))
 }
-
-
 
 // --- ABUNDANCE ENCODING ---
 
 fn compute_log_abundance(count_value: u16, base: f64, max: u16) -> u16 {
     let mut count_valuef = count_value as f64;
-    let threshold = 1.0 / (base-1.0);
+    let threshold = 1.0 / (base - 1.0);
     if count_valuef <= 0.0 || base <= 0.0 {
         panic!("value and base must be greater than 0");
         // count_valuef=1.0;
@@ -1337,7 +1419,7 @@ fn compute_log_abundance(count_value: u16, base: f64, max: u16) -> u16 {
     if count_valuef < threshold {
         (count_valuef - 1.0) as u16
     } else {
-        (count_valuef.ln() / base.ln() + (base-1.0).ln() / base.ln() + threshold - 1.0) as u16
+        (count_valuef.ln() / base.ln() + (base - 1.0).ln() / base.ln() + threshold - 1.0) as u16
     }
 }
 
@@ -1345,12 +1427,12 @@ fn approximate_value(log_value: usize, base: f64) -> u16 {
     if base <= 0.0 {
         panic!("base must be greater than 0");
     }
-    let threshold = 1.0 / (base-1.0);
+    let threshold = 1.0 / (base - 1.0);
     let logf = log_value as f64;
     if logf < threshold {
         (log_value + 1) as u16
     } else {
-        (base.powf((logf+1.0)-threshold)*threshold) as u16
+        (base.powf((logf + 1.0) - threshold) * threshold) as u16
     }
 }
 
@@ -1371,8 +1453,7 @@ fn compute_base(abundance_number: usize, abundance_max: u16) -> f64 {
         panic!("Maximal abundance must be greater than 0");
     }
 
-
-    let equation = |b: f64| -> f64{
+    let equation = |b: f64| -> f64 {
         if b <= 1.0 + 1.0 / abundance_maxf {
             return f64::INFINITY; // Avoid invalid logarithms
         }
@@ -1401,14 +1482,12 @@ fn compute_base(abundance_number: usize, abundance_max: u16) -> f64 {
     (lower_bound + upper_bound) / 2.0
 }
 
-
 // --- MINIMIZER ---
-
 
 ////  iterator over (k-mer, minimizer) pairs for a given sequence
 pub struct KmerMinimizerIterator<'a> {
     seq: &'a [u8],
-    minima: Vec<u64>,  // minimizers per starting position of kmers
+    minima: Vec<u64>, // minimizers per starting position of kmers
     current: usize,   // current k-mer start position
     k: usize,
 }
@@ -1417,7 +1496,8 @@ impl<'a> Iterator for KmerMinimizerIterator<'a> {
     type Item = (&'a [u8], u64); // (kmer, iterator)
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.current <= self.seq.len().saturating_sub(self.k) {  // below or equal to the last valid starting index 
+        if self.current <= self.seq.len().saturating_sub(self.k) {
+            // below or equal to the last valid starting index
             let kmer = &self.seq[self.current..self.current + self.k];
             let minimizer = self.minima[self.current];
             self.current += 1;
@@ -1427,7 +1507,6 @@ impl<'a> Iterator for KmerMinimizerIterator<'a> {
         }
     }
 }
-
 
 // minimisers things
 // returns an iterator over (k-mer, minimizer) pairs from sequence input
@@ -1461,9 +1540,12 @@ fn kmer_minimizers_seq_level<'a>(
     let mut deque: VecDeque<usize> = VecDeque::new();
 
     // process the first window: indices from 0 .. window_size
-    for i in 0..window_size { // positions in the window
-        while let Some(&back) = deque.back() { // if there's a value at the back of the queue -> back is the last position P recorded in the queue
-            if m_hashes[back] > m_hashes[i] { // if the minimizer list at position P is greater than what it is at the current position => remove from the queue
+    for i in 0..window_size {
+        // positions in the window
+        while let Some(&back) = deque.back() {
+            // if there's a value at the back of the queue -> back is the last position P recorded in the queue
+            if m_hashes[back] > m_hashes[i] {
+                // if the minimizer list at position P is greater than what it is at the current position => remove from the queue
                 deque.pop_back(); // remove large values from the back
             } else {
                 break;
@@ -1472,7 +1554,6 @@ fn kmer_minimizers_seq_level<'a>(
         deque.push_back(i); // current position i becomes a candidate for being a minimizer
     }
     // ===> the minimum for the first window has its position recorded at the front of the deque
-
 
     /* example
     window_size = 5
@@ -1501,7 +1582,6 @@ fn kmer_minimizers_seq_level<'a>(
 
 
     */
-
 
     if let Some(&front) = deque.front() {
         minima.push(m_hashes[front]);
@@ -1543,7 +1623,6 @@ fn kmer_minimizers_seq_level<'a>(
     kmer_hash_iter.zip(minima)
 }
 
-
 // --- MISC ---
 
 fn _display_progress(total_kmers: u64, start_time: Instant) {
@@ -1558,165 +1637,44 @@ fn _display_progress(total_kmers: u64, start_time: Instant) {
     );
 }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 /* TESTS */
 
 #[allow(unused_imports)]
 #[cfg(test)]
 mod tests {
-    
+
     use super::*;
     use bio::io::fasta;
     use std::io::Cursor;
 
     #[test]
-    fn test_read_fof_file() {    
+    fn test_read_fof_file() {
         let test_file_path = "test_fof.txt";
-    
+
         // Create the test file
         {
-            let mut test_file = File::create(test_file_path).expect("Failed to create test FOF file");
-            writeln!(test_file, "/home/test/path/file1.fasta").expect("Failed to write to test FOF file");
-            writeln!(test_file, "/home/test/path/file2.fasta").expect("Failed to write to test FOF file");
+            let mut test_file =
+                File::create(test_file_path).expect("Failed to create test FOF file");
+            writeln!(test_file, "/home/test/path/file1.fasta")
+                .expect("Failed to write to test FOF file");
+            writeln!(test_file, "/home/test/path/file2.fasta")
+                .expect("Failed to write to test FOF file");
             writeln!(test_file, "file.fasta").expect("Failed to write to test FOF file");
         }
-    
+
         // Call the function being tested
         let (file_paths, _col_nb) = read_fof_file(test_file_path).unwrap();
-    
+
         // Define the expected result
         let expected = vec![
             "/home/test/path/file1.fasta".to_string(),
             "/home/test/path/file2.fasta".to_string(),
             "file.fasta".to_string(),
         ];
-    
+
         // Assertions
         assert_eq!(file_paths, expected);
-    
+
         // Cleanup
         if Path::new(test_file_path).exists() {
             std::fs::remove_file(test_file_path).expect("Failed to remove test FOF file");
@@ -1732,7 +1690,7 @@ mod tests {
 
     #[test]
     fn test_extract_count_from_logan_header2() {
-        let header = ">0 ka:f:X  L:+:5:+ L:+:5392806:+  L:-:1:-"; 
+        let header = ">0 ka:f:X  L:+:5:+ L:+:5392806:+  L:-:1:-";
         let result = extract_count_from_logan_header(header);
         assert!(result.is_err());
     }
@@ -1741,14 +1699,14 @@ mod tests {
         let header = ">0 ka:f:12.4   L:+:5:+ L:+:5392806:+  L:-:1:-";
         let expected = 12;
         let result = extract_count_from_logan_header(header).unwrap();
-        assert_eq!(result,expected);
+        assert_eq!(result, expected);
     }
     #[test]
     fn test_extract_count_from_logan_header4() {
         let header = ">0 ka:f:65537   L:+:5:+ L:+:5392806:+  L:-:1:-";
         let expected = 65535;
         let result = extract_count_from_logan_header(header).unwrap();
-        assert_eq!(result,expected);
+        assert_eq!(result, expected);
     }
 
     #[test]
@@ -1765,29 +1723,48 @@ mod tests {
         let b = 1.1;
         for n in 1..9 {
             let result = compute_log_abundance(n, b, 65535);
-            assert_eq!(result, n-1, "expected abundance function to be linear for the first values");
+            assert_eq!(
+                result,
+                n - 1,
+                "expected abundance function to be linear for the first values"
+            );
         }
-        assert_eq!(compute_log_abundance(10, b, 65535), compute_log_abundance(11, b, 65535), "expected abundance function not to be linear at the threshold");
+        assert_eq!(
+            compute_log_abundance(10, b, 65535),
+            compute_log_abundance(11, b, 65535),
+            "expected abundance function not to be linear at the threshold"
+        );
     }
 
     #[test]
     fn test_compute_log_abundance_positive_values() {
         let result = compute_log_abundance(8, 2.0, 65535);
-        assert!(((result as f64) - 3.0).abs() < 1e-6, "expected log base 2 of 8 to be 3");
+        assert!(
+            ((result as f64) - 3.0).abs() < 1e-6,
+            "expected log base 2 of 8 to be 3"
+        );
     }
-   
+
     #[test]
     fn test_compute_log_abundance_with_large_values() {
         let result = compute_log_abundance(65535, 2.0, 65535);
-        let expected_log = (65535 as f64).log2().floor() as u16; 
-        assert_eq!(result, expected_log,"expected log base 2 of 65535 to be {}, but got {}", expected_log, result);
+        let expected_log = (65535 as f64).log2().floor() as u16;
+        assert_eq!(
+            result, expected_log,
+            "expected log base 2 of 65535 to be {}, but got {}",
+            expected_log, result
+        );
     }
 
     #[test]
     fn test_compute_log_abundance_above_max() {
         let result = compute_log_abundance(65535, 2.0, 256);
         let expected_log = (256 as f64).log2().floor() as u16;
-        assert_eq!(result, expected_log,"expected abundance to be scaled at log base 2 of 256 should have been {}, but got {}", expected_log, result);
+        assert_eq!(
+            result, expected_log,
+            "expected abundance to be scaled at log base 2 of 256 should have been {}, but got {}",
+            expected_log, result
+        );
     }
 
     #[test]
@@ -1796,20 +1773,20 @@ mod tests {
         let bcalm_header = ">0 km:f:12.4 L:+:5:+";
         let logan_header = ">0 ka:f:7.8 L:+:5392806:+";
         let unsupported_header = ">0 other:f:10.0 L:+:1:-";
-    
+
         let bcalm_type = determine_header_type(bcalm_header).unwrap();
         assert!(matches!(bcalm_type, HeaderType::BCalm));
-    
+
         let logan_type = determine_header_type(logan_header).unwrap();
         assert!(matches!(logan_type, HeaderType::Logan));
-    
+
         let unsupported_type = determine_header_type(unsupported_header);
         assert!(unsupported_type.is_err());
-    
+
         // Test extracting counts
         let count_from_bcalm = extract_count(bcalm_header, &HeaderType::BCalm).unwrap();
         assert_eq!(count_from_bcalm, 12);
-    
+
         let count_from_logan = extract_count(logan_header, &HeaderType::Logan).unwrap();
         assert_eq!(count_from_logan, 7);
     }
@@ -1845,26 +1822,43 @@ mod tests {
         let result1 = approximate_value(6, base);
         let result2 = approximate_value(8, base);
         let result3 = approximate_value(10, base);
-        assert_eq!(result2/2, result1, "check approximation consistency with base sqrt(2)");
-        assert_eq!(result3/2, result2, "check approximation consistency with base sqrt(2)");
+        assert_eq!(
+            result2 / 2,
+            result1,
+            "check approximation consistency with base sqrt(2)"
+        );
+        assert_eq!(
+            result3 / 2,
+            result2,
+            "check approximation consistency with base sqrt(2)"
+        );
     }
 
     #[test]
     fn test_compute_base_with_positive_values() {
         let result = compute_base(16, 1024);
-        assert!((result - 1.5635206).abs() < 1e-6, "expected base for 16 with max 1024 to be ~1.56");
+        assert!(
+            (result - 1.5635206).abs() < 1e-6,
+            "expected base for 16 with max 1024 to be ~1.56"
+        );
     }
 
     #[test]
     fn test_compute_base_with_large_abundance_number() {
         let result = compute_base(32, 1024);
-        assert!((result - 1.218096).abs() < 1e-6, "expected base for 32 with max 1024 to be approximately ~1.22");
+        assert!(
+            (result - 1.218096).abs() < 1e-6,
+            "expected base for 32 with max 1024 to be approximately ~1.22"
+        );
     }
 
     #[test]
     fn test_compute_base_with_small_abundance_number() {
         let result = compute_base(8, 1024);
-        assert!((result - 2.740397).abs() < 1e-6, "expected base for 8 with max 1024 to be ~2.74");
+        assert!(
+            (result - 2.740397).abs() < 1e-6,
+            "expected base for 8 with max 1024 to be ~2.74"
+        );
     }
 
     #[test]
@@ -1879,8 +1873,6 @@ mod tests {
         compute_base(16, 0);
     }
 
-
-    
     #[test]
     fn test_kmer_hash_minimizers() {
         let seq_str = "ACGTACGTACGTACGT";
@@ -1893,79 +1885,72 @@ mod tests {
 
         // there should be seq.len() - k + 1 pairs.
         assert_eq!(pairs.len(), seq_bytes.len() - k + 1);
-
     }
-    
-  
 
+    /*
+        #[test]
+        fn test_update_bloom_filter_memory() {
+            // Wrap RoaringBitmap in a Mutex
+            let bloom_filter = std::sync::Mutex::new(RoaringBitmap::new());
 
+            let kmer_hashes = vec![42, 84, 126];
+            let partitioned_bf_size = 16;
+            let color_number = 3;
+            let path_num = 1;
+            let abundance_number = 2;
+            let log_abundance = 1;
 
-   
-    
-/*
-    #[test]
-    fn test_update_bloom_filter_memory() {
-        // Wrap RoaringBitmap in a Mutex
-        let bloom_filter = std::sync::Mutex::new(RoaringBitmap::new());
-    
-        let kmer_hashes = vec![42, 84, 126]; 
-        let partitioned_bf_size = 16;
-        let color_number = 3; 
-        let path_num = 1;
-        let abundance_number = 2; 
-        let log_abundance = 1; 
-    
-        let expected_positions: Vec<u32> = kmer_hashes
-            .iter()
-            .map(|&hash| {
-                compute_location_filter(
-                    hash,
-                    partitioned_bf_size,
-                    color_number,
-                    path_num,
-                    abundance_number,
-                    log_abundance,
-                ) as u32
-            })
-            .collect();
-    
-        // Pass a reference to the Mutex<RoaringBitmap> instead of &mut RoaringBitmap
-        update_bloom_filter_memory(
-            &bloom_filter,
-            &kmer_hashes,
-            partitioned_bf_size,
-            color_number,
-            path_num,
-            abundance_number,
-            log_abundance,
-        );
-    
-        // Lock the mutex before checking the bitmap
-        let bloom_filter_guard = bloom_filter.lock().unwrap();
-    
-        for &expected_position in &expected_positions {
-            assert!(
-                bloom_filter_guard.contains(expected_position),
-                "Expected position {} not found in bloom filter",
-                expected_position
+            let expected_positions: Vec<u32> = kmer_hashes
+                .iter()
+                .map(|&hash| {
+                    compute_location_filter(
+                        hash,
+                        partitioned_bf_size,
+                        color_number,
+                        path_num,
+                        abundance_number,
+                        log_abundance,
+                    ) as u32
+                })
+                .collect();
+
+            // Pass a reference to the Mutex<RoaringBitmap> instead of &mut RoaringBitmap
+            update_bloom_filter_memory(
+                &bloom_filter,
+                &kmer_hashes,
+                partitioned_bf_size,
+                color_number,
+                path_num,
+                abundance_number,
+                log_abundance,
+            );
+
+            // Lock the mutex before checking the bitmap
+            let bloom_filter_guard = bloom_filter.lock().unwrap();
+
+            for &expected_position in &expected_positions {
+                assert!(
+                    bloom_filter_guard.contains(expected_position),
+                    "Expected position {} not found in bloom filter",
+                    expected_position
+                );
+            }
+
+            assert_eq!(
+                bloom_filter_guard.len(),
+                expected_positions.len().try_into().unwrap(),
+                "Unexpected number of entries in bloom filter"
             );
         }
-    
-        assert_eq!(
-            bloom_filter_guard.len(),
-            expected_positions.len().try_into().unwrap(),
-            "Unexpected number of entries in bloom filter"
-        );
-    }
-*/
+    */
     #[test]
     fn test_update_color_abundances() {
         use roaring::RoaringBitmap;
 
         let mut bitmap = RoaringBitmap::new();
         let base_position = 100;
-        let color_number = 3; 
-        let abundance_number = 2; 
+        let color_number = 3;
+        let abundance_number = 2;
 
         bitmap.insert((base_position + 0) as u32); // color 0, abundance 0
         bitmap.insert((base_position + 1) as u32); // color 0, abundance 1
@@ -1973,12 +1958,18 @@ mod tests {
 
         let mut color_abundances = vec![vec![]; color_number];
 
-        update_color_abundances(&bitmap, base_position, color_number, abundance_number, &mut color_abundances);
+        update_color_abundances(
+            &bitmap,
+            base_position,
+            color_number,
+            abundance_number,
+            &mut color_abundances,
+        );
 
         let expected_color_abundances = vec![
-            vec![0], // color 0 has abundance levels 0 and 1 -> will keep the min
-            vec![0],    // color 1 has abundance level 0
-            vec![666],     // color 2 has no abundance, set to 666 instead (handle later in the pipeline)
+            vec![0],   // color 0 has abundance levels 0 and 1 -> will keep the min
+            vec![0],   // color 1 has abundance level 0
+            vec![666], // color 2 has no abundance, set to 666 instead (handle later in the pipeline)
         ];
 
         assert_eq!(
@@ -1987,7 +1978,6 @@ mod tests {
             expected_color_abundances, color_abundances
         );
     }
-
 
     #[test]
     fn test_write_and_read_partition_csv() {
@@ -2020,56 +2010,110 @@ mod tests {
         let read_result = read_partition_from_csv(bf_dir, output_csv);
         assert!(read_result.is_ok(), "Failed to read CSV");
 
-        let (read_k, read_m, read_bf_size, read_partition_number, read_color_number, read_abundance_number, read_abundance_max, read_dense_option) =
-            read_result.unwrap();
+        let (
+            read_k,
+            read_m,
+            read_bf_size,
+            read_partition_number,
+            read_color_number,
+            read_abundance_number,
+            read_abundance_max,
+            read_dense_option,
+        ) = read_result.unwrap();
 
         assert_eq!(read_k, k, "Mismatch in k value");
         assert_eq!(read_m, m, "Mismatch in m value");
         assert_eq!(read_bf_size, bf_size, "Mismatch in bf_size value");
-        assert_eq!(read_partition_number, partition_number, "Mismatch in partition_number value");
-        assert_eq!(read_color_number, color_number, "Mismatch in color_number value");
-        assert_eq!(read_abundance_number, abundance_number, "Mismatch in abundance_number value");
-        assert_eq!(read_abundance_max, abundance_max, "Mismatch in abundance_max value");
-        assert_eq!(read_dense_option, dense_option, "Mismatch in dense_option value");
+        assert_eq!(
+            read_partition_number, partition_number,
+            "Mismatch in partition_number value"
+        );
+        assert_eq!(
+            read_color_number, color_number,
+            "Mismatch in color_number value"
+        );
+        assert_eq!(
+            read_abundance_number, abundance_number,
+            "Mismatch in abundance_number value"
+        );
+        assert_eq!(
+            read_abundance_max, abundance_max,
+            "Mismatch in abundance_max value"
+        );
+        assert_eq!(
+            read_dense_option, dense_option,
+            "Mismatch in dense_option value"
+        );
 
         fs::remove_dir_all(bf_dir).expect("Failed to remove test directory");
     }
 
-
-
-fn create_build_query(bf_size: u64, partition_number: usize, k: usize, m: usize, color_number: usize, abundance_number: usize, abundance_max: u16, dense_option: bool, threshold: usize, file_paths: Vec<String>, query_file_id:usize, test_dir: &str) -> String {
-            let index = Reindeer2::new(bf_size, partition_number, k, m, color_number, abundance_number, abundance_max, dense_option);
-        let (_file_paths, index_dir) = index.build(
-            file_paths.clone(),
+    fn create_build_query(
+        bf_size: u64,
+        partition_number: usize,
+        k: usize,
+        m: usize,
+        color_number: usize,
+        abundance_number: usize,
+        abundance_max: u16,
+        dense_option: bool,
+        threshold: usize,
+        file_paths: Vec<String>,
+        query_file_id: usize,
+        test_dir: &str,
+    ) -> String {
+        let index = Reindeer2::new(
+            bf_size,
+            partition_number,
+            k,
+            m,
+            color_number,
             abundance_number,
             abundance_max,
-            test_dir,
             dense_option,
-            threshold,
-            false,
-        )
-        .expect("Failed to build index");
-    
+        );
+        let (_file_paths, index_dir) = index
+            .build(
+                file_paths.clone(),
+                abundance_number,
+                abundance_max,
+                test_dir,
+                dense_option,
+                threshold,
+                false,
+            )
+            .expect("Failed to build index");
+
         let query_results_path = format!("{}/query_results.csv", index_dir);
-        
-        let index_from_csv = Reindeer2::from_csv(&index_dir).expect("Failed to laod index infos from disk");
-        index_from_csv.query(&file_paths[query_file_id], &index_dir, &query_results_path, false, false, 0.5, false)
+
+        let index_from_csv =
+            Reindeer2::from_csv(&index_dir).expect("Failed to laod index infos from disk");
+        index_from_csv
+            .query(
+                &file_paths[query_file_id],
+                &index_dir,
+                &query_results_path,
+                false,
+                false,
+                0.5,
+                false,
+            )
             .expect("Failed to query sequences");
         query_results_path
-}
+    }
     #[test]
     fn test_build_and_query_index_single_sparse() {
         let test_dir = "test_files_bq0";
         fs::create_dir_all(test_dir).expect("Failed to create test directory");
-    
+
         let fof_path = format!("{}/fof.txt", test_dir);
         let file1_path = format!("{}/file1Q.fa", test_dir);
-    
+
         {
             let mut fof_file = File::create(&fof_path).expect("Failed to create fof.txt");
             writeln!(fof_file, "{}", file1_path).expect("Failed to write to fof.txt");
         }
-        
+
         {
             let mut file1 = File::create(&file1_path).expect("Failed to create file1.fasta");
             writeln!(file1, ">seq1 ka:f:30").expect("Failed to write header");
@@ -2079,37 +2123,58 @@ fn create_build_query(bf_size: u64, partition_number: usize, k: usize, m: usize,
             writeln!(file1, ">seq3 ka:f:2").expect("Failed to write header");
             writeln!(file1, "AAAAAAAAAAAAAAAAAAAAAACAAAAAGAA").expect("Failed to write sequence");
         }
-    
+
         let k = 31;
         let m = 15;
         let bf_size = 1024 * 1024;
         let partition_number = 4;
         let color_number = 1;
-        let abundance_number = 256; 
+        let abundance_number = 256;
         let abundance_max = 65535;
         let dense_option = false;
         let threshold = color_number;
 
-
-        let index = Reindeer2::new(bf_size, partition_number, k, m, color_number, abundance_number, abundance_max, dense_option);
-        let (_file_paths, index_dir) = index.build(
-            vec![file1_path.clone()],
+        let index = Reindeer2::new(
+            bf_size,
+            partition_number,
+            k,
+            m,
+            color_number,
             abundance_number,
             abundance_max,
-            test_dir,
             dense_option,
-            threshold,
-            false,
-        )
-        .expect("Failed to build index");
-    
+        );
+        let (_file_paths, index_dir) = index
+            .build(
+                vec![file1_path.clone()],
+                abundance_number,
+                abundance_max,
+                test_dir,
+                dense_option,
+                threshold,
+                false,
+            )
+            .expect("Failed to build index");
+
         let query_results_path = format!("{}/query_results.csv", index_dir);
-        
-        let index_from_csv = Reindeer2::from_csv(&index_dir).expect("Failed to laod index infos from disk");
-        index_from_csv.query(&file1_path, &index_dir, &query_results_path, false, false, 0.5, false)
+
+        let index_from_csv =
+            Reindeer2::from_csv(&index_dir).expect("Failed to laod index infos from disk");
+        index_from_csv
+            .query(
+                &file1_path,
+                &index_dir,
+                &query_results_path,
+                false,
+                false,
+                0.5,
+                false,
+            )
             .expect("Failed to query sequences");
-    
-        let mut reader = csv::Reader::from_reader(File::open(&query_results_path).expect("Failed to open query results"));
+
+        let mut reader = csv::Reader::from_reader(
+            File::open(&query_results_path).expect("Failed to open query results"),
+        );
         let mut results: Vec<(String, usize, usize)> = Vec::new();
         for record in reader.records() {
             let record = record.expect("Failed to read record");
@@ -2118,22 +2183,17 @@ fn create_build_query(bf_size: u64, partition_number: usize, k: usize, m: usize,
             let abundance: usize = record[2].parse().expect("Failed to parse abundance");
             results.push((header, color, abundance));
         }
-        
-        assert!(
-            !results.is_empty(),
-            "Empty results"
-        );
-    
+
+        assert!(!results.is_empty(), "Empty results");
+
         let mut expected_results = vec![
             (">seq1 ka:f:30".to_string(), 0, 29),
             (">seq2 ka:f:30".to_string(), 0, 29),
-            (">seq3 ka:f:2".to_string(), 0, 2),  // Values with errors due to log conversion
+            (">seq3 ka:f:2".to_string(), 0, 2), // Values with errors due to log conversion
         ];
-    
+
         results.sort();
         expected_results.sort();
-
-
 
         for (expected, actual) in expected_results.iter().zip(results.iter()) {
             assert_eq!(
@@ -2142,7 +2202,7 @@ fn create_build_query(bf_size: u64, partition_number: usize, k: usize, m: usize,
                 expected, actual
             );
         }
-    
+
         fs::remove_dir_all(test_dir).expect("Failed to clean up test directory");
     }
 
@@ -2150,16 +2210,15 @@ fn create_build_query(bf_size: u64, partition_number: usize, k: usize, m: usize,
     fn test_build_and_query_index_single_dense() {
         let test_dir = "test_files_bq0d";
         fs::create_dir_all(test_dir).expect("Failed to create test directory");
-    
+
         let fof_path = format!("{}/fof.txt", test_dir);
         let file1_path = format!("{}/file1Q.fa", test_dir);
 
-    
         {
             let mut fof_file = File::create(&fof_path).expect("Failed to create fof.txt");
             writeln!(fof_file, "{}", file1_path).expect("Failed to write to fof.txt");
         }
-        
+
         {
             let mut file1 = File::create(&file1_path).expect("Failed to create file1.fasta");
             writeln!(file1, ">seq1 ka:f:30").expect("Failed to write header");
@@ -2169,20 +2228,35 @@ fn create_build_query(bf_size: u64, partition_number: usize, k: usize, m: usize,
             writeln!(file1, ">seq3 ka:f:2").expect("Failed to write header");
             writeln!(file1, "AAAAAAAAAAAAAAAAAAAAAACAAAAAGAA").expect("Failed to write sequence");
         }
-    
+
         let k = 31;
         let m = 15;
         let bf_size = 1024 * 1024;
         let partition_number = 4;
         let color_number = 1;
-        let abundance_number = 255; 
+        let abundance_number = 255;
         let abundance_max = 65535;
         let dense_option = true;
         let threshold = color_number;
 
-        let query_results_path= create_build_query(bf_size, partition_number, k, m, color_number, abundance_number, abundance_max, dense_option, threshold, vec![file1_path], 0, test_dir);
-    
-        let mut reader = csv::Reader::from_reader(File::open(&query_results_path).expect("Failed to open query results"));
+        let query_results_path = create_build_query(
+            bf_size,
+            partition_number,
+            k,
+            m,
+            color_number,
+            abundance_number,
+            abundance_max,
+            dense_option,
+            threshold,
+            vec![file1_path],
+            0,
+            test_dir,
+        );
+
+        let mut reader = csv::Reader::from_reader(
+            File::open(&query_results_path).expect("Failed to open query results"),
+        );
         let mut results: Vec<(String, usize, usize)> = Vec::new();
         for record in reader.records() {
             let record = record.expect("Failed to read record");
@@ -2191,22 +2265,17 @@ fn create_build_query(bf_size: u64, partition_number: usize, k: usize, m: usize,
             let abundance: usize = record[2].parse().expect("Failed to parse abundance");
             results.push((header, color, abundance));
         }
-        
-        assert!(
-            !results.is_empty(),
-            "Empty results"
-        );
-    
+
+        assert!(!results.is_empty(), "Empty results");
+
         let mut expected_results = vec![
             (">seq1 ka:f:30".to_string(), 0, 29),
             (">seq2 ka:f:30".to_string(), 0, 29),
-            (">seq3 ka:f:2".to_string(), 0, 2),  // Values with errors due to log conversion
+            (">seq3 ka:f:2".to_string(), 0, 2), // Values with errors due to log conversion
         ];
-    
+
         results.sort();
         expected_results.sort();
-
-
 
         for (expected, actual) in expected_results.iter().zip(results.iter()) {
             assert_eq!(
@@ -2215,7 +2284,7 @@ fn create_build_query(bf_size: u64, partition_number: usize, k: usize, m: usize,
                 expected, actual
             );
         }
-    
+
         fs::remove_dir_all(test_dir).expect("Failed to clean up test directory");
     }
 
@@ -2223,17 +2292,17 @@ fn create_build_query(bf_size: u64, partition_number: usize, k: usize, m: usize,
     fn test_build_and_query_index_sparse() {
         let test_dir = "test_files_bq1";
         fs::create_dir_all(test_dir).expect("Failed to create test directory");
-    
+
         let fof_path = format!("{}/fof.txt", test_dir);
         let file1_path = format!("{}/file1Q.fa", test_dir);
         let file2_path = format!("{}/file2Q.fa", test_dir);
-    
+
         {
             let mut fof_file = File::create(&fof_path).expect("Failed to create fof.txt");
             writeln!(fof_file, "{}", file1_path).expect("Failed to write to fof.txt");
             writeln!(fof_file, "{}", file2_path).expect("Failed to write to fof.txt");
         }
-        
+
         {
             let mut file1 = File::create(&file1_path).expect("Failed to create file1.fasta");
             writeln!(file1, ">seq1 ka:f:30").expect("Failed to write header");
@@ -2243,7 +2312,7 @@ fn create_build_query(bf_size: u64, partition_number: usize, k: usize, m: usize,
             writeln!(file1, ">seq3 ka:f:2").expect("Failed to write header");
             writeln!(file1, "AAAAAAAAAAAAAAAAAAAAAACAAAAAGAA").expect("Failed to write sequence");
         }
-    
+
         {
             let mut file2 = File::create(&file2_path).expect("Failed to create file2.fasta");
             writeln!(file2, ">seq4 ka:f:1000").expect("Failed to write header");
@@ -2251,21 +2320,35 @@ fn create_build_query(bf_size: u64, partition_number: usize, k: usize, m: usize,
             writeln!(file2, ">seq5 ka:f:1000").expect("Failed to write header");
             writeln!(file2, "AAAAAAAAAAAAAAAAAAAAAACAAAAAGAA").expect("Failed to write sequence");
         }
-        
+
         let k = 31;
         let m = 15;
         let bf_size = 1024 * 1024;
         let partition_number = 4;
         let color_number = 2;
-        let abundance_number = 256; 
+        let abundance_number = 256;
         let abundance_max = 65535;
         let dense_option = false;
         let threshold = color_number;
-    
-        let query_results_path= create_build_query(bf_size, partition_number, k, m, color_number, abundance_number, abundance_max, dense_option, threshold, vec![file1_path, file2_path], 0, test_dir);
 
-    
-        let mut reader = csv::Reader::from_reader(File::open(&query_results_path).expect("Failed to open query results"));
+        let query_results_path = create_build_query(
+            bf_size,
+            partition_number,
+            k,
+            m,
+            color_number,
+            abundance_number,
+            abundance_max,
+            dense_option,
+            threshold,
+            vec![file1_path, file2_path],
+            0,
+            test_dir,
+        );
+
+        let mut reader = csv::Reader::from_reader(
+            File::open(&query_results_path).expect("Failed to open query results"),
+        );
         let mut results: Vec<(String, usize, usize)> = Vec::new();
         for record in reader.records() {
             let record = record.expect("Failed to read record");
@@ -2274,16 +2357,13 @@ fn create_build_query(bf_size: u64, partition_number: usize, k: usize, m: usize,
             let abundance: usize = record[2].parse().expect("Failed to parse abundance");
             results.push((header, color, abundance));
         }
-        
-        assert!(
-            !results.is_empty(),
-            "Empty results"
-        );
-    
+
+        assert!(!results.is_empty(), "Empty results");
+
         let mut expected_results = vec![
             (">seq1 ka:f:30".to_string(), 0, 29),
             (">seq2 ka:f:30".to_string(), 0, 29),
-            (">seq3 ka:f:2".to_string(), 0, 2), 
+            (">seq3 ka:f:2".to_string(), 0, 2),
             (">seq3 ka:f:2".to_string(), 1, 997),
         ];
         results.sort();
@@ -2295,7 +2375,7 @@ fn create_build_query(bf_size: u64, partition_number: usize, k: usize, m: usize,
                 expected, actual
             );
         }
-    
+
         fs::remove_dir_all(test_dir).expect("Failed to clean up test directory");
     }
 
@@ -2303,17 +2383,17 @@ fn create_build_query(bf_size: u64, partition_number: usize, k: usize, m: usize,
     fn test_build_and_query_index_dense() {
         let test_dir = "test_files_bq1d";
         fs::create_dir_all(test_dir).expect("Failed to create test directory");
-    
+
         let fof_path = format!("{}/fof.txt", test_dir);
         let file1_path = format!("{}/file1Q.fa", test_dir);
         let file2_path = format!("{}/file2Q.fa", test_dir);
-    
+
         {
             let mut fof_file = File::create(&fof_path).expect("Failed to create fof.txt");
             writeln!(fof_file, "{}", file1_path).expect("Failed to write to fof.txt");
             writeln!(fof_file, "{}", file2_path).expect("Failed to write to fof.txt");
         }
-        
+
         {
             let mut file1 = File::create(&file1_path).expect("Failed to create file1.fasta");
             writeln!(file1, ">seq1 ka:f:30").expect("Failed to write header");
@@ -2323,7 +2403,7 @@ fn create_build_query(bf_size: u64, partition_number: usize, k: usize, m: usize,
             writeln!(file1, ">seq3 ka:f:2").expect("Failed to write header");
             writeln!(file1, "AAAAAAAAAAAAAAAAAAAAAACAAAAAGAA").expect("Failed to write sequence");
         }
-    
+
         {
             let mut file2 = File::create(&file2_path).expect("Failed to create file2.fasta");
             writeln!(file2, ">seq4 ka:f:1000").expect("Failed to write header");
@@ -2331,20 +2411,35 @@ fn create_build_query(bf_size: u64, partition_number: usize, k: usize, m: usize,
             writeln!(file2, ">seq5 ka:f:1000").expect("Failed to write header");
             writeln!(file2, "AAAAAAAAAAAAAAAAAAAAAACAAAAAGAA").expect("Failed to write sequence");
         }
-        
+
         let k = 31;
         let m = 15;
         let bf_size = 1024 * 1024;
         let partition_number = 4;
         let color_number = 2;
-        let abundance_number = 256; 
+        let abundance_number = 256;
         let abundance_max = 65535;
         let dense_option = true;
         let threshold = color_number;
-    
-        let query_results_path= create_build_query(bf_size, partition_number, k, m, color_number, abundance_number, abundance_max, dense_option, threshold, vec![file1_path, file2_path], 0, test_dir);
-    
-        let mut reader = csv::Reader::from_reader(File::open(&query_results_path).expect("Failed to open query results"));
+
+        let query_results_path = create_build_query(
+            bf_size,
+            partition_number,
+            k,
+            m,
+            color_number,
+            abundance_number,
+            abundance_max,
+            dense_option,
+            threshold,
+            vec![file1_path, file2_path],
+            0,
+            test_dir,
+        );
+
+        let mut reader = csv::Reader::from_reader(
+            File::open(&query_results_path).expect("Failed to open query results"),
+        );
         let mut results: Vec<(String, usize, usize)> = Vec::new();
         for record in reader.records() {
             let record = record.expect("Failed to read record");
@@ -2353,16 +2448,13 @@ fn create_build_query(bf_size: u64, partition_number: usize, k: usize, m: usize,
             let abundance: usize = record[2].parse().expect("Failed to parse abundance");
             results.push((header, color, abundance));
         }
-        
-        assert!(
-            !results.is_empty(),
-            "Empty results"
-        );
-    
+
+        assert!(!results.is_empty(), "Empty results");
+
         let mut expected_results = vec![
             (">seq1 ka:f:30".to_string(), 0, 29),
             (">seq2 ka:f:30".to_string(), 0, 29),
-            (">seq3 ka:f:2".to_string(), 0, 2), 
+            (">seq3 ka:f:2".to_string(), 0, 2),
             (">seq3 ka:f:2".to_string(), 1, 997),
         ];
         results.sort();
@@ -2374,10 +2466,9 @@ fn create_build_query(bf_size: u64, partition_number: usize, k: usize, m: usize,
                 expected, actual
             );
         }
-    
+
         fs::remove_dir_all(test_dir).expect("Failed to clean up test directory");
     }
-    
 
     #[test]
     fn test_build_and_query_index_longseq_simple_sparse() {
@@ -2405,11 +2496,8 @@ fn create_build_query(bf_size: u64, partition_number: usize, k: usize, m: usize,
         {
             let mut file2 = File::create(&file2_path).expect("Failed to create file2.fasta");
             writeln!(file2, ">seq3 ka:f:1000").expect("Failed to write header");
-            writeln!(
-                file2,
-                "AAAAATGATAGTAGAAAAAAATTTTAAAAAAACACCCCTGG"
-            )
-            .expect("Failed to write sequence");
+            writeln!(file2, "AAAAATGATAGTAGAAAAAAATTTTAAAAAAACACCCCTGG")
+                .expect("Failed to write sequence");
         }
 
         let k = 31;
@@ -2422,11 +2510,25 @@ fn create_build_query(bf_size: u64, partition_number: usize, k: usize, m: usize,
         let dense_option = false;
         let threshold = color_number;
 
-        let query_results_path= create_build_query(bf_size, partition_number, k, m, color_number, abundance_number, abundance_max, dense_option, threshold, vec![file1_path, file2_path], 1, test_dir);
+        let query_results_path = create_build_query(
+            bf_size,
+            partition_number,
+            k,
+            m,
+            color_number,
+            abundance_number,
+            abundance_max,
+            dense_option,
+            threshold,
+            vec![file1_path, file2_path],
+            1,
+            test_dir,
+        );
 
         // Validate the results written to the query results CSV file
-        let mut reader =
-            csv::Reader::from_reader(File::open(&query_results_path).expect("Failed to open query results"));
+        let mut reader = csv::Reader::from_reader(
+            File::open(&query_results_path).expect("Failed to open query results"),
+        );
         let mut results: Vec<(String, usize, usize)> = Vec::new();
         for record in reader.records() {
             let record = record.expect("Failed to read record");
@@ -2478,11 +2580,8 @@ fn create_build_query(bf_size: u64, partition_number: usize, k: usize, m: usize,
         {
             let mut file2 = File::create(&file2_path).expect("Failed to create file2.fasta");
             writeln!(file2, ">seq3 ka:f:1000").expect("Failed to write header");
-            writeln!(
-                file2,
-                "AAAAATGATAGTAGAAAAAAATTTTAAAAAAACACCCCTGG"
-            )
-            .expect("Failed to write sequence");
+            writeln!(file2, "AAAAATGATAGTAGAAAAAAATTTTAAAAAAACACCCCTGG")
+                .expect("Failed to write sequence");
         }
 
         let k = 31;
@@ -2495,11 +2594,25 @@ fn create_build_query(bf_size: u64, partition_number: usize, k: usize, m: usize,
         let dense_option = true;
         let threshold = color_number;
 
-        let query_results_path= create_build_query(bf_size, partition_number, k, m, color_number, abundance_number, abundance_max, dense_option, threshold, vec![file1_path, file2_path], 1, test_dir);
+        let query_results_path = create_build_query(
+            bf_size,
+            partition_number,
+            k,
+            m,
+            color_number,
+            abundance_number,
+            abundance_max,
+            dense_option,
+            threshold,
+            vec![file1_path, file2_path],
+            1,
+            test_dir,
+        );
 
         // Validate the results written to the query results CSV file
-        let mut reader =
-            csv::Reader::from_reader(File::open(&query_results_path).expect("Failed to open query results"));
+        let mut reader = csv::Reader::from_reader(
+            File::open(&query_results_path).expect("Failed to open query results"),
+        );
         let mut results: Vec<(String, usize, usize)> = Vec::new();
         for record in reader.records() {
             let record = record.expect("Failed to read record");
@@ -2525,7 +2638,6 @@ fn create_build_query(bf_size: u64, partition_number: usize, k: usize, m: usize,
         fs::remove_dir_all(test_dir).expect("Failed to clean up test directory");
     }
 
-
     #[test]
     fn test_build_and_query_index2_sparse() {
         use std::io::Write;
@@ -2542,7 +2654,7 @@ fn create_build_query(bf_size: u64, partition_number: usize, k: usize, m: usize,
             writeln!(fof_file, "{}", file1_path).expect("Failed to write to fof.txt");
             writeln!(fof_file, "{}", file2_path).expect("Failed to write to fof.txt");
         }
-    
+
         {
             let mut file1 = File::create(&file1_path).expect("Failed to create file1.fasta");
             writeln!(file1, ">seq1 ka:f:30").expect("Failed to write header");
@@ -2560,24 +2672,35 @@ fn create_build_query(bf_size: u64, partition_number: usize, k: usize, m: usize,
             writeln!(file2, ">seq5 ka:f:1000").expect("Failed to write header");
             writeln!(file2, "AAAAAAAAAAAAAAAAAAAAACACCCCTGGG").expect("Failed to write sequence");
         }
-     
+
         let k = 31;
         let m = 15;
         let bf_size = 1024 * 1024;
         let partition_number = 4;
         let color_number = 2;
-        let abundance_number = 255; 
+        let abundance_number = 255;
         let abundance_max = 65535;
         let dense_option = false;
         let threshold = 1;
 
-       
+        let query_results_path = create_build_query(
+            bf_size,
+            partition_number,
+            k,
+            m,
+            color_number,
+            abundance_number,
+            abundance_max,
+            dense_option,
+            threshold,
+            vec![file1_path, file2_path],
+            1,
+            test_dir,
+        );
 
-        let query_results_path= create_build_query(bf_size, partition_number, k, m, color_number, abundance_number, abundance_max, dense_option, threshold, vec![file1_path, file2_path], 1, test_dir);
-
-
-        
-        let mut reader = csv::Reader::from_reader(File::open(&query_results_path).expect("Failed to open query results"));
+        let mut reader = csv::Reader::from_reader(
+            File::open(&query_results_path).expect("Failed to open query results"),
+        );
 
         let mut results: Vec<(String, usize, usize)> = Vec::new();
         for record in reader.records() {
@@ -2588,10 +2711,7 @@ fn create_build_query(bf_size: u64, partition_number: usize, k: usize, m: usize,
             results.push((seq_id, color, abundance));
         }
 
-        assert!(
-            !results.is_empty(),
-            "Empty results"
-        );
+        assert!(!results.is_empty(), "Empty results");
 
         let mut expected_results = vec![
             (">seq4 ka:f:1000".to_string(), 1, 979),
@@ -2625,7 +2745,7 @@ fn create_build_query(bf_size: u64, partition_number: usize, k: usize, m: usize,
             writeln!(fof_file, "{}", file1_path).expect("Failed to write to fof.txt");
             writeln!(fof_file, "{}", file2_path).expect("Failed to write to fof.txt");
         }
-    
+
         {
             let mut file1 = File::create(&file1_path).expect("Failed to create file1.fasta");
             writeln!(file1, ">seq1 ka:f:30").expect("Failed to write header");
@@ -2643,24 +2763,35 @@ fn create_build_query(bf_size: u64, partition_number: usize, k: usize, m: usize,
             writeln!(file2, ">seq5 ka:f:1000").expect("Failed to write header");
             writeln!(file2, "AAAAAAAAAAAAAAAAAAAAACACCCCTGGG").expect("Failed to write sequence");
         }
-     
+
         let k = 31;
         let m = 15;
         let bf_size = 1024 * 1024;
         let partition_number = 4;
         let color_number = 2;
-        let abundance_number = 255; 
+        let abundance_number = 255;
         let abundance_max = 65535;
         let dense_option = true;
         let threshold = 1;
 
-       
+        let query_results_path = create_build_query(
+            bf_size,
+            partition_number,
+            k,
+            m,
+            color_number,
+            abundance_number,
+            abundance_max,
+            dense_option,
+            threshold,
+            vec![file1_path, file2_path],
+            1,
+            test_dir,
+        );
 
-        let query_results_path= create_build_query(bf_size, partition_number, k, m, color_number, abundance_number, abundance_max, dense_option, threshold, vec![file1_path, file2_path], 1, test_dir);
-
-
-        
-        let mut reader = csv::Reader::from_reader(File::open(&query_results_path).expect("Failed to open query results"));
+        let mut reader = csv::Reader::from_reader(
+            File::open(&query_results_path).expect("Failed to open query results"),
+        );
 
         let mut results: Vec<(String, usize, usize)> = Vec::new();
         for record in reader.records() {
@@ -2671,10 +2802,7 @@ fn create_build_query(bf_size: u64, partition_number: usize, k: usize, m: usize,
             results.push((seq_id, color, abundance));
         }
 
-        assert!(
-            !results.is_empty(),
-            "Empty results"
-        );
+        assert!(!results.is_empty(), "Empty results");
 
         let mut expected_results = vec![
             (">seq4 ka:f:1000".to_string(), 1, 979),
@@ -2692,10 +2820,8 @@ fn create_build_query(bf_size: u64, partition_number: usize, k: usize, m: usize,
         fs::remove_dir_all(test_dir).expect("Failed to clean up test directory");
     }
 
-
     #[test]
     fn test_build_and_query_index_sharedk_sparse() {
-
         let test_dir = "test_files_bq3";
         fs::create_dir_all(test_dir).expect("Failed to create test directory");
 
@@ -2727,23 +2853,35 @@ fn create_build_query(bf_size: u64, partition_number: usize, k: usize, m: usize,
             writeln!(file2, ">seq6 ka:f:4").expect("Failed to write header");
             writeln!(file2, "AAAAAAAAAAAAAAAAAAAAAACAAAAAGAA").expect("Failed to write sequence");
         }
-        
+
         let k = 31;
         let m = 15;
         let bf_size = 1024 * 1024;
         let partition_number = 4;
         let color_number = 2;
-        let abundance_number = 255; 
+        let abundance_number = 255;
         let abundance_max = 255;
         let dense_option = false;
         let threshold = color_number;
 
+        let query_results_path = create_build_query(
+            bf_size,
+            partition_number,
+            k,
+            m,
+            color_number,
+            abundance_number,
+            abundance_max,
+            dense_option,
+            threshold,
+            vec![file1_path, file2_path],
+            0,
+            test_dir,
+        );
 
-        let query_results_path= create_build_query(bf_size, partition_number, k, m, color_number, abundance_number, abundance_max, dense_option, threshold, vec![file1_path, file2_path], 0, test_dir);
-
-
-        
-        let mut reader = csv::Reader::from_reader(File::open(&query_results_path).expect("Failed to open query results"));
+        let mut reader = csv::Reader::from_reader(
+            File::open(&query_results_path).expect("Failed to open query results"),
+        );
 
         let mut results: Vec<(String, usize, usize)> = Vec::new();
         for record in reader.records() {
@@ -2754,11 +2892,8 @@ fn create_build_query(bf_size: u64, partition_number: usize, k: usize, m: usize,
             results.push((seq_id, color, abundance));
         }
 
-        assert!(
-            !results.is_empty(),
-            "Empty results"
-        );
-        
+        assert!(!results.is_empty(), "Empty results");
+
         let mut expected_results = vec![
             (">seq1 ka:f:30".to_string(), 0, 30),
             (">seq2 ka:f:30".to_string(), 0, 30),
@@ -2775,12 +2910,10 @@ fn create_build_query(bf_size: u64, partition_number: usize, k: usize, m: usize,
             );
         }
         fs::remove_dir_all(test_dir).expect("Failed to clean up test directory");
-            
     }
 
     #[test]
     fn test_build_and_query_index_sharedk_dense() {
-
         let test_dir = "test_files_bq3d";
         fs::create_dir_all(test_dir).expect("Failed to create test directory");
 
@@ -2812,23 +2945,35 @@ fn create_build_query(bf_size: u64, partition_number: usize, k: usize, m: usize,
             writeln!(file2, ">seq6 ka:f:4").expect("Failed to write header");
             writeln!(file2, "AAAAAAAAAAAAAAAAAAAAAACAAAAAGAA").expect("Failed to write sequence");
         }
-        
+
         let k = 31;
         let m = 15;
         let bf_size = 1024 * 1024;
         let partition_number = 4;
         let color_number = 2;
-        let abundance_number = 255; 
+        let abundance_number = 255;
         let abundance_max = 255;
         let dense_option = true;
         let threshold = color_number;
 
+        let query_results_path = create_build_query(
+            bf_size,
+            partition_number,
+            k,
+            m,
+            color_number,
+            abundance_number,
+            abundance_max,
+            dense_option,
+            threshold,
+            vec![file1_path, file2_path],
+            0,
+            test_dir,
+        );
 
-        let query_results_path= create_build_query(bf_size, partition_number, k, m, color_number, abundance_number, abundance_max, dense_option, threshold, vec![file1_path, file2_path], 0, test_dir);
-
-
-        
-        let mut reader = csv::Reader::from_reader(File::open(&query_results_path).expect("Failed to open query results"));
+        let mut reader = csv::Reader::from_reader(
+            File::open(&query_results_path).expect("Failed to open query results"),
+        );
 
         let mut results: Vec<(String, usize, usize)> = Vec::new();
         for record in reader.records() {
@@ -2839,11 +2984,8 @@ fn create_build_query(bf_size: u64, partition_number: usize, k: usize, m: usize,
             results.push((seq_id, color, abundance));
         }
 
-        assert!(
-            !results.is_empty(),
-            "Empty results"
-        );
-        
+        assert!(!results.is_empty(), "Empty results");
+
         let mut expected_results = vec![
             (">seq1 ka:f:30".to_string(), 0, 30),
             (">seq2 ka:f:30".to_string(), 0, 30),
@@ -2860,12 +3002,10 @@ fn create_build_query(bf_size: u64, partition_number: usize, k: usize, m: usize,
             );
         }
         fs::remove_dir_all(test_dir).expect("Failed to clean up test directory");
-            
     }
 
     #[test]
     fn test_build_and_query_index_long_sparse() {
-
         let test_dir = "test_files_bql";
         fs::create_dir_all(test_dir).expect("Failed to create test directory");
 
@@ -2882,7 +3022,8 @@ fn create_build_query(bf_size: u64, partition_number: usize, k: usize, m: usize,
             let mut file1 = File::create(&file1_path).expect("Failed to create file1.fasta");
             writeln!(file1, ">seq1 ka:f:30").expect("Failed to write header");
             //writeln!(file1, "AAAAAAAAAAAAAAAAAAAAAACACAGATCAGAGGAT").expect("Failed to write sequence");
-            writeln!(file1, "AAAAAAAAAAAAAAAAAAAAAACACAGATCAGAG").expect("Failed to write sequence");
+            writeln!(file1, "AAAAAAAAAAAAAAAAAAAAAACACAGATCAGAG")
+                .expect("Failed to write sequence");
             writeln!(file1, ">seq2 ka:f:8").expect("Failed to write header");
             writeln!(file1, "AAAAAAAAAAAAAAAAAAAAACACAGATCAT").expect("Failed to write sequence");
         }
@@ -2892,22 +3033,35 @@ fn create_build_query(bf_size: u64, partition_number: usize, k: usize, m: usize,
             writeln!(file2, ">seq4 ka:f:1000").expect("Failed to write header");
             writeln!(file2, "CAAAAAAAAAAAAAAAAAAAAACACCCCTGGAC").expect("Failed to write sequence");
         }
-        
+
         let k = 31;
         let m = 15;
         let bf_size = 1024 * 1024;
         let partition_number = 4;
         let color_number = 2;
-        let abundance_number = 255; 
+        let abundance_number = 255;
         let abundance_max = 65535;
         let dense_option = false;
         let threshold = color_number;
 
-        let query_results_path= create_build_query(bf_size, partition_number, k, m, color_number, abundance_number, abundance_max, dense_option, threshold, vec![file1_path, file2_path], 0, test_dir);
+        let query_results_path = create_build_query(
+            bf_size,
+            partition_number,
+            k,
+            m,
+            color_number,
+            abundance_number,
+            abundance_max,
+            dense_option,
+            threshold,
+            vec![file1_path, file2_path],
+            0,
+            test_dir,
+        );
 
-
-       
-        let mut reader = csv::Reader::from_reader(File::open(&query_results_path).expect("Failed to open query results"));
+        let mut reader = csv::Reader::from_reader(
+            File::open(&query_results_path).expect("Failed to open query results"),
+        );
 
         let mut results: Vec<(String, usize, usize)> = Vec::new();
         for record in reader.records() {
@@ -2918,11 +3072,8 @@ fn create_build_query(bf_size: u64, partition_number: usize, k: usize, m: usize,
             results.push((seq_id, color, abundance));
         }
 
-        assert!(
-            !results.is_empty(),
-            "Empty results"
-        );
-        
+        assert!(!results.is_empty(), "Empty results");
+
         let mut expected_results = vec![
             (">seq1 ka:f:30".to_string(), 0, 29),
             (">seq2 ka:f:8".to_string(), 0, 8),
@@ -2937,13 +3088,10 @@ fn create_build_query(bf_size: u64, partition_number: usize, k: usize, m: usize,
             );
         }
         fs::remove_dir_all(test_dir).expect("Failed to clean up test directory");
-            
     }
-
 
     #[test]
     fn test_build_and_query_index_long_dense() {
-
         let test_dir = "test_files_bqld";
         fs::create_dir_all(test_dir).expect("Failed to create test directory");
 
@@ -2960,7 +3108,8 @@ fn create_build_query(bf_size: u64, partition_number: usize, k: usize, m: usize,
             let mut file1 = File::create(&file1_path).expect("Failed to create file1.fasta");
             writeln!(file1, ">seq1 ka:f:30").expect("Failed to write header");
             //writeln!(file1, "AAAAAAAAAAAAAAAAAAAAAACACAGATCAGAGGAT").expect("Failed to write sequence");
-            writeln!(file1, "AAAAAAAAAAAAAAAAAAAAAACACAGATCAGAG").expect("Failed to write sequence");
+            writeln!(file1, "AAAAAAAAAAAAAAAAAAAAAACACAGATCAGAG")
+                .expect("Failed to write sequence");
             writeln!(file1, ">seq2 ka:f:8").expect("Failed to write header");
             writeln!(file1, "AAAAAAAAAAAAAAAAAAAAACACAGATCAT").expect("Failed to write sequence");
         }
@@ -2970,20 +3119,35 @@ fn create_build_query(bf_size: u64, partition_number: usize, k: usize, m: usize,
             writeln!(file2, ">seq4 ka:f:1000").expect("Failed to write header");
             writeln!(file2, "CAAAAAAAAAAAAAAAAAAAAACACCCCTGGAC").expect("Failed to write sequence");
         }
-        
+
         let k = 31;
         let m = 15;
         let bf_size = 1024 * 1024;
         let partition_number = 4;
         let color_number = 2;
-        let abundance_number = 255; 
+        let abundance_number = 255;
         let abundance_max = 65535;
         let dense_option = true;
         let threshold = color_number;
 
-        let query_results_path= create_build_query(bf_size, partition_number, k, m, color_number, abundance_number, abundance_max, dense_option, threshold, vec![file1_path, file2_path], 0, test_dir);
-       
-        let mut reader = csv::Reader::from_reader(File::open(&query_results_path).expect("Failed to open query results"));
+        let query_results_path = create_build_query(
+            bf_size,
+            partition_number,
+            k,
+            m,
+            color_number,
+            abundance_number,
+            abundance_max,
+            dense_option,
+            threshold,
+            vec![file1_path, file2_path],
+            0,
+            test_dir,
+        );
+
+        let mut reader = csv::Reader::from_reader(
+            File::open(&query_results_path).expect("Failed to open query results"),
+        );
 
         let mut results: Vec<(String, usize, usize)> = Vec::new();
         for record in reader.records() {
@@ -2994,11 +3158,8 @@ fn create_build_query(bf_size: u64, partition_number: usize, k: usize, m: usize,
             results.push((seq_id, color, abundance));
         }
 
-        assert!(
-            !results.is_empty(),
-            "Empty results"
-        );
-        
+        assert!(!results.is_empty(), "Empty results");
+
         let mut expected_results = vec![
             (">seq1 ka:f:30".to_string(), 0, 29),
             (">seq2 ka:f:8".to_string(), 0, 8),
@@ -3013,26 +3174,25 @@ fn create_build_query(bf_size: u64, partition_number: usize, k: usize, m: usize,
             );
         }
         fs::remove_dir_all(test_dir).expect("Failed to clean up test directory");
-
     }
 
     #[ignore]
     #[test]
     fn test_insert_and_query_kmer_with_verifications() {
         use roaring::RoaringBitmap;
-    
-        let kmer_hash: u64 = 42; 
-        let minimizer: u64 = 7; 
+
+        let kmer_hash: u64 = 42;
+        let minimizer: u64 = 7;
         let partition_number = 4;
-        let bf_size = 1024; 
+        let bf_size = 1024;
         let partitioned_bf_size = bf_size as usize / partition_number;
         let color_number = 3;
         let path_color_number = 0;
         let abundance_number = 2;
         let log_abundance = 1;
-    
+
         let mut bloom_filters: Vec<RoaringBitmap> = vec![RoaringBitmap::new(); partition_number];
-    
+
         let partition_index_insert = (minimizer % (partition_number as u64)) as usize;
         let position_to_write = compute_location_filter(
             kmer_hash,
@@ -3043,36 +3203,38 @@ fn create_build_query(bf_size: u64, partition_number: usize, k: usize, m: usize,
             log_abundance,
         );
         bloom_filters[partition_index_insert].insert(position_to_write as u32);
-    
+
         let nt_hash_iterator = vec![kmer_hash].into_iter();
         let min_iter = vec![(minimizer, 0)].into_iter();
-    
+
         let mut color_abundances = vec![Vec::new(); color_number];
         for (kmer_hash, (minimizer, _position)) in nt_hash_iterator.zip(min_iter) {
             let partition_index_query = (minimizer % (partition_number as u64)) as usize;
-    
+
             assert_eq!(
                 partition_index_insert, partition_index_query,
                 "Partition index mismatch: insert = {}, query = {}",
                 partition_index_insert, partition_index_query
             );
-    
+
             let bitmap = &bloom_filters[partition_index_query];
-    
+
             let base_position = compute_base_position(
                 kmer_hash,
                 partitioned_bf_size,
                 color_number,
                 abundance_number,
             );
-    
+
             // I add + log_abund because base_position does not have this info and just finds approximately the value
             assert_eq!(
-                position_to_write, base_position+(log_abundance as u64),
+                position_to_write,
+                base_position + (log_abundance as u64),
                 "Position mismatch: insert = {}, query = {}",
-                position_to_write, base_position+(log_abundance as u64)
+                position_to_write,
+                base_position + (log_abundance as u64)
             );
-    
+
             update_color_abundances(
                 bitmap,
                 base_position,
@@ -3081,7 +3243,7 @@ fn create_build_query(bf_size: u64, partition_number: usize, k: usize, m: usize,
                 &mut color_abundances,
             );
         }
-    
+
         let results: Vec<(usize, usize)> = color_abundances
             .into_iter()
             .enumerate()
@@ -3090,9 +3252,9 @@ fn create_build_query(bf_size: u64, partition_number: usize, k: usize, m: usize,
                 min_abundance.map(|abundance| (color, abundance))
             })
             .collect();
-    
-        let expected_results = vec![(0, log_abundance as usize),(1,0),(2,0)]; // expect color 0 with abundance level 1
-    
+
+        let expected_results = vec![(0, log_abundance as usize), (1, 0), (2, 0)]; // expect color 0 with abundance level 1
+
         assert_eq!(
             results, expected_results,
             "Mismatch in query results: expected {:?}, got {:?}",
@@ -3100,13 +3262,11 @@ fn create_build_query(bf_size: u64, partition_number: usize, k: usize, m: usize,
         );
     }
 
-
-
     #[ignore]
     #[test]
     fn test_split_fof_1() -> std::io::Result<()> {
         use std::fs::{self, File};
-        use std::io::{BufReader, BufRead, Write};
+        use std::io::{BufRead, BufReader, Write};
 
         let test_dir = "test_files_fofs1";
         fs::create_dir_all(test_dir).expect("Failed to create test directory");
@@ -3132,18 +3292,17 @@ fn create_build_query(bf_size: u64, partition_number: usize, k: usize, m: usize,
 
         let (fof_chunks, _) = result.unwrap();
 
-
-
-        let expected_chunks =
-            vec![vec![
+        let expected_chunks = vec![
+            vec![
                 "/path/to/file1.fasta".to_string(),
-                "/path/to/file2.fasta".to_string(),]
-                ,vec![
+                "/path/to/file2.fasta".to_string(),
+            ],
+            vec![
                 "/path/to/file3.fasta".to_string(),
-                "/path/to/file4.fasta".to_string(),]
-                ,vec![
-                "/path/to/file5.fasta".to_string(),]
-            ];
+                "/path/to/file4.fasta".to_string(),
+            ],
+            vec!["/path/to/file5.fasta".to_string()],
+        ];
 
         assert_eq!(
             fof_chunks, expected_chunks,
@@ -3154,58 +3313,56 @@ fn create_build_query(bf_size: u64, partition_number: usize, k: usize, m: usize,
         fs::remove_dir_all(test_dir).expect("Failed to clean up test directory");
 
         Ok(())
-        
     }
 
-/*
-    #[test]
-    fn test_merge_bloom_filters() {
-        use roaring::RoaringBitmap;
+    /*
+        #[test]
+        fn test_merge_bloom_filters() {
+            use roaring::RoaringBitmap;
 
-        // initialize bf1: represents 2 datasets, abundance_number = 3, partitioned_bf_size = 2
-        let mut bf1 = RoaringBitmap::new();  //110001,000000
-        bf1.insert(0); // 1st dataset, 1st abundance level
-        bf1.insert(1); // 1st dataset, 2nd abundance level
-        bf1.insert(5); // 2nd dataset, 1st abundance level
+            // initialize bf1: represents 2 datasets, abundance_number = 3, partitioned_bf_size = 2
+            let mut bf1 = RoaringBitmap::new();  //110001,000000
+            bf1.insert(0); // 1st dataset, 1st abundance level
+            bf1.insert(1); // 1st dataset, 2nd abundance level
+            bf1.insert(5); // 2nd dataset, 1st abundance level
 
-        // initialize bf2: represents 1 dataset, abundance_number = 3
-        let mut bf2 = RoaringBitmap::new(); // 111,000
-        bf2.insert(0); // 1st dataset, 1st abundance level
-        bf2.insert(1); // 1st dataset, 2nd abundance level
-        bf2.insert(2); // 1st dataset, 3rd abundance level
+            // initialize bf2: represents 1 dataset, abundance_number = 3
+            let mut bf2 = RoaringBitmap::new(); // 111,000
+            bf2.insert(0); // 1st dataset, 1st abundance level
+            bf2.insert(1); // 1st dataset, 2nd abundance level
+            bf2.insert(2); // 1st dataset, 3rd abundance level
 
-        let partitioned_bf_size = 2;
-        let merged_color_number = 2; // bf1 has 2 colors (datasets)
-        let new_color_number = 1;    // bf2 has 1 color (dataset)
-        let abundance_number = 3;
+            let partitioned_bf_size = 2;
+            let merged_color_number = 2; // bf1 has 2 colors (datasets)
+            let new_color_number = 1;    // bf2 has 1 color (dataset)
+            let abundance_number = 3;
 
-        let (merged_bf, color_nb_merge_final) =
-            merge_bloom_filters(&bf1, &bf2, partitioned_bf_size, merged_color_number, new_color_number, abundance_number);
+            let (merged_bf, color_nb_merge_final) =
+                merge_bloom_filters(&bf1, &bf2, partitioned_bf_size, merged_color_number, new_color_number, abundance_number);
 
-        let mut expected_bf = RoaringBitmap::new();
-        //  first column: 110001 + 111 -> 110001111
-        expected_bf.insert(0);
-        expected_bf.insert(1);
-        expected_bf.insert(5);
-        expected_bf.insert(6);
-        expected_bf.insert(7);
-        expected_bf.insert(8);
-        // second column: 000000 + 000 -> 000000000
-        
+            let mut expected_bf = RoaringBitmap::new();
+            //  first column: 110001 + 111 -> 110001111
+            expected_bf.insert(0);
+            expected_bf.insert(1);
+            expected_bf.insert(5);
+            expected_bf.insert(6);
+            expected_bf.insert(7);
+            expected_bf.insert(8);
+            // second column: 000000 + 000 -> 000000000
 
-        let expected_color_nb_merge_final = 3; // 2 (from bf1) + 1 (from bf2)
-        assert_eq!(
-            color_nb_merge_final, expected_color_nb_merge_final,
-            "Final color number does not match the expected result"
-        );
-        assert_eq!(
-            merged_bf, expected_bf,
-            "Merged bitmap does not match the expected result"
-        );
-        
-    }
-*/
 
+            let expected_color_nb_merge_final = 3; // 2 (from bf1) + 1 (from bf2)
+            assert_eq!(
+                color_nb_merge_final, expected_color_nb_merge_final,
+                "Final color number does not match the expected result"
+            );
+            assert_eq!(
+                merged_bf, expected_bf,
+                "Merged bitmap does not match the expected result"
+            );
+
+        }
+    */
 
     //#[ignore]
     #[test]
@@ -3238,11 +3395,23 @@ fn create_build_query(bf_size: u64, partition_number: usize, k: usize, m: usize,
         for (file_path, (seq_id, ka_value, sequence)) in [
             (&file1_path, ("seq1", 30, "AAAAAAAAAAAAAAAAAAAAAACACAGATCA")),
             (&file2_path, ("seq2", 12, "AAAAAAAAAAAAAAAAAAAAACACAGATCAT")),
-            (&file3_path, ("seq3", 1500, "AAAAAAAAAAAAAAAAAAAAAACAAAAAGAA")),
-            (&file4_path, ("seq4", 1000, "AAAAAAAAAAAAAAAAAAAAAACACCCCTGG")),
-            (&file5_path, ("seq5", 450, "AAAAAAAAAAAAAAAAAAAAACACCCCTGGG")),
+            (
+                &file3_path,
+                ("seq3", 1500, "AAAAAAAAAAAAAAAAAAAAAACAAAAAGAA"),
+            ),
+            (
+                &file4_path,
+                ("seq4", 1000, "AAAAAAAAAAAAAAAAAAAAAACACCCCTGG"),
+            ),
+            (
+                &file5_path,
+                ("seq5", 450, "AAAAAAAAAAAAAAAAAAAAACACCCCTGGG"),
+            ),
             (&file6_path, ("seq6", 4, "AAAAAAAAAAAAAAAAAAAAAACAAAAAGAA")),
-            (&file7_path, ("seq7", 45110, "AAAAAAAAAAAAAAAAAAAAACACCCCTGGG")),
+            (
+                &file7_path,
+                ("seq7", 45110, "AAAAAAAAAAAAAAAAAAAAACACCCCTGGG"),
+            ),
             (&file8_path, ("seq8", 75, "AAAAAAAAAAAAAAAAAAAAAACAAAAAGAA")),
         ] {
             let mut file = File::create(file_path).expect("Failed to create FASTA file");
@@ -3254,7 +3423,7 @@ fn create_build_query(bf_size: u64, partition_number: usize, k: usize, m: usize,
         let m = 15;
         let bf_size = 8;
         let partition_number = 2;
-        //let color_number = 6; 
+        //let color_number = 6;
         let color_number = 8;
         let abundance_number = 255;
         let abundance_max = 65535;
@@ -3262,20 +3431,33 @@ fn create_build_query(bf_size: u64, partition_number: usize, k: usize, m: usize,
         let threshold = color_number;
 
         let file_paths = vec![
-                file1_path.clone(),
-                file2_path.clone(),
-                file3_path.clone(),
-                file4_path.clone(),
-                file5_path.clone(),
-                file6_path.clone(),
-                file7_path.clone(),
-                file8_path.clone()
+            file1_path.clone(),
+            file2_path.clone(),
+            file3_path.clone(),
+            file4_path.clone(),
+            file5_path.clone(),
+            file6_path.clone(),
+            file7_path.clone(),
+            file8_path.clone(),
         ];
-        let query_results_path= create_build_query(bf_size, partition_number, k, m, color_number, abundance_number, abundance_max, dense_option, threshold, file_paths, 0, test_dir);
+        let query_results_path = create_build_query(
+            bf_size,
+            partition_number,
+            k,
+            m,
+            color_number,
+            abundance_number,
+            abundance_max,
+            dense_option,
+            threshold,
+            file_paths,
+            0,
+            test_dir,
+        );
 
-
-        let mut reader =
-            csv::Reader::from_reader(File::open(&query_results_path).expect("Failed to open query results"));
+        let mut reader = csv::Reader::from_reader(
+            File::open(&query_results_path).expect("Failed to open query results"),
+        );
 
         let mut results: Vec<(String, usize, usize)> = Vec::new();
         for record in reader.records() {
@@ -3286,13 +3468,8 @@ fn create_build_query(bf_size: u64, partition_number: usize, k: usize, m: usize,
             results.push((seq_id, color, abundance));
         }
 
-        assert!(
-            !results.is_empty(),
-            "Empty results"
-        );
-        let mut expected_results = vec![
-            (">seq1 ka:f:30".to_string(), 0, 29),
-        ];
+        assert!(!results.is_empty(), "Empty results");
+        let mut expected_results = vec![(">seq1 ka:f:30".to_string(), 0, 29)];
         results.sort();
         expected_results.sort();
         for (expected, actual) in expected_results.iter().zip(results.iter()) {
@@ -3303,7 +3480,6 @@ fn create_build_query(bf_size: u64, partition_number: usize, k: usize, m: usize,
             );
         }
         fs::remove_dir_all(test_dir).expect("Failed to clean up test directory");
-
     }
 
     /*
@@ -3311,19 +3487,19 @@ fn create_build_query(bf_size: u64, partition_number: usize, k: usize, m: usize,
     fn test_split_fof_large() -> std::io::Result<()> {
         use std::fs::{self, File};
         use std::io::{BufReader, BufRead, Write};
-    
+
         let test_dir = "test_files_fofs_large";
         fs::create_dir_all(test_dir).expect("Failed to create test directory");
-    
+
         let fof_path = format!("{}/fof.txt", test_dir);
-    
+
         // Generate 1100 file paths
         let mut file_paths: Vec<String> = Vec::new();
         for i in 1..=1100 {
             let file_path = format!("{}/file{}.fa", test_dir, i);
             file_paths.push(file_path);
         }
-    
+
         // Write all file paths to fof.txt
         {
             let mut fof_file = File::create(&fof_path).expect("Failed to create fof.txt");
@@ -3331,35 +3507,34 @@ fn create_build_query(bf_size: u64, partition_number: usize, k: usize, m: usize,
                 writeln!(fof_file, "{}", file_path).expect("Failed to write to fof.txt");
             }
         }
-    
+
         let file = File::open(&fof_path)?;
         let reader = BufReader::new(file);
         let lines: Vec<String> = reader.lines().collect::<Result<_, _>>()?;
-    
+
         let result = split_fof(&lines);
-    
+
         assert!(result.is_ok(), "split_fof returned an error");
-    
+
         let (fof_chunks, _) = result.unwrap();
-    
+
         // Create expected chunks
         let expected_chunks = vec![
             file_paths[0..1000].to_vec(),
             file_paths[1000..].to_vec(),
         ];
-    
+
         assert_eq!(
             fof_chunks, expected_chunks,
             "Mismatch in chunk distribution: expected {:?}, got {:?}",
             expected_chunks, fof_chunks
         );
-    
+
         fs::remove_dir_all(test_dir).expect("Failed to clean up test directory");
-    
+
         Ok(())
     }
     */
-
 
     //#[ignore]
     #[test]
@@ -3375,7 +3550,6 @@ fn create_build_query(bf_size: u64, partition_number: usize, k: usize, m: usize,
         let file5_path = format!("{}/file5Q.fa", test_dir);
         let file6_path = format!("{}/file6Q.fa", test_dir);
 
-
         {
             let mut fof_file = File::create(&fof_path).expect("Failed to create fof.txt");
             writeln!(fof_file, "{}", file1_path).expect("Failed to write to fof.txt");
@@ -3384,17 +3558,24 @@ fn create_build_query(bf_size: u64, partition_number: usize, k: usize, m: usize,
             writeln!(fof_file, "{}", file4_path).expect("Failed to write to fof.txt");
             writeln!(fof_file, "{}", file5_path).expect("Failed to write to fof.txt");
             writeln!(fof_file, "{}", file6_path).expect("Failed to write to fof.txt");
-
         }
 
         for (file_path, (seq_id, ka_value, sequence)) in [
             (&file1_path, ("seq1", 30, "AAAAAAAAAAAAAAAAAAAAAACACAGATCA")),
             (&file2_path, ("seq2", 12, "AAAAAAAAAAAAAAAAAAAAACACAGATCAT")),
-            (&file3_path, ("seq3", 1500, "AAAAAAAAAAAAAAAAAAAAAACAAAAAGAA")),
-            (&file4_path, ("seq4", 1000, "AAAAAAAAAAAAAAAAAAAAAACACCCCTGG")),
-            (&file5_path, ("seq5", 450, "AAAAAAAAAAAAAAAAAAAAACACCCCTGGG")),
+            (
+                &file3_path,
+                ("seq3", 1500, "AAAAAAAAAAAAAAAAAAAAAACAAAAAGAA"),
+            ),
+            (
+                &file4_path,
+                ("seq4", 1000, "AAAAAAAAAAAAAAAAAAAAAACACCCCTGG"),
+            ),
+            (
+                &file5_path,
+                ("seq5", 450, "AAAAAAAAAAAAAAAAAAAAACACCCCTGGG"),
+            ),
             (&file6_path, ("seq6", 4, "AAAAAAAAAAAAAAAAAAAAAACAAAAAGAA")),
-
         ] {
             let mut file = File::create(file_path).expect("Failed to create FASTA file");
             writeln!(file, ">{} ka:f:{}", seq_id, ka_value).expect("Failed to write header");
@@ -3405,26 +3586,38 @@ fn create_build_query(bf_size: u64, partition_number: usize, k: usize, m: usize,
         let m = 15;
         let bf_size = 8;
         let partition_number = 2;
-        let color_number = 6; 
+        let color_number = 6;
         let abundance_number = 255;
         let abundance_max = 65535;
         let dense_option = false;
         let threshold = color_number;
 
         let file_paths = vec![
-                file1_path.clone(),
-                file2_path.clone(),
-                file3_path.clone(),
-                file4_path.clone(),
-                file5_path.clone(),
-                file6_path.clone(),
+            file1_path.clone(),
+            file2_path.clone(),
+            file3_path.clone(),
+            file4_path.clone(),
+            file5_path.clone(),
+            file6_path.clone(),
         ];
-        let query_results_path= create_build_query(bf_size, partition_number, k, m, color_number, abundance_number, abundance_max, dense_option, threshold, file_paths, 5, test_dir);
+        let query_results_path = create_build_query(
+            bf_size,
+            partition_number,
+            k,
+            m,
+            color_number,
+            abundance_number,
+            abundance_max,
+            dense_option,
+            threshold,
+            file_paths,
+            5,
+            test_dir,
+        );
 
-
-       
-        let mut reader =
-            csv::Reader::from_reader(File::open(&query_results_path).expect("Failed to open query results"));
+        let mut reader = csv::Reader::from_reader(
+            File::open(&query_results_path).expect("Failed to open query results"),
+        );
 
         let mut results: Vec<(String, usize, usize)> = Vec::new();
         for record in reader.records() {
@@ -3435,10 +3628,7 @@ fn create_build_query(bf_size: u64, partition_number: usize, k: usize, m: usize,
             results.push((seq_id, color, abundance));
         }
 
-        assert!(
-            !results.is_empty(),
-            "Empty results"
-        );
+        assert!(!results.is_empty(), "Empty results");
         let mut expected_results = vec![
             (">seq6 ka:f:4".to_string(), 2, 1476),
             (">seq6 ka:f:4".to_string(), 5, 4),
@@ -3453,9 +3643,7 @@ fn create_build_query(bf_size: u64, partition_number: usize, k: usize, m: usize,
             );
         }
         fs::remove_dir_all(test_dir).expect("Failed to clean up test directory");
-
     }
-
 
     //#[ignore]
     #[test]
@@ -3474,7 +3662,6 @@ fn create_build_query(bf_size: u64, partition_number: usize, k: usize, m: usize,
         let file8_path = format!("{}/file8Q.fa", test_dir);
         let file9_path = format!("{}/file9Q.fa", test_dir);
 
-
         {
             let mut fof_file = File::create(&fof_path).expect("Failed to create fof.txt");
             writeln!(fof_file, "{}", file1_path).expect("Failed to write to fof.txt");
@@ -3486,20 +3673,33 @@ fn create_build_query(bf_size: u64, partition_number: usize, k: usize, m: usize,
             writeln!(fof_file, "{}", file7_path).expect("Failed to write to fof.txt");
             writeln!(fof_file, "{}", file8_path).expect("Failed to write to fof.txt");
             writeln!(fof_file, "{}", file9_path).expect("Failed to write to fof.txt");
-
         }
 
         for (file_path, (seq_id, ka_value, sequence)) in [
             (&file1_path, ("seq1", 30, "AAAAAAAAAAAAAAAAAAAAAACACAGATCA")),
             (&file2_path, ("seq2", 12, "AAAAAAAAAAAAAAAAAAAAACACAGATCAT")),
-            (&file3_path, ("seq3", 1500, "AAAAAAAAAAAAAAAAAAAAAACAAAAAGAA")),
-            (&file4_path, ("seq4", 1000, "AAAAAAAAAAAAAAAAAAAAAACACCCCTGG")),
-            (&file5_path, ("seq5", 60_000, "TAAAAAAAAAAAAAAAAAAAACACCCCTGGG")),
+            (
+                &file3_path,
+                ("seq3", 1500, "AAAAAAAAAAAAAAAAAAAAAACAAAAAGAA"),
+            ),
+            (
+                &file4_path,
+                ("seq4", 1000, "AAAAAAAAAAAAAAAAAAAAAACACCCCTGG"),
+            ),
+            (
+                &file5_path,
+                ("seq5", 60_000, "TAAAAAAAAAAAAAAAAAAAACACCCCTGGG"),
+            ),
             (&file6_path, ("seq6", 4, "AAAAAAAAAAAAAAAAAAAAAACAAAAAGAA")),
-            (&file7_path, ("seq7", 1000, "AAAAAAAAAAAAAAAAAAAAAACACCCCTGG")),
-            (&file8_path, ("seq8", 450, "AAAAAAAAAAAAAAAAAAAAACACCCCTGGG")),
+            (
+                &file7_path,
+                ("seq7", 1000, "AAAAAAAAAAAAAAAAAAAAAACACCCCTGG"),
+            ),
+            (
+                &file8_path,
+                ("seq8", 450, "AAAAAAAAAAAAAAAAAAAAACACCCCTGGG"),
+            ),
             (&file9_path, ("seq9", 4, "GGGGAAAAAAAAAAAAAAAAAACAAAAAGAA")),
-
         ] {
             let mut file = File::create(file_path).expect("Failed to create FASTA file");
             writeln!(file, ">{} ka:f:{}", seq_id, ka_value).expect("Failed to write header");
@@ -3510,28 +3710,41 @@ fn create_build_query(bf_size: u64, partition_number: usize, k: usize, m: usize,
         let m = 15;
         let bf_size = 4;
         let partition_number = 2;
-        let color_number = 9; 
+        let color_number = 9;
         let abundance_number = 255;
         let abundance_max = 65535;
         let dense_option = false;
         let threshold = color_number;
 
         let file_paths = vec![
-                file1_path.clone(),
-                file2_path.clone(),
-                file3_path.clone(),
-                file4_path.clone(),
-                file5_path.clone(),
-                file6_path.clone(),
-                file7_path.clone(),
-                file8_path.clone(),
-                file9_path.clone()
+            file1_path.clone(),
+            file2_path.clone(),
+            file3_path.clone(),
+            file4_path.clone(),
+            file5_path.clone(),
+            file6_path.clone(),
+            file7_path.clone(),
+            file8_path.clone(),
+            file9_path.clone(),
         ];
-        let query_results_path= create_build_query(bf_size, partition_number, k, m, color_number, abundance_number, abundance_max, dense_option, threshold, file_paths, 4, test_dir);
+        let query_results_path = create_build_query(
+            bf_size,
+            partition_number,
+            k,
+            m,
+            color_number,
+            abundance_number,
+            abundance_max,
+            dense_option,
+            threshold,
+            file_paths,
+            4,
+            test_dir,
+        );
 
-
-        let mut reader =
-            csv::Reader::from_reader(File::open(&query_results_path).expect("Failed to open query results"));
+        let mut reader = csv::Reader::from_reader(
+            File::open(&query_results_path).expect("Failed to open query results"),
+        );
 
         let mut results: Vec<(String, usize, usize)> = Vec::new();
         for record in reader.records() {
@@ -3542,13 +3755,8 @@ fn create_build_query(bf_size: u64, partition_number: usize, k: usize, m: usize,
             results.push((seq_id, color, abundance));
         }
 
-        assert!(
-            !results.is_empty(),
-            "Empty results"
-        );
-        let mut expected_results = vec![
-            (">seq5 ka:f:60000".to_string(), 4, 59149),
-        ];
+        assert!(!results.is_empty(), "Empty results");
+        let mut expected_results = vec![(">seq5 ka:f:60000".to_string(), 4, 59149)];
         results.sort();
         expected_results.sort();
         for (expected, actual) in expected_results.iter().zip(results.iter()) {
@@ -3560,10 +3768,7 @@ fn create_build_query(bf_size: u64, partition_number: usize, k: usize, m: usize,
         }
 
         fs::remove_dir_all(test_dir).expect("Failed to clean up test directory");
-
     }
-
-
 
     //#[ignore]
     #[test]
@@ -3578,8 +3783,6 @@ fn create_build_query(bf_size: u64, partition_number: usize, k: usize, m: usize,
         let file4_path = format!("{}/file4Q.fa", test_dir);
         let file5_path = format!("{}/file5Q.fa", test_dir);
 
-
-
         {
             let mut fof_file = File::create(&fof_path).expect("Failed to create fof.txt");
             writeln!(fof_file, "{}", file1_path).expect("Failed to write to fof.txt");
@@ -3587,33 +3790,32 @@ fn create_build_query(bf_size: u64, partition_number: usize, k: usize, m: usize,
             writeln!(fof_file, "{}", file3_path).expect("Failed to write to fof.txt");
             writeln!(fof_file, "{}", file4_path).expect("Failed to write to fof.txt");
             writeln!(fof_file, "{}", file5_path).expect("Failed to write to fof.txt");
-
         }
 
         for (file_path, sequences) in [
-        (
-            &file1_path,
-            vec![("seq1", 30, "AAAAAAAAAAAAAAAAAAAAAACACAGATCA")],
-        ),
-        (
-            &file2_path,
-            vec![("seq2", 12, "AAAAAAAAAAAAAAAAAAAAACACAGATCAT")],
-        ),
-        (
-            &file3_path,
-            vec![("seq3", 1500, "AAAAAAAAAAAAAAAAAAAAAACAAAAAGAA")],
-        ),
-        (
-            &file4_path,
-            vec![("seq4", 1000, "AAAAAAAAAAAAAAAAAAAAAACACCCCTGG")],
-        ),
-        (
-            &file5_path,
-            vec![
-                ("seq5", 60_000, "TAAAAAAAAAAAAAAAAAAAACACCCCTGGG"),
-                ("seq6", 4, "AAAAAAAAAAAAAAAAAAAAAACAAAAAGAA"),
-            ],
-        ),
+            (
+                &file1_path,
+                vec![("seq1", 30, "AAAAAAAAAAAAAAAAAAAAAACACAGATCA")],
+            ),
+            (
+                &file2_path,
+                vec![("seq2", 12, "AAAAAAAAAAAAAAAAAAAAACACAGATCAT")],
+            ),
+            (
+                &file3_path,
+                vec![("seq3", 1500, "AAAAAAAAAAAAAAAAAAAAAACAAAAAGAA")],
+            ),
+            (
+                &file4_path,
+                vec![("seq4", 1000, "AAAAAAAAAAAAAAAAAAAAAACACCCCTGG")],
+            ),
+            (
+                &file5_path,
+                vec![
+                    ("seq5", 60_000, "TAAAAAAAAAAAAAAAAAAAACACCCCTGGG"),
+                    ("seq6", 4, "AAAAAAAAAAAAAAAAAAAAAACAAAAAGAA"),
+                ],
+            ),
         ] {
             let mut file = File::create(file_path).expect("Failed to create FASTA file");
             for (seq_id, ka_value, sequence) in sequences {
@@ -3622,29 +3824,41 @@ fn create_build_query(bf_size: u64, partition_number: usize, k: usize, m: usize,
             }
         }
 
-
         let k = 31;
         let m = 15;
-        let bf_size = 256*256;
+        let bf_size = 256 * 256;
         let partition_number = 2;
-        let color_number = 5; 
+        let color_number = 5;
         let abundance_number = 255;
         let abundance_max = 65535;
         let dense_option = false;
         let threshold = color_number;
 
         let file_paths = vec![
-                file1_path.clone(),
-                file2_path.clone(),
-                file3_path.clone(),
-                file4_path.clone(),
-                file5_path.clone()        ];
-        let query_results_path= create_build_query(bf_size, partition_number, k, m, color_number, abundance_number, abundance_max, dense_option, threshold, file_paths, 4, test_dir);
+            file1_path.clone(),
+            file2_path.clone(),
+            file3_path.clone(),
+            file4_path.clone(),
+            file5_path.clone(),
+        ];
+        let query_results_path = create_build_query(
+            bf_size,
+            partition_number,
+            k,
+            m,
+            color_number,
+            abundance_number,
+            abundance_max,
+            dense_option,
+            threshold,
+            file_paths,
+            4,
+            test_dir,
+        );
 
-
-        
-        let mut reader =
-            csv::Reader::from_reader(File::open(&query_results_path).expect("Failed to open query results"));
+        let mut reader = csv::Reader::from_reader(
+            File::open(&query_results_path).expect("Failed to open query results"),
+        );
 
         let mut results: Vec<(String, usize, usize)> = Vec::new();
         for record in reader.records() {
@@ -3655,10 +3869,7 @@ fn create_build_query(bf_size: u64, partition_number: usize, k: usize, m: usize,
             results.push((seq_id, color, abundance));
         }
 
-        assert!(
-            !results.is_empty(),
-            "Empty results"
-        );
+        assert!(!results.is_empty(), "Empty results");
         let mut expected_results = vec![
             (">seq5 ka:f:60000".to_string(), 4, 59149),
             (">seq6 ka:f:4".to_string(), 2, 1476),
@@ -3674,14 +3885,8 @@ fn create_build_query(bf_size: u64, partition_number: usize, k: usize, m: usize,
             );
         }
 
-
-        
         fs::remove_dir_all(test_dir).expect("Failed to clean up test directory");
-
     }
-
-
-
 
     #[test]
     fn test_merge_partition_bloom_filters() {
@@ -3696,13 +3901,12 @@ fn create_build_query(bf_size: u64, partition_number: usize, k: usize, m: usize,
         let chunk2_path = format!("{}/chunk2_p0.txt", test_dir);
         let chunk3_path = format!("{}/chunk3_p0.txt", test_dir);
 
-
         let partition_idx = 0;
-        let partitioned_bf_size = 2; 
+        let partitioned_bf_size = 2;
         let abundance_number = 3;
         // test Bloom filters
         let mut bf1 = RoaringBitmap::new();
-        bf1.insert(1); 
+        bf1.insert(1);
         bf1.insert(2); //011000 000000
         let mut bf2 = RoaringBitmap::new();
         bf2.insert(3);
@@ -3713,19 +3917,24 @@ fn create_build_query(bf_size: u64, partition_number: usize, k: usize, m: usize,
         //expected
         // 011000000110000 000000000000001 [1,2,9,10,29]
 
-        let chunk_files = vec![chunk1_path.clone(), chunk2_path.clone(), chunk3_path.clone()];
+        let chunk_files = vec![
+            chunk1_path.clone(),
+            chunk2_path.clone(),
+            chunk3_path.clone(),
+        ];
         let color_counts = vec![2, 2, 1]; //nb of colors for each chunk
 
-        for (chunk_path, (bf, colors)) in chunk_files.iter().zip(vec![(bf1, 2), (bf2, 2), (bf3, 1)]) {
+        for (chunk_path, (bf, colors)) in chunk_files.iter().zip(vec![(bf1, 2), (bf2, 2), (bf3, 1)])
+        {
             let mut file = File::create(chunk_path).expect("Failed to create test chunk file");
-            file.write_all(&(colors as u64).to_le_bytes()).expect("Failed to write color count");
-            bf.serialize_into(&mut file).expect("Failed to serialize Bloom filter");
+            file.write_all(&(colors as u64).to_le_bytes())
+                .expect("Failed to write color count");
+            bf.serialize_into(&mut file)
+                .expect("Failed to serialize Bloom filter");
         }
 
-     
+        let mut merged_bf = RoaringBitmap::new();
 
-        let mut merged_bf =RoaringBitmap::new();
-    
         // Call the modified function
         merge_partition_bloom_filters(
             chunk_files.clone(),
@@ -3735,10 +3944,10 @@ fn create_build_query(bf_size: u64, partition_number: usize, k: usize, m: usize,
             &color_counts,
             &mut merged_bf,
             "test_merge_partition_bloom_filters",
-            5
+            5,
         )
         .expect("Failed to merge partition Bloom filters");
-    
+
         // check the merged Bloom filter
         // let merged_bf = merged_bloom_filter.lock().unwrap();
 
@@ -3751,7 +3960,7 @@ fn create_build_query(bf_size: u64, partition_number: usize, k: usize, m: usize,
         //    color_nb
         //);
 
-        let expected_elements: Vec<u32> = vec![1, 2, 9,10,29];
+        let expected_elements: Vec<u32> = vec![1, 2, 9, 10, 29];
         for elem in expected_elements {
             assert!(
                 merged_bf.contains(elem),
@@ -3762,9 +3971,8 @@ fn create_build_query(bf_size: u64, partition_number: usize, k: usize, m: usize,
 
         fs::remove_dir_all(test_dir).expect("Failed to clean up test directory");
     }
-   
- 
-    //#[ignore] 
+
+    //#[ignore]
     #[test]
     fn test_build_and_query_index_with_chunks_and_merge_longseq() {
         let test_dir = "test_files_bq_merge3_ls";
@@ -3781,7 +3989,6 @@ fn create_build_query(bf_size: u64, partition_number: usize, k: usize, m: usize,
         let file8_path = format!("{}/file8Q.fa", test_dir);
         let file9_path = format!("{}/file9Q.fa", test_dir);
 
-
         {
             let mut fof_file = File::create(&fof_path).expect("Failed to create fof.txt");
             writeln!(fof_file, "{}", file1_path).expect("Failed to write to fof.txt");
@@ -3793,20 +4000,37 @@ fn create_build_query(bf_size: u64, partition_number: usize, k: usize, m: usize,
             writeln!(fof_file, "{}", file7_path).expect("Failed to write to fof.txt");
             writeln!(fof_file, "{}", file8_path).expect("Failed to write to fof.txt");
             writeln!(fof_file, "{}", file9_path).expect("Failed to write to fof.txt");
-
         }
 
         for (file_path, (seq_id, ka_value, sequence)) in [
-            (&file1_path, ("seq1", 30,    "AAAAAAAAAAAAAAAAAAAAAACACAGATTT")),
-            (&file2_path, ("seq2", 12,    "AAAAAAAAAAAAAAAAAAAAACACAGATCAT")),
-            (&file3_path, ("seq3", 1500,  "AAAAAAAAAAAAAAAAAAAAAACAAAAAGAA")),
-            (&file4_path, ("seq4", 1000,  "AAAAAAAAAAAAAAAAAAAAAACACCCCTGG")),
-            (&file5_path, ("seq5", 60_000,"TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT")),
-            (&file6_path, ("seq6", 4,     "AAAAAAAAAAAAAAAAAAAAAACAAAAAGAA")),
-            (&file7_path, ("seq7", 1000,  "AAAAAAAAAAAAAAAAAAAAAACACCCCTGG")),
-            (&file8_path, ("seq8", 450,   "AAAAAAAAAAAAAAAAAAAAACACCCCTGGG")),
-            (&file9_path, ("seq9", 4,     "GGGGAAAAAAAAAAAAAAAAAACAAAAAGAA")),
-
+            (&file1_path, ("seq1", 30, "AAAAAAAAAAAAAAAAAAAAAACACAGATTT")),
+            (&file2_path, ("seq2", 12, "AAAAAAAAAAAAAAAAAAAAACACAGATCAT")),
+            (
+                &file3_path,
+                ("seq3", 1500, "AAAAAAAAAAAAAAAAAAAAAACAAAAAGAA"),
+            ),
+            (
+                &file4_path,
+                ("seq4", 1000, "AAAAAAAAAAAAAAAAAAAAAACACCCCTGG"),
+            ),
+            (
+                &file5_path,
+                (
+                    "seq5",
+                    60_000,
+                    "TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT",
+                ),
+            ),
+            (&file6_path, ("seq6", 4, "AAAAAAAAAAAAAAAAAAAAAACAAAAAGAA")),
+            (
+                &file7_path,
+                ("seq7", 1000, "AAAAAAAAAAAAAAAAAAAAAACACCCCTGG"),
+            ),
+            (
+                &file8_path,
+                ("seq8", 450, "AAAAAAAAAAAAAAAAAAAAACACCCCTGGG"),
+            ),
+            (&file9_path, ("seq9", 4, "GGGGAAAAAAAAAAAAAAAAAACAAAAAGAA")),
         ] {
             let mut file = File::create(file_path).expect("Failed to create FASTA file");
             writeln!(file, ">{} ka:f:{}", seq_id, ka_value).expect("Failed to write header");
@@ -3817,28 +4041,41 @@ fn create_build_query(bf_size: u64, partition_number: usize, k: usize, m: usize,
         let m = 15;
         let bf_size = 32;
         let partition_number = 2;
-        let color_number = 9; 
+        let color_number = 9;
         let abundance_number = 255;
         let abundance_max = 65535;
         let dense_option = false;
         let threshold = color_number;
 
         let file_paths = vec![
-                file1_path.clone(),
-                file2_path.clone(),
-                file3_path.clone(),
-                file4_path.clone(),
-                file5_path.clone(),
-                file6_path.clone(),
-                file7_path.clone(),
-                file8_path.clone(),
-                file9_path.clone()
+            file1_path.clone(),
+            file2_path.clone(),
+            file3_path.clone(),
+            file4_path.clone(),
+            file5_path.clone(),
+            file6_path.clone(),
+            file7_path.clone(),
+            file8_path.clone(),
+            file9_path.clone(),
         ];
-        let query_results_path= create_build_query(bf_size, partition_number, k, m, color_number, abundance_number, abundance_max, dense_option, threshold, file_paths, 1, test_dir);
+        let query_results_path = create_build_query(
+            bf_size,
+            partition_number,
+            k,
+            m,
+            color_number,
+            abundance_number,
+            abundance_max,
+            dense_option,
+            threshold,
+            file_paths,
+            1,
+            test_dir,
+        );
 
-
-        let mut reader =
-            csv::Reader::from_reader(File::open(&query_results_path).expect("Failed to open query results"));
+        let mut reader = csv::Reader::from_reader(
+            File::open(&query_results_path).expect("Failed to open query results"),
+        );
 
         let mut results: Vec<(String, usize, usize)> = Vec::new();
         for record in reader.records() {
@@ -3849,10 +4086,7 @@ fn create_build_query(bf_size: u64, partition_number: usize, k: usize, m: usize,
             results.push((seq_id, color, abundance));
         }
 
-        assert!(
-            !results.is_empty(),
-            "Empty results"
-        );
+        assert!(!results.is_empty(), "Empty results");
         let expected_results = vec![
             //("seq5".to_string(), 4, 57549),
             (">seq2 ka:f:12".to_string(), 1, 12),
@@ -3866,12 +4100,8 @@ fn create_build_query(bf_size: u64, partition_number: usize, k: usize, m: usize,
             );
         }
 
-
-        
         fs::remove_dir_all(test_dir).expect("Failed to clean up test directory");
-
     }
-
 
     #[test]
     fn test_color_graph() {
@@ -3884,7 +4114,8 @@ fn create_build_query(bf_size: u64, partition_number: usize, k: usize, m: usize,
         {
             let mut file = File::create(&fasta_path).expect("Failed to create test.fasta");
             writeln!(file, ">seq1 ka:f:29").expect("Failed to write header");
-            writeln!(file, "TAAAAAAAAAAAAAAAAAAAAAAAAAAAAACACAGATCA").expect("Failed to write sequence");
+            writeln!(file, "TAAAAAAAAAAAAAAAAAAAAAAAAAAAAACACAGATCA")
+                .expect("Failed to write sequence");
             writeln!(file, ">seq2 ka:f:250").expect("Failed to write header");
             writeln!(file, "TTTTTAATGATCGATTTTTTTTTTTACCCCTGG").expect("Failed to write sequence");
         }
@@ -3900,35 +4131,48 @@ fn create_build_query(bf_size: u64, partition_number: usize, k: usize, m: usize,
         let dense_option = false;
         let threshold = color_number;
 
-            let index = Reindeer2::new(bf_size, partition_number, k, m, color_number, abundance_number, abundance_max, dense_option);
-
-        let (_file_paths, index_dir) = index.build(
-            vec![
-                fasta_path.clone(),
-            ],
+        let index = Reindeer2::new(
+            bf_size,
+            partition_number,
+            k,
+            m,
+            color_number,
             abundance_number,
             abundance_max,
-            test_dir,
             dense_option,
-            threshold,
-            false,
-        )
-        .expect("Failed to build index");
-            
-        let index_from_csv = Reindeer2::from_csv(&index_dir).expect("Failed to laod index infos from disk");
-        index_from_csv.query(
-            &fasta_path,
-            test_dir,
-            &output_path,
-            true, //  graph coloring
-            false, 
-            0.5,
-            false
-        )
-        .expect("Failed to color graph");   
+        );
+
+        let (_file_paths, index_dir) = index
+            .build(
+                vec![fasta_path.clone()],
+                abundance_number,
+                abundance_max,
+                test_dir,
+                dense_option,
+                threshold,
+                false,
+            )
+            .expect("Failed to build index");
+
+        let index_from_csv =
+            Reindeer2::from_csv(&index_dir).expect("Failed to laod index infos from disk");
+        index_from_csv
+            .query(
+                &fasta_path,
+                test_dir,
+                &output_path,
+                true, //  graph coloring
+                false,
+                0.5,
+                false,
+            )
+            .expect("Failed to color graph");
 
         let expected_output = vec![
-           ">seq1 ka:f:29 col:0:29", "TAAAAAAAAAAAAAAAAAAAAAAAAAAAAACACAGATCA", ">seq2 ka:f:250 col:0:249", "TTTTTAATGATCGATTTTTTTTTTTACCCCTGG",
+            ">seq1 ka:f:29 col:0:29",
+            "TAAAAAAAAAAAAAAAAAAAAAAAAAAAAACACAGATCA",
+            ">seq2 ka:f:250 col:0:249",
+            "TTTTTAATGATCGATTTTTTTTTTTACCCCTGG",
         ];
 
         let mut actual_output = Vec::new();
@@ -3946,7 +4190,6 @@ fn create_build_query(bf_size: u64, partition_number: usize, k: usize, m: usize,
 
         fs::remove_dir_all(test_dir).expect("Failed to clean up test directory");
     }
-    
 
     // use csv::Reader;
     // #[test]
@@ -3986,8 +4229,8 @@ fn create_build_query(bf_size: u64, partition_number: usize, k: usize, m: usize,
 
     //     let k = 7;
     //     let m = 3;
-    //     let bf_size = 1024;         
-    //     let partitions = 2;         
+    //     let bf_size = 1024;
+    //     let partitions = 2;
     //     let abundance = 255;
     //     let abundance_max = 65535;
     //     let dense_option = false;
@@ -4051,5 +4294,4 @@ fn create_build_query(bf_size: u64, partition_number: usize, k: usize, m: usize,
 
     //     Ok(())
     // }
-
 }
