@@ -102,7 +102,7 @@ pub struct IndexArgs {
     /// If set, allows to index dense k-mers - i.e. shared k-mers among datasets - more efficiently,
     /// at the cost of higher RAM consumption, limited parameters (k-mer size <= 32, number of abundance levels <= 255)
     /// and limited multithreading (default: false)
-    #[arg(short = 'd', long = "dense", action = ArgAction::Set)]
+    #[arg(short = 'd', long = "dense", default_value_t = false)]
     pub dense: bool,
 
     /// Sets the index output directory (default: random name in the form of PACAS_index_)

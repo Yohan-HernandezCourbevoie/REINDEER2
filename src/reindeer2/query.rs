@@ -242,7 +242,47 @@ pub fn query_sequences_in_batches(
             // Flush the writer to separate batch outputs if needed
             let _ = writer.flush();
             let _ = graph_coloring(fasta_file, batch_size, output_file, &sequence_results);
+        } else if rd1_like {
+            // TODO make RD1 and normalize mutually exclusive at compile time
+            // we need the count of kmers for an outpout like the one of Reindeer 1
+            load_kmer_counts_vector(bf_dir)
+                .expect("Failed to load from disk the kmer counts vector");
+
+            let err_msg = "should habe been able to write the abundance";
+
+            for (seq_header, color_vectors) in &sequence_results {
+                write!(writer, "{seq_header}").expect(err_msg);
+                for abund_values in color_vectors.iter() {
+                    // new color => a space
+                    write!(writer, " ").expect(err_msg);
+                    let mut start = 0;
+                    let mut current = abund_values[0];
+
+                    for i in 1..=abund_values.len() {
+                        if i == abund_values.len() || abund_values[i] != current {
+                            let val_str = if current == 0 {
+                                "*"
+                            } else {
+                                &current.to_string()
+                            };
+                            if start + 1 == i {
+                                write!(writer, "{}:{}", start, val_str).expect(err_msg);
+                            } else {
+                                write!(writer, "{}-{}:{}", start, i - 1, val_str).expect(err_msg);
+                            }
+                            if i < abund_values.len() {
+                                write!(writer, ",").expect(err_msg);
+                                start = i;
+                                current = abund_values[i];
+                            }
+                        }
+                    }
+                }
+                writeln!(writer).expect(err_msg);
+            }
+            let _ = writer.flush();
         } else {
+            // we need the count of kmers if we want to normalize them
             let kmer_counts = if normalize_option {
                 load_kmer_counts_vector(bf_dir)
                     .expect("Failed to load from disk the kmer counts vector")
