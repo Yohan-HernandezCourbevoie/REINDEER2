@@ -1,7 +1,6 @@
 name: tests
 
 on:
-on:
   push:
     branches:
       - main
