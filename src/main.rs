@@ -6,9 +6,7 @@ use rand::Rng;
 use std::io::{self};
 use std::time::Instant;
 
-use crate::reindeer2::{
-    build_index, build_index_muset, explore_muset_dir, query_index, read_fof_file,
-};
+use crate::reindeer2::{build_index_muset, explore_muset_dir, read_fof_file, Reindeer2};
 use cli::Cli;
 
 fn main() -> io::Result<()> {
@@ -90,13 +88,18 @@ fn main() -> io::Result<()> {
                 let (file_paths, color_nb) = read_fof_file(&input)?;
 
                 // run the index construction process: build and fill BFs per partitions and in chunks, serialize, merge chunks
-                build_index(
-                    file_paths,
-                    kmer,
-                    minimizer,
+                let index = Reindeer2::new(
                     bf_size,
                     partitions,
+                    kmer,
+                    minimizer,
                     color_nb,
+                    abundance,
+                    abundance_max,
+                    dense_option,
+                );
+                index.build(
+                    file_paths,
                     abundance,
                     abundance_max,
                     &output_dir,
@@ -130,16 +133,19 @@ fn main() -> io::Result<()> {
             }
 
             let start_time = Instant::now();
-            query_index(
-                &fasta_file,
-                &index_dir,
-                &query_output,
-                color_graph,
-                normalize_option,
-                coverage,
-                rd1_like,
-            )
-            .expect("Failed to query sequences");
+            let index = Reindeer2::from_csv(&index_dir)
+                .expect("should have been able to load index infos from disk");
+            index
+                .query(
+                    &fasta_file,
+                    &index_dir,
+                    &query_output,
+                    color_graph,
+                    normalize_option,
+                    coverage,
+                    rd1_like,
+                )
+                .expect("Failed to query sequences");
 
             println!("Query complete in {:.2?}", start_time.elapsed());
         } // "merge" => {

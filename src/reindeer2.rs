@@ -21,15 +21,42 @@ use num_format::{Locale, ToFormattedString};
 
 // === INDEX ===
 
-// --- MAIN FUNCTION ---
-
-pub fn build_index(
-    file_paths: Vec<String>, 
-    kmer_size: usize, 
-    minimizer_size: usize, 
+pub struct Reindeer2 {
     bf_size: u64,
     partition_number: usize,
-    color_nb: usize,
+    k:usize,
+    m:usize,
+    nb_color:usize,
+    abundance_number:usize,
+    abundance_max:u16,
+    dense_option: bool
+}
+
+
+impl Reindeer2 {
+    pub fn new(bf_size: u64,
+    partition_number: usize,     k:usize,
+    m:usize, nb_color:usize,    abundance_number:usize,
+    abundance_max:u16,
+    // TODO rename is_dense
+     dense_option: bool) -> Self {
+        Self { bf_size, partition_number, k, m, nb_color, abundance_max, abundance_number , dense_option}
+
+    }
+
+    pub fn from_csv(bf_dir: &str) -> io::Result<Self> {
+        //load index metadata from CSV
+        println!("Loaded index metadata for query.");
+        let (k, m, bf_size, partition_number, nb_color, abundance_number, abundance_max, dense_option) =
+        read_partition_from_csv(bf_dir, "index_info.csv")?;
+        Ok(Self { bf_size, partition_number ,k, m, nb_color,     abundance_number,
+    abundance_max, dense_option})
+    }
+
+
+pub fn build(
+    &self,
+    file_paths: Vec<String>, 
     abundance_number: usize,
     abundance_max: u16,
     output_dir: &str,
@@ -42,26 +69,26 @@ pub fn build_index(
     let mut atomic_sparse_kmers_count = atomic::AtomicU64::new(0);
     let mut atomic_sparse_one_seen = atomic::AtomicU64::new(0);
     let mut atomic_sparse_fp_seen = atomic::AtomicU64::new(0);
-    let kmer_counts_vector: Arc<Mutex<Vec<usize>>> = Arc::new(Mutex::new(vec![0; color_nb]));
+    let kmer_counts_vector: Arc<Mutex<Vec<usize>>> = Arc::new(Mutex::new(vec![0; self.nb_color]));
     let (chunks, color_chunks) = split_fof(&file_paths)?;
     let base = compute_base(abundance_number, abundance_max);
     if debug {
         println!("Using log base {}", base);
     }
-    let partitioned_bf_size = (bf_size as usize) / partition_number;
+    let partitioned_bf_size = (self.bf_size as usize) / self.partition_number;
     if debug {
         println!("In debug mode... the tool may take (much) longer than usual.");
     }
     println!("Initializing Bloom filter slices...");
 
-    let (_, dir_path) = create_dir_and_files(partition_number, output_dir)?;
+    let (_, dir_path) = create_dir_and_files(self.partition_number, output_dir)?;
 
     // Shared data structures protected by Mutex for safe parallel access
     let maybe_dense_indexes: Option<Arc<Vec<Mutex<HashMap<u64, Vec<u8>>>>>> = 
         if dense_option {
             Some(Arc::new(
-            (0..partition_number)
-                .map(|_| Mutex::new(HashMap::with_capacity(200_000_000/partition_number)))
+            (0..self.partition_number)
+                .map(|_| Mutex::new(HashMap::with_capacity(200_000_000/self.partition_number)))
                 .collect::<Vec<_>>()
             ))
         } else {
@@ -69,7 +96,7 @@ pub fn build_index(
         };
 
     let bloom_filters = Arc::new(
-        (0..partition_number)
+        (0..self.partition_number)
             .map(|_| Mutex::new(RoaringBitmap::new()))
             .collect::<Vec<_>>()
     );
@@ -106,12 +133,12 @@ pub fn build_index(
                                 path,
                                 &maybe_dense_indexes,
                                 &bloom_filters,
-                                kmer_size,
-                                minimizer_size,
+                                self.k,
+                                self.m,
                                 partitioned_bf_size,
-                                partition_number,
+                                self.partition_number,
                                 color_chunks[chunk_i],
-                                color_nb,
+                                self.nb_color,
                                 threshold,
                                 abundance_number,
                                 abundance_max,
@@ -145,7 +172,7 @@ pub fn build_index(
             &dir_path, 
             &bloom_filters,
             &color_chunks,
-            partition_number,
+            self.partition_number,
             chunk_i
         ) {
             eprintln!("Error writing Bloom filters for chunk {}: {}", chunk_i, e);
@@ -186,12 +213,12 @@ pub fn build_index(
             partitioned_bf_size,
             abundance_number,
             color_chunks,
-            partition_number,
-            color_nb,
+            self.partition_number,
+            self.nb_color,
         )?;
     } else {
         // If there was only one chunk, rename files directly
-        for partition_idx in 0..partition_number {
+        for partition_idx in 0..self.partition_number {
             let input_path = format!("{}/partition_bloom_filters_c0_p{}.txt", dir_path, partition_idx);
             let output_path = format!("{}/partition_bloom_filters_p{}.txt", dir_path, partition_idx);
             std::fs::rename(&input_path, &output_path)?;
@@ -201,11 +228,11 @@ pub fn build_index(
     // write partition info to a CSV or your desired format
     let _ = write_partition_to_csv(
         &dir_path,
-        kmer_size,
-        minimizer_size,
-        bf_size,
-        partition_number,
-        color_nb,
+        self.k,
+        self.m,
+        self.bf_size,
+        self.partition_number,
+        self.nb_color,
         abundance_number,
         abundance_max,
         dense_option,
@@ -213,6 +240,44 @@ pub fn build_index(
 
     Ok((file_paths, dir_path))
 }
+
+// TODO this only calls a function
+// TODO store bf_dir in Reindeer2 ?
+pub fn query(
+    &self,
+    fasta_file: &str,
+    bf_dir: &str,
+    output_file: &str,
+    color_graph: bool,
+    normalize_option: bool,
+    coverage: f32,
+    rd1_like:bool
+) -> io::Result<()> {
+    let query_results = query_sequences_in_batches(
+        fasta_file,
+        bf_dir,
+        self.k,
+        self.m,
+        self.bf_size,
+        self.partition_number,
+        self.nb_color,
+        self.abundance_number,
+        self.abundance_max,
+        10_000_000,
+        &output_file,
+        color_graph,
+        self.dense_option,
+        normalize_option,
+        coverage,
+        rd1_like,
+    )?;
+    println!("Writing results in {}", output_file);
+    //write_query_results_to_csv(&query_results, bf_dir)
+    Ok(query_results)
+}
+}
+// --- MAIN FUNCTION ---
+
 
 pub fn build_index_muset(
     unitigs_file: String, 
@@ -681,43 +746,7 @@ fn count_zeros(
 
 // --- MAIN FUNCTION ---
 
-pub fn query_index(
-    fasta_file: &str,
-    bf_dir: &str,
-    output_file: &str,
-    color_graph: bool,
-    normalize_option: bool,
-    coverage: f32,
-    rd1_like:bool
-) -> io::Result<()> {
-    //load index metadata from CSV
-    let (k, m, bf_size, partition_number, color_number, abundance_number, abundance_max, dense_option) =
-        read_partition_from_csv(bf_dir, "index_info.csv")?;
-    println!("Loaded index metadata for query.");
-   
-    
-    let query_results = query_sequences_in_batches(
-        fasta_file,
-        bf_dir,
-        k,
-        m,
-        bf_size,
-        partition_number,
-        color_number,
-        abundance_number,
-        abundance_max,
-        10_000_000,
-        &output_file,
-        color_graph,
-        dense_option,
-        normalize_option,
-        coverage,
-        rd1_like,
-    )?;
-    println!("Writing results in {}", output_file);
-    //write_query_results_to_csv(&query_results, bf_dir)
-    Ok(query_results)
-}
+
 
 
 // --- QUERY FUNCTIONS ---
@@ -1677,6 +1706,8 @@ fn load_dense_index(file_path: &str) -> io::Result<HashMap<u64, Box<Vec<u8>>>> {
 }
    
 /// Rload index metadata from the CSV.
+// TODO why output_csv ?
+// TODO we could return a Reindeer2 directly
 fn read_partition_from_csv(bf_dir: &str, output_csv: &str) -> io::Result<(usize, usize, u64, usize, usize, usize, u16, bool)> {
     let csv_path = format!("{}/{}", bf_dir, output_csv);
     let mut reader = csv::Reader::from_reader(BufReader::new(File::open(csv_path)?));
@@ -2594,6 +2625,27 @@ mod tests {
     }
 
 
+
+fn create_build_query(bf_size: u64, partition_number: usize, k: usize, m: usize, color_number: usize, abundance_number: usize, abundance_max: u16, dense_option: bool, threshold: usize, file_paths: Vec<String>, query_file_id:usize, test_dir: &str) -> String {
+            let index = Reindeer2::new(bf_size, partition_number, k, m, color_number, abundance_number, abundance_max, dense_option);
+        let (_file_paths, index_dir) = index.build(
+            file_paths.clone(),
+            abundance_number,
+            abundance_max,
+            test_dir,
+            dense_option,
+            threshold,
+            false,
+        )
+        .expect("Failed to build index");
+    
+        let query_results_path = format!("{}/query_results.csv", index_dir);
+        
+        let index_from_csv = Reindeer2::from_csv(&index_dir).expect("Failed to laod index infos from disk");
+        index_from_csv.query(&file_paths[query_file_id], &index_dir, &query_results_path, false, false, 0.5, false)
+            .expect("Failed to query sequences");
+        query_results_path
+}
     #[test]
     fn test_build_and_query_index_single_sparse() {
         let test_dir = "test_files_bq0";
@@ -2626,14 +2678,11 @@ mod tests {
         let abundance_max = 65535;
         let dense_option = false;
         let threshold = color_number;
-    
-        let (_file_paths, index_dir) = build_index(
+
+
+        let index = Reindeer2::new(bf_size, partition_number, k, m, color_number, abundance_number, abundance_max, dense_option);
+        let (_file_paths, index_dir) = index.build(
             vec![file1_path.clone()],
-            k,
-            m,
-            bf_size,
-            partition_number,
-            color_number,
             abundance_number,
             abundance_max,
             test_dir,
@@ -2645,7 +2694,8 @@ mod tests {
     
         let query_results_path = format!("{}/query_results.csv", index_dir);
         
-        query_index(&file1_path, &index_dir, &query_results_path, false, false, 0.5, false)
+        let index_from_csv = Reindeer2::from_csv(&index_dir).expect("Failed to laod index infos from disk");
+        index_from_csv.query(&file1_path, &index_dir, &query_results_path, false, false, 0.5, false)
             .expect("Failed to query sequences");
     
         let mut reader = csv::Reader::from_reader(File::open(&query_results_path).expect("Failed to open query results"));
@@ -2718,27 +2768,8 @@ mod tests {
         let abundance_max = 65535;
         let dense_option = true;
         let threshold = color_number;
-    
-        let (_file_paths, index_dir) = build_index(
-            vec![file1_path.clone()],
-            k,
-            m,
-            bf_size,
-            partition_number,
-            color_number,
-            abundance_number,
-            abundance_max,
-            test_dir,
-            dense_option,
-            threshold,
-            false,
-        )
-        .expect("Failed to build index");
-    
-        let query_results_path = format!("{}/query_results.csv", index_dir);
-        
-        query_index(&file1_path, &index_dir, &query_results_path, false, false, 0.5, false)
-            .expect("Failed to query sequences");
+
+        let query_results_path= create_build_query(bf_size, partition_number, k, m, color_number, abundance_number, abundance_max, dense_option, threshold, vec![file1_path], 0, test_dir);
     
         let mut reader = csv::Reader::from_reader(File::open(&query_results_path).expect("Failed to open query results"));
         let mut results: Vec<(String, usize, usize)> = Vec::new();
@@ -2820,26 +2851,8 @@ mod tests {
         let dense_option = false;
         let threshold = color_number;
     
-        let (_file_paths, index_dir) = build_index(
-            vec![file1_path.clone(), file2_path.clone()],
-            k,
-            m,
-            bf_size,
-            partition_number,
-            color_number,
-            abundance_number,
-            abundance_max,
-            test_dir,
-            dense_option,
-            threshold,
-            false,
-        )
-        .expect("Failed to build index");
-    
-        let query_results_path = format!("{}/query_results.csv", index_dir);
-        
-        query_index(&file1_path, &index_dir, &query_results_path, false, false, 0.5, false)
-            .expect("Failed to query sequences");
+        let query_results_path= create_build_query(bf_size, partition_number, k, m, color_number, abundance_number, abundance_max, dense_option, threshold, vec![file1_path, file2_path], 0, test_dir);
+
     
         let mut reader = csv::Reader::from_reader(File::open(&query_results_path).expect("Failed to open query results"));
         let mut results: Vec<(String, usize, usize)> = Vec::new();
@@ -2918,26 +2931,7 @@ mod tests {
         let dense_option = true;
         let threshold = color_number;
     
-        let (_file_paths, index_dir) = build_index(
-            vec![file1_path.clone(), file2_path.clone()],
-            k,
-            m,
-            bf_size,
-            partition_number,
-            color_number,
-            abundance_number,
-            abundance_max,
-            test_dir,
-            dense_option,
-            threshold,
-            false,
-        )
-        .expect("Failed to build index");
-    
-        let query_results_path = format!("{}/query_results.csv", index_dir);
-        
-        query_index(&file1_path, &index_dir, &query_results_path, false, false, 0.5, false)
-            .expect("Failed to query sequences");
+        let query_results_path= create_build_query(bf_size, partition_number, k, m, color_number, abundance_number, abundance_max, dense_option, threshold, vec![file1_path, file2_path], 0, test_dir);
     
         let mut reader = csv::Reader::from_reader(File::open(&query_results_path).expect("Failed to open query results"));
         let mut results: Vec<(String, usize, usize)> = Vec::new();
@@ -3017,26 +3011,7 @@ mod tests {
         let dense_option = false;
         let threshold = color_number;
 
-        let (_file_paths, index_dir) = build_index(
-            vec![file1_path.clone(), file2_path.clone()],
-            k,
-            m,
-            bf_size,
-            partition_number,
-            color_number,
-            abundance_number,
-            abundance_max,
-            test_dir,
-            dense_option,
-            threshold,
-            false,
-        )
-        .expect("Failed to build index");
-
-        let query_results_path = format!("{}/query_results.csv", index_dir);
-
-        query_index(&file2_path, &index_dir, &query_results_path, false, false, 0.5, false)
-            .expect("Failed to query sequences");
+        let query_results_path= create_build_query(bf_size, partition_number, k, m, color_number, abundance_number, abundance_max, dense_option, threshold, vec![file1_path, file2_path], 1, test_dir);
 
         // Validate the results written to the query results CSV file
         let mut reader =
@@ -3109,26 +3084,7 @@ mod tests {
         let dense_option = true;
         let threshold = color_number;
 
-        let (_file_paths, index_dir) = build_index(
-            vec![file1_path.clone(), file2_path.clone()],
-            k,
-            m,
-            bf_size,
-            partition_number,
-            color_number,
-            abundance_number,
-            abundance_max,
-            test_dir,
-            dense_option,
-            threshold,
-            false,
-        )
-        .expect("Failed to build index");
-
-        let query_results_path = format!("{}/query_results.csv", index_dir);
-
-        query_index(&file2_path, &index_dir, &query_results_path, false, false, 0.5, false)
-            .expect("Failed to query sequences");
+        let query_results_path= create_build_query(bf_size, partition_number, k, m, color_number, abundance_number, abundance_max, dense_option, threshold, vec![file1_path, file2_path], 1, test_dir);
 
         // Validate the results written to the query results CSV file
         let mut reader =
@@ -3206,31 +3162,8 @@ mod tests {
 
        
 
-        let (_file_paths, index_dir) = build_index(
-            vec![file1_path.clone(), file2_path.clone()],
-            k,
-            m,
-            bf_size,
-            partition_number,
-            color_number,
-            abundance_number,
-            abundance_max,
-            test_dir,
-            dense_option,
-            threshold,
-            false,
-        )
-        .expect("Failed to build index");
-     
-        /*
-        fs::rename("test_files_bq2/partitioned_bloom_filters_c0_p0.txt", "test_files_bq2/partitioned_bloom_filters_p0.txt");
-        fs::rename("test_files_bq2/partitioned_bloom_filters_c0_p1.txt", "test_files_bq2/partitioned_bloom_filters_p1.txt");
-        fs::rename("test_files_bq2/partitioned_bloom_filters_c0_p2.txt", "test_files_bq2/partitioned_bloom_filters_p2.txt");
-        fs::rename("test_files_bq2/partitioned_bloom_filters_c0_p3.txt", "test_files_bq2/partitioned_bloom_filters_p3.txt");
-        */
-        let query_results_path = format!("{}/query_results.csv", index_dir);
-        query_index(&file2_path, test_dir, &query_results_path, false, false, 0.5, false) // query sequences from file1
-            .expect("Failed to query sequences");
+        let query_results_path= create_build_query(bf_size, partition_number, k, m, color_number, abundance_number, abundance_max, dense_option, threshold, vec![file1_path, file2_path], 1, test_dir);
+
 
         
         let mut reader = csv::Reader::from_reader(File::open(&query_results_path).expect("Failed to open query results"));
@@ -3312,31 +3245,8 @@ mod tests {
 
        
 
-        let (_file_paths, index_dir) = build_index(
-            vec![file1_path.clone(), file2_path.clone()],
-            k,
-            m,
-            bf_size,
-            partition_number,
-            color_number,
-            abundance_number,
-            abundance_max,
-            test_dir,
-            dense_option,
-            threshold,
-            false,
-        )
-        .expect("Failed to build index");
-     
-        /*
-        fs::rename("test_files_bq2/partitioned_bloom_filters_c0_p0.txt", "test_files_bq2/partitioned_bloom_filters_p0.txt");
-        fs::rename("test_files_bq2/partitioned_bloom_filters_c0_p1.txt", "test_files_bq2/partitioned_bloom_filters_p1.txt");
-        fs::rename("test_files_bq2/partitioned_bloom_filters_c0_p2.txt", "test_files_bq2/partitioned_bloom_filters_p2.txt");
-        fs::rename("test_files_bq2/partitioned_bloom_filters_c0_p3.txt", "test_files_bq2/partitioned_bloom_filters_p3.txt");
-        */
-        let query_results_path = format!("{}/query_results.csv", index_dir);
-        query_index(&file2_path, test_dir, &query_results_path, false, false, 0.5, false) // query sequences from file1
-            .expect("Failed to query sequences");
+        let query_results_path= create_build_query(bf_size, partition_number, k, m, color_number, abundance_number, abundance_max, dense_option, threshold, vec![file1_path, file2_path], 1, test_dir);
+
 
         
         let mut reader = csv::Reader::from_reader(File::open(&query_results_path).expect("Failed to open query results"));
@@ -3418,30 +3328,8 @@ mod tests {
         let threshold = color_number;
 
 
-        let (_file_paths, index_dir) = build_index(
-            vec![file1_path.clone(), file2_path.clone()],
-            k,
-            m,
-            bf_size,
-            partition_number,
-            color_number,
-            abundance_number,
-            abundance_max,
-            test_dir,
-            dense_option,
-            threshold,
-            false,
-        )
-        .expect("Failed to build index");
-        /*
-        fs::rename("test_files_bq3/partitioned_bloom_filters_c0_p0.txt", "test_files_bq3/partitioned_bloom_filters_p0.txt");
-        fs::rename("test_files_bq3/partitioned_bloom_filters_c0_p1.txt", "test_files_bq3/partitioned_bloom_filters_p1.txt");
-        fs::rename("test_files_bq3/partitioned_bloom_filters_c0_p2.txt", "test_files_bq3/partitioned_bloom_filters_p2.txt");
-        fs::rename("test_files_bq3/partitioned_bloom_filters_c0_p3.txt", "test_files_bq3/partitioned_bloom_filters_p3.txt");
-        */
-        let query_results_path = format!("{}/query_results.csv", index_dir);
-        query_index(&file1_path, test_dir, &query_results_path, false, false, 0.5, false) // query sequences from file1
-            .expect("Failed to query sequences");
+        let query_results_path= create_build_query(bf_size, partition_number, k, m, color_number, abundance_number, abundance_max, dense_option, threshold, vec![file1_path, file2_path], 0, test_dir);
+
 
         
         let mut reader = csv::Reader::from_reader(File::open(&query_results_path).expect("Failed to open query results"));
@@ -3525,30 +3413,8 @@ mod tests {
         let threshold = color_number;
 
 
-        let (_file_paths, index_dir) = build_index(
-            vec![file1_path.clone(), file2_path.clone()],
-            k,
-            m,
-            bf_size,
-            partition_number,
-            color_number,
-            abundance_number,
-            abundance_max,
-            test_dir,
-            dense_option,
-            threshold,
-            false,
-        )
-        .expect("Failed to build index");
-        /*
-        fs::rename("test_files_bq3/partitioned_bloom_filters_c0_p0.txt", "test_files_bq3/partitioned_bloom_filters_p0.txt");
-        fs::rename("test_files_bq3/partitioned_bloom_filters_c0_p1.txt", "test_files_bq3/partitioned_bloom_filters_p1.txt");
-        fs::rename("test_files_bq3/partitioned_bloom_filters_c0_p2.txt", "test_files_bq3/partitioned_bloom_filters_p2.txt");
-        fs::rename("test_files_bq3/partitioned_bloom_filters_c0_p3.txt", "test_files_bq3/partitioned_bloom_filters_p3.txt");
-        */
-        let query_results_path = format!("{}/query_results.csv", index_dir);
-        query_index(&file1_path, test_dir, &query_results_path, false, false, 0.5, false) // query sequences from file1
-            .expect("Failed to query sequences");
+        let query_results_path= create_build_query(bf_size, partition_number, k, m, color_number, abundance_number, abundance_max, dense_option, threshold, vec![file1_path, file2_path], 0, test_dir);
+
 
         
         let mut reader = csv::Reader::from_reader(File::open(&query_results_path).expect("Failed to open query results"));
@@ -3626,30 +3492,8 @@ mod tests {
         let dense_option = false;
         let threshold = color_number;
 
-        let (_file_paths, index_dir) = build_index(
-            vec![file1_path.clone(), file2_path.clone()],
-            k,
-            m,
-            bf_size,
-            partition_number,
-            color_number,
-            abundance_number,
-            abundance_max,
-            test_dir,
-            dense_option,
-            threshold,
-            false,
-        )
-        .expect("Failed to build index");
-        /*
-        fs::rename("test_files_bq3/partitioned_bloom_filters_c0_p0.txt", "test_files_bq3/partitioned_bloom_filters_p0.txt");
-        fs::rename("test_files_bq3/partitioned_bloom_filters_c0_p1.txt", "test_files_bq3/partitioned_bloom_filters_p1.txt");
-        fs::rename("test_files_bq3/partitioned_bloom_filters_c0_p2.txt", "test_files_bq3/partitioned_bloom_filters_p2.txt");
-        fs::rename("test_files_bq3/partitioned_bloom_filters_c0_p3.txt", "test_files_bq3/partitioned_bloom_filters_p3.txt");
-        */
-        let query_results_path = format!("{}/query_results.csv", index_dir);
-        query_index(&file1_path, test_dir, &query_results_path, false, false, 0.5, false) // query sequences from file1
-            .expect("Failed to query sequences");
+        let query_results_path= create_build_query(bf_size, partition_number, k, m, color_number, abundance_number, abundance_max, dense_option, threshold, vec![file1_path, file2_path], 0, test_dir);
+
 
        
         let mut reader = csv::Reader::from_reader(File::open(&query_results_path).expect("Failed to open query results"));
@@ -3726,31 +3570,7 @@ mod tests {
         let dense_option = true;
         let threshold = color_number;
 
-        let (_file_paths, index_dir) = build_index(
-            vec![file1_path.clone(), file2_path.clone()],
-            k,
-            m,
-            bf_size,
-            partition_number,
-            color_number,
-            abundance_number,
-            abundance_max,
-            test_dir,
-            dense_option,
-            threshold,
-            false,
-        )
-        .expect("Failed to build index");
-        /*
-        fs::rename("test_files_bq3/partitioned_bloom_filters_c0_p0.txt", "test_files_bq3/partitioned_bloom_filters_p0.txt");
-        fs::rename("test_files_bq3/partitioned_bloom_filters_c0_p1.txt", "test_files_bq3/partitioned_bloom_filters_p1.txt");
-        fs::rename("test_files_bq3/partitioned_bloom_filters_c0_p2.txt", "test_files_bq3/partitioned_bloom_filters_p2.txt");
-        fs::rename("test_files_bq3/partitioned_bloom_filters_c0_p3.txt", "test_files_bq3/partitioned_bloom_filters_p3.txt");
-        */
-        let query_results_path = format!("{}/query_results.csv", index_dir);
-        query_index(&file1_path, test_dir, &query_results_path, false, false, 0.5, false) // query sequences from file1
-            .expect("Failed to query sequences");
-
+        let query_results_path= create_build_query(bf_size, partition_number, k, m, color_number, abundance_number, abundance_max, dense_option, threshold, vec![file1_path, file2_path], 0, test_dir);
        
         let mut reader = csv::Reader::from_reader(File::open(&query_results_path).expect("Failed to open query results"));
 
@@ -4030,8 +3850,7 @@ mod tests {
         let dense_option = false;
         let threshold = color_number;
 
-        let (_file_paths, index_dir) = build_index(
-            vec![
+        let file_paths = vec![
                 file1_path.clone(),
                 file2_path.clone(),
                 file3_path.clone(),
@@ -4039,25 +3858,10 @@ mod tests {
                 file5_path.clone(),
                 file6_path.clone(),
                 file7_path.clone(),
-                file8_path.clone(),
-            ],
-            k,
-            m,
-            bf_size,
-            partition_number,
-            color_number,
-            abundance_number,
-            abundance_max,
-            test_dir,
-            dense_option,
-            threshold,
-             false,
-        )
-        .expect("Failed to build index");
-        let query_results_path = format!("{}/query_results.csv", index_dir);
+                file8_path.clone()
+        ];
+        let query_results_path= create_build_query(bf_size, partition_number, k, m, color_number, abundance_number, abundance_max, dense_option, threshold, file_paths, 0, test_dir);
 
-        query_index(&file1_path, test_dir, &query_results_path, false, false, 0.5, false)
-            .expect("Failed to query sequences");
 
         let mut reader =
             csv::Reader::from_reader(File::open(&query_results_path).expect("Failed to open query results"));
@@ -4196,32 +4000,16 @@ mod tests {
         let dense_option = false;
         let threshold = color_number;
 
-        let (_file_paths, index_dir) = build_index(
-            vec![
+        let file_paths = vec![
                 file1_path.clone(),
                 file2_path.clone(),
                 file3_path.clone(),
                 file4_path.clone(),
                 file5_path.clone(),
                 file6_path.clone(),
-       
-            ],
-            k,
-            m,
-            bf_size,
-            partition_number,
-            color_number,
-            abundance_number,
-            abundance_max,
-            test_dir,
-            dense_option,
-            threshold,
-            false,
-        )
-        .expect("Failed to build index");
-        let query_results_path = format!("{}/query_results.csv", index_dir);
-        query_index(&file6_path, &test_dir, &query_results_path, false, false, 0.5, false)
-            .expect("Failed to query sequences");
+        ];
+        let query_results_path= create_build_query(bf_size, partition_number, k, m, color_number, abundance_number, abundance_max, dense_option, threshold, file_paths, 5, test_dir);
+
 
        
         let mut reader =
@@ -4317,8 +4105,7 @@ mod tests {
         let dense_option = false;
         let threshold = color_number;
 
-        let (_file_paths, index_dir) = build_index(
-            vec![
+        let file_paths = vec![
                 file1_path.clone(),
                 file2_path.clone(),
                 file3_path.clone(),
@@ -4327,26 +4114,10 @@ mod tests {
                 file6_path.clone(),
                 file7_path.clone(),
                 file8_path.clone(),
-                file9_path.clone(),
-       
-            ],
-            k,
-            m,
-            bf_size,
-            partition_number,
-            color_number,
-            abundance_number,
-            abundance_max,
-            test_dir,
-            dense_option,
-            threshold,
-            false,
-        )
-        .expect("Failed to build index");
-        let query_results_path = format!("{}/query_results.csv", index_dir);
+                file9_path.clone()
+        ];
+        let query_results_path= create_build_query(bf_size, partition_number, k, m, color_number, abundance_number, abundance_max, dense_option, threshold, file_paths, 4, test_dir);
 
-        query_index(&file5_path, test_dir, &query_results_path, false, false, 0.5, false)
-            .expect("Failed to query sequences");
 
         let mut reader =
             csv::Reader::from_reader(File::open(&query_results_path).expect("Failed to open query results"));
@@ -4451,31 +4222,14 @@ mod tests {
         let dense_option = false;
         let threshold = color_number;
 
-        let (_file_paths, index_dir) = build_index(
-            vec![
+        let file_paths = vec![
                 file1_path.clone(),
                 file2_path.clone(),
                 file3_path.clone(),
                 file4_path.clone(),
-                file5_path.clone(),
-       
-            ],
-            k,
-            m,
-            bf_size,
-            partition_number,
-            color_number,
-            abundance_number,
-            abundance_max,
-            test_dir,
-            dense_option,
-            threshold,
-            false,
-        )
-        .expect("Failed to build index");
-        let query_results_path = format!("{}/query_results.csv", index_dir);
-        query_index(&file5_path, test_dir, &query_results_path, false, false, 0.5, false)
-            .expect("Failed to query sequences");
+                file5_path.clone()        ];
+        let query_results_path= create_build_query(bf_size, partition_number, k, m, color_number, abundance_number, abundance_max, dense_option, threshold, file_paths, 4, test_dir);
+
 
         
         let mut reader =
@@ -4658,8 +4412,7 @@ mod tests {
         let dense_option = false;
         let threshold = color_number;
 
-        let (_file_paths, index_dir) = build_index(
-            vec![
+        let file_paths = vec![
                 file1_path.clone(),
                 file2_path.clone(),
                 file3_path.clone(),
@@ -4668,26 +4421,10 @@ mod tests {
                 file6_path.clone(),
                 file7_path.clone(),
                 file8_path.clone(),
-                file9_path.clone(),
-       
-            ],
-            k,
-            m,
-            bf_size,
-            partition_number,
-            color_number,
-            abundance_number,
-            abundance_max,
-            test_dir,
-            dense_option,
-            threshold,
-            false,
-        )
-        .expect("Failed to build index");
-        let query_results_path = format!("{}/query_results.csv", index_dir);
+                file9_path.clone()
+        ];
+        let query_results_path= create_build_query(bf_size, partition_number, k, m, color_number, abundance_number, abundance_max, dense_option, threshold, file_paths, 1, test_dir);
 
-        query_index(&file2_path, &test_dir, &query_results_path, false, false, 0.5, false)
-            .expect("Failed to query sequences");
 
         let mut reader =
             csv::Reader::from_reader(File::open(&query_results_path).expect("Failed to open query results"));
@@ -4752,16 +4489,12 @@ mod tests {
         let dense_option = false;
         let threshold = color_number;
 
+            let index = Reindeer2::new(bf_size, partition_number, k, m, color_number, abundance_number, abundance_max, dense_option);
 
-        let (_file_paths, _index_dir) = build_index(
+        let (_file_paths, index_dir) = index.build(
             vec![
                 fasta_path.clone(),
             ],
-            k,
-            m,
-            bf_size,
-            partition_number,
-            color_number,
             abundance_number,
             abundance_max,
             test_dir,
@@ -4770,7 +4503,9 @@ mod tests {
             false,
         )
         .expect("Failed to build index");
-        query_index(
+            
+        let index_from_csv = Reindeer2::from_csv(&index_dir).expect("Failed to laod index infos from disk");
+        index_from_csv.query(
             &fasta_path,
             test_dir,
             &output_path,
@@ -4779,7 +4514,7 @@ mod tests {
             0.5,
             false
         )
-        .expect("Failed to color graph");
+        .expect("Failed to color graph");   
 
         let expected_output = vec![
            ">seq1 ka:f:29 col:0:29", "TAAAAAAAAAAAAAAAAAAAAAAAAAAAAACACAGATCA", ">seq2 ka:f:250 col:0:249", "TTTTTAATGATCGATTTTTTTTTTTACCCCTGG",
