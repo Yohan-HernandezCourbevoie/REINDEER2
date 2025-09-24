@@ -249,7 +249,7 @@ pub fn query_sequences_in_batches(
                 load_kmer_counts_vector(bf_dir)
                     .expect("Failed to load from disk the kmer counts vector");
 
-                let err_msg = "should habe been able to write the abundance";
+                let err_msg = "should have been able to write the abundance";
 
                 for (seq_header, color_vectors) in &sequence_results {
                     write!(writer, "{seq_header}").expect(err_msg);
