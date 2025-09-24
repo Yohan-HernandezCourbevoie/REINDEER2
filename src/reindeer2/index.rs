@@ -113,8 +113,7 @@ pub fn process_fasta_file(
                                     } else if path_num_global <= threshold {
                                         // create a new abundance vector for the k-mer
                                         let mut abundance_vector: Vec<u8> =
-                                            Vec::with_capacity(color_number_global);
-                                        abundance_vector.resize(color_number_global, 0);
+                                            vec![0; color_number_global];
                                         abundance_vector[path_num_global] =
                                             (log_abundance + 1) as u8;
                                         dense_index.insert(kmer_hash, abundance_vector);
