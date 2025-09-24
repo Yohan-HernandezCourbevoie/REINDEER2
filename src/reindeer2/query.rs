@@ -182,6 +182,144 @@ fn load_kmer_counts_vector(dir_path: &str) -> io::Result<Vec<usize>> {
     Ok(counts_vector)
 }
 
+/// Write abundances per kmer like RD1.
+fn write_raw_abundance(
+    bf_dir: &str,
+    sequence_results: &HashMap<String, Vec<Vec<u16>>>,
+    writer: &mut impl Write,
+) -> io::Result<()> {
+    // TODO make RD1 and normalize mutually exclusive at compile time
+    // we need the count of kmers for an outpout like the one of Reindeer 1
+    load_kmer_counts_vector(bf_dir).expect("Failed to load from disk the kmer counts vector");
+
+    for (seq_header, color_vectors) in sequence_results {
+        write!(writer, "{seq_header}")?;
+        for abund_values in color_vectors.iter() {
+            // new color => a space
+            write!(writer, " ")?;
+            let mut start = 0;
+            let mut current = abund_values[0];
+
+            for i in 1..=abund_values.len() {
+                if i == abund_values.len() || abund_values[i] != current {
+                    let val_str = if current == 0 {
+                        "*"
+                    } else {
+                        &current.to_string()
+                    };
+                    if start + 1 == i {
+                        write!(writer, "{}:{}", start, val_str)?;
+                    } else {
+                        write!(writer, "{}-{}:{}", start, i - 1, val_str)?;
+                    }
+                    if i < abund_values.len() {
+                        write!(writer, ",")?;
+                        start = i;
+                        current = abund_values[i];
+                    }
+                }
+            }
+        }
+        writeln!(writer)?;
+    }
+    Ok(())
+}
+
+/// Write abundances per kmer like RD1.
+fn write_median_abundance(
+    bf_dir: &str,
+    sequence_results: &HashMap<String, Vec<Vec<u16>>>,
+    color_number: usize,
+    normalize: bool,
+    coverage: f32,
+    writer: &mut impl Write,
+) -> io::Result<()> {
+    writeln!(writer, "header,file,abundance")?;
+    // we need the count of kmers if we want to normalize them
+    let kmer_counts = if normalize {
+        load_kmer_counts_vector(bf_dir).expect("Failed to load from disk the kmer counts vector")
+    } else {
+        vec![color_number, 0] // TODO bizarre
+    };
+    // Compute medians for each sequence and each color, then write them out
+    for (seq_header, color_vectors) in sequence_results {
+        for (color_idx, abund_values) in color_vectors.iter().enumerate() {
+            if !abund_values.is_empty() {
+                let mut zeros_count = 0;
+                let mut non_zero_values: Vec<u16> = Vec::new();
+                abund_values.iter().for_each(|value| {
+                    if *value == 0 {
+                        zeros_count += 1;
+                    } else {
+                        non_zero_values.push(*value);
+                    }
+                });
+                if !non_zero_values.is_empty()
+                    && (((zeros_count as f32) / (abund_values.len() as f32)) < coverage)
+                {
+                    let mut abund_sorted = non_zero_values.clone();
+                    abund_sorted.sort_unstable();
+                    let median = if abund_sorted.iter().all(|&x| x == 0) {
+                        0
+                    } else if abund_sorted.len() == 1 {
+                        abund_sorted[0]
+                    } else {
+                        let mid = abund_sorted.len() / 2;
+                        if abund_sorted.len() % 2 == 1 {
+                            abund_sorted[mid]
+                        } else {
+                            (abund_sorted[mid - 1] + abund_sorted[mid]) / 2
+                        }
+                    };
+                    if median > 0 {
+                        let median = if normalize {
+                            median as f64 / kmer_counts[color_idx] as f64 * 1_000_000 as f64
+                        } else {
+                            median as f64
+                        };
+                        writeln!(writer, "{},{},{}", seq_header, color_idx, median)?;
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn write_kmer_query(
+    fasta_file: &str,
+    bf_dir: &str,
+    color_number: usize,
+    batch_size: usize,
+    output_format: OutputFormat,
+    coverage: f32,
+    sequence_results: HashMap<String, Vec<Vec<u16>>>,
+    mut writer: &mut impl Write,
+) -> io::Result<()> {
+    match output_format {
+        OutputFormat::Colored => {
+            // TODO lrobidou discuss what this comment means:
+            // If your graph coloring wants to read from `sequence_results`:
+            // Flush the writer to separate batch outputs if needed
+            graph_coloring(fasta_file, batch_size, writer, &sequence_results)
+        }
+        OutputFormat::Raw => write_raw_abundance(bf_dir, &sequence_results, &mut writer),
+        OutputFormat::Median | OutputFormat::NormalizedMedian => {
+            let normalize = output_format == OutputFormat::NormalizedMedian;
+            write_median_abundance(
+                bf_dir,
+                &sequence_results,
+                color_number,
+                normalize,
+                coverage,
+                &mut writer,
+            )
+        }
+    }?;
+    writer.flush()?;
+    Ok(())
+}
+
 pub fn query_sequences_in_batches(
     fasta_file: &str,
     bf_dir: &str,
@@ -201,7 +339,6 @@ pub fn query_sequences_in_batches(
     let reader = read_file(fasta_file)?;
     let mut writer = BufWriter::new(File::create(output_file)?);
     // write the headr of the output csv file
-    writeln!(writer, "header,file,abundance")?;
     let base = compute_base(abundance_number, abundance_max);
 
     // Process FASTA in chunks of `batch_size` records
@@ -235,112 +372,20 @@ pub fn query_sequences_in_batches(
             .reduce(HashMap::<String, Vec<Vec<u16>>>::new, merge_results);
 
         // Now `sequence_results` has the combined data for this batch.
-        // Either color a graph or compute medians and output them.
-        match output_format {
-            OutputFormat::Colored => {
-                // If your graph coloring wants to read from `sequence_results`:
-                // Flush the writer to separate batch outputs if needed
-                let _ = writer.flush();
-                let _ = graph_coloring(fasta_file, batch_size, output_file, &sequence_results);
-            }
-            OutputFormat::Raw => {
-                // TODO make RD1 and normalize mutually exclusive at compile time
-                // we need the count of kmers for an outpout like the one of Reindeer 1
-                load_kmer_counts_vector(bf_dir)
-                    .expect("Failed to load from disk the kmer counts vector");
-
-                let err_msg = "should have been able to write the abundance";
-
-                for (seq_header, color_vectors) in &sequence_results {
-                    write!(writer, "{seq_header}").expect(err_msg);
-                    for abund_values in color_vectors.iter() {
-                        // new color => a space
-                        write!(writer, " ").expect(err_msg);
-                        let mut start = 0;
-                        let mut current = abund_values[0];
-
-                        for i in 1..=abund_values.len() {
-                            if i == abund_values.len() || abund_values[i] != current {
-                                let val_str = if current == 0 {
-                                    "*"
-                                } else {
-                                    &current.to_string()
-                                };
-                                if start + 1 == i {
-                                    write!(writer, "{}:{}", start, val_str).expect(err_msg);
-                                } else {
-                                    write!(writer, "{}-{}:{}", start, i - 1, val_str)
-                                        .expect(err_msg);
-                                }
-                                if i < abund_values.len() {
-                                    write!(writer, ",").expect(err_msg);
-                                    start = i;
-                                    current = abund_values[i];
-                                }
-                            }
-                        }
-                    }
-                    writeln!(writer).expect(err_msg);
-                }
-                let _ = writer.flush();
-            }
-            OutputFormat::Median | OutputFormat::NormalizedMedian => {
-                // we need the count of kmers if we want to normalize them
-                let normalize_option = output_format == OutputFormat::NormalizedMedian;
-                let kmer_counts = if normalize_option {
-                    load_kmer_counts_vector(bf_dir)
-                        .expect("Failed to load from disk the kmer counts vector")
-                } else {
-                    vec![color_number, 0] // TODO bizarre
-                };
-                // Compute medians for each sequence and each color, then write them out
-                for (seq_header, color_vectors) in &sequence_results {
-                    for (color_idx, abund_values) in color_vectors.iter().enumerate() {
-                        if !abund_values.is_empty() {
-                            let mut zeros_count = 0;
-                            let mut non_zero_values: Vec<u16> = Vec::new();
-                            abund_values.iter().for_each(|value| {
-                                if *value == 0 {
-                                    zeros_count += 1;
-                                } else {
-                                    non_zero_values.push(*value);
-                                }
-                            });
-                            if !non_zero_values.is_empty()
-                                && (((zeros_count as f32) / (abund_values.len() as f32)) < coverage)
-                            {
-                                let mut abund_sorted = non_zero_values.clone();
-                                abund_sorted.sort_unstable();
-                                let median = if abund_sorted.iter().all(|&x| x == 0) {
-                                    0
-                                } else if abund_sorted.len() == 1 {
-                                    abund_sorted[0]
-                                } else {
-                                    let mid = abund_sorted.len() / 2;
-                                    if abund_sorted.len() % 2 == 1 {
-                                        abund_sorted[mid]
-                                    } else {
-                                        (abund_sorted[mid - 1] + abund_sorted[mid]) / 2
-                                    }
-                                };
-                                if median > 0 {
-                                    let median = if normalize_option {
-                                        median as f64 / kmer_counts[color_idx] as f64
-                                            * 1_000_000 as f64
-                                    } else {
-                                        median as f64
-                                    };
-                                    let _ =
-                                        writeln!(writer, "{},{},{}", seq_header, color_idx, median);
-                                }
-                            }
-                        }
-                    }
-                }
-                let _ = writer.flush();
-            }
-        }
-    })?;
+        // Let's compute the output in the requested format.
+        write_kmer_query(
+            fasta_file,
+            bf_dir,
+            color_number,
+            batch_size,
+            output_format,
+            coverage,
+            sequence_results,
+            &mut writer,
+        )
+        .expect("should have been able to write the query result");
+    })
+    .expect("should have been able to process fasta files");
 
     Ok(())
 }
@@ -366,11 +411,10 @@ fn merge_results(
 pub fn graph_coloring(
     fasta_file: &str,
     batch_size: usize,
-    output_file: &str,
+    writer: &mut impl Write,
     sequence_results: &HashMap<String, Vec<Vec<u16>>>,
-) -> Result<(), Box<dyn Error>> {
+) -> std::io::Result<()> {
     let reader = read_file(fasta_file)?; // your existing read_file
-    let mut writer = BufWriter::new(File::create(output_file)?);
 
     process_fasta_in_batches(reader, batch_size, |batch| {
         for record in batch {
@@ -432,7 +476,5 @@ pub fn graph_coloring(
             }
         }
     })?;
-
-    writer.flush()?;
     Ok(())
 }

@@ -301,12 +301,12 @@ impl Reindeer2 {
             self.abundance_number,
             self.abundance_max,
             10_000_000,
-            &output_file,
+            output_file,
             self.dense_option,
             output_format,
             coverage,
         )?;
-        println!("Writing results in {}", output_file);
+        println!("Results written to {}", output_file);
         //write_query_results_to_csv(&query_results, bf_dir)
         Ok(query_results)
     }
@@ -2084,10 +2084,8 @@ mod tests {
                 &file_paths[query_file_id],
                 &index_dir,
                 &query_results_path,
-                false,
-                false,
+                OutputFormat::Median,
                 0.5,
-                false,
             )
             .expect("Failed to query sequences");
         query_results_path
@@ -2154,10 +2152,8 @@ mod tests {
                 &file1_path,
                 &index_dir,
                 &query_results_path,
-                false,
-                false,
+                OutputFormat::Median,
                 0.5,
-                false,
             )
             .expect("Failed to query sequences");
 
@@ -4148,10 +4144,8 @@ mod tests {
                 &fasta_path,
                 test_dir,
                 &output_path,
-                true, //  graph coloring
-                false,
+                OutputFormat::Colored,
                 0.5,
-                false,
             )
             .expect("Failed to color graph");
 
