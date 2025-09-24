@@ -62,7 +62,7 @@ impl Reindeer2 {
 
     pub fn from_csv(bf_dir: &str) -> io::Result<Self> {
         //load index metadata from CSV
-        println!("Loaded index metadata for query.");
+        println!("Loading index metadata for query.");
         let (
             k,
             m,
