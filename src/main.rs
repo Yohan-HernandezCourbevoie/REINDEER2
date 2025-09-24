@@ -26,6 +26,7 @@ fn main() -> io::Result<()> {
             let abundance = args.abundance;
             let abundance_max = args.abundance_max;
             let dense_option = args.dense;
+            let canonical = args.canonical;
             let output_dir = args.output_dir.unwrap_or_else(|| {
                 format!("PACAS_index_{}", rand::thread_rng().gen::<u64>()) // Generate a unique directory name
             });
@@ -82,6 +83,7 @@ fn main() -> io::Result<()> {
                     &output_dir,
                     dense_option,
                     tolerated_number_of_zeros,
+                    canonical,
                     debug,
                 )?;
             } else {
@@ -98,6 +100,7 @@ fn main() -> io::Result<()> {
                     abundance,
                     abundance_max,
                     dense_option,
+                    canonical,
                 );
                 index.build(
                     file_paths,

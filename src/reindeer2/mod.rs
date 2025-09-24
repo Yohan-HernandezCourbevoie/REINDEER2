@@ -4,7 +4,7 @@ mod query;
 use bio::io::fasta;
 use csv::Writer;
 use flate2::read::GzDecoder;
-use nthash::NtHashIterator;
+use nthash::{NtHashForwardIterator, NtHashIterator};
 use num_format::{Locale, ToFormattedString};
 use rayon::prelude::*;
 use roaring::RoaringBitmap;
@@ -31,6 +31,7 @@ pub struct Reindeer2 {
     abundance_number: usize,
     abundance_max: u16,
     dense_option: bool,
+    canonical: bool,
 }
 
 impl Reindeer2 {
@@ -44,6 +45,7 @@ impl Reindeer2 {
         abundance_max: u16,
         // TODO rename is_dense
         dense_option: bool,
+        canonical: bool,
     ) -> Self {
         Self {
             bf_size,
@@ -54,6 +56,7 @@ impl Reindeer2 {
             abundance_max,
             abundance_number,
             dense_option,
+            canonical,
         }
     }
 
@@ -69,6 +72,7 @@ impl Reindeer2 {
             abundance_number,
             abundance_max,
             dense_option,
+            canonical,
         ) = read_partition_from_csv(bf_dir, "index_info.csv")?;
         Ok(Self {
             bf_size,
@@ -79,6 +83,7 @@ impl Reindeer2 {
             abundance_number,
             abundance_max,
             dense_option,
+            canonical,
         })
     }
 
@@ -180,6 +185,7 @@ impl Reindeer2 {
                                     &atomic_dense_kmers_count,
                                     &atomic_sparse_kmers_count,
                                     &kmer_counts_vector,
+                                    self.canonical,
                                 ) {
                                     eprintln!("Error processing {}: {}", path, e);
                                 }
@@ -275,6 +281,7 @@ impl Reindeer2 {
             self.abundance_number,
             self.abundance_max,
             dense_option,
+            self.canonical,
         );
 
         Ok((file_paths, dir_path))
@@ -305,6 +312,7 @@ impl Reindeer2 {
             self.dense_option,
             output_format,
             coverage,
+            self.canonical,
         )?;
         println!("Results written to {}", output_file);
         //write_query_results_to_csv(&query_results, bf_dir)
@@ -351,6 +359,7 @@ pub fn build_index_muset(
     output_dir: &str,
     dense_option: bool,
     threshold: usize,
+    canonical: bool,
     debug: bool,
 ) -> io::Result<(Vec<String>, String)> {
     let mut total_kmers = atomic::AtomicU64::new(0);
@@ -452,7 +461,7 @@ pub fn build_index_muset(
         let unitig_line = unitigs_lines.next().unwrap().unwrap();
         let seq_str = unitig_line.trim();
         for (kmer_hash, minimizer) in
-            kmer_minimizers_seq_level(seq_str.as_bytes(), kmer_size, minimizer_size)
+            kmer_minimizers_seq_level(seq_str.as_bytes(), kmer_size, minimizer_size, canonical)
         {
             let partition_index = (minimizer % (partition_number as u64)) as usize;
             let new_kmers_added = (abundance_vector_plusone.len() - number_of_zeros) as u64;
@@ -578,6 +587,7 @@ pub fn build_index_muset(
         abundance_number,
         abundance_max,
         dense_option,
+        canonical,
     );
 
     Ok((vec!["".to_string()], dir_path))
@@ -1150,6 +1160,7 @@ fn write_partition_to_csv(
     abundance_number: usize,
     abundance_max: u16,
     dense_option: bool,
+    canonical: bool,
 ) -> io::Result<()> {
     let output_path = format!("{}/index_info.csv", bf_dir);
 
@@ -1164,6 +1175,7 @@ fn write_partition_to_csv(
         "abundance_number",
         "abundance_max",
         "dense_option",
+        "canonical",
     ])?;
     csv_writer.write_record(&[
         k.to_string(),
@@ -1174,6 +1186,7 @@ fn write_partition_to_csv(
         abundance_number.to_string(),
         abundance_max.to_string(),
         dense_option.to_string(),
+        canonical.to_string(),
     ])?;
 
     println!("Index information written to {}", output_path);
@@ -1218,7 +1231,7 @@ fn load_dense_index(file_path: &str) -> io::Result<HashMap<u64, Box<Vec<u8>>>> {
 fn read_partition_from_csv(
     bf_dir: &str,
     output_csv: &str,
-) -> io::Result<(usize, usize, u64, usize, usize, usize, u16, bool)> {
+) -> io::Result<(usize, usize, u64, usize, usize, usize, u16, bool, bool)> {
     let csv_path = format!("{}/{}", bf_dir, output_csv);
     let mut reader = csv::Reader::from_reader(BufReader::new(File::open(csv_path)?));
     let values = reader.records().next().expect("Index CSV is empty")?;
@@ -1230,6 +1243,7 @@ fn read_partition_from_csv(
     let abundance_number = values[5].parse().unwrap_or(0);
     let abundance_max = values[6].parse().unwrap_or(0);
     let dense_option = values[7].parse().unwrap_or(false);
+    let canonical = values[8].parse().unwrap_or(true);
 
     Ok((
         k,
@@ -1240,6 +1254,7 @@ fn read_partition_from_csv(
         abundance_number,
         abundance_max,
         dense_option,
+        canonical,
     ))
 }
 
@@ -1511,6 +1526,7 @@ fn kmer_minimizers_seq_level<'a>(
     seq: &'a [u8],
     k: usize,
     m: usize,
+    canonical: bool,
 ) -> impl Iterator<Item = (u64, u64)> + 'a {
     assert!(
         seq.len() >= k,
@@ -1521,11 +1537,15 @@ fn kmer_minimizers_seq_level<'a>(
     assert!(k >= m, "k must be greater than or equal to m");
 
     //  collects the hash of every m-mer in the sequence w/ rolling hash
-    let m_hashes: Vec<u64> = NtHashIterator::new(seq, m)
-        .unwrap_or_else(|err| {
-            panic!("Error creating NtHashIterator for m-mers: {:?}", err);
-        })
-        .collect();
+    let m_hashes: Vec<u64> = if canonical {
+        NtHashIterator::new(seq, m)
+            .expect("should have been able to create canonical hash iterator")
+            .collect()
+    } else {
+        NtHashForwardIterator::new(seq, m)
+            .expect("should have been able to create hash iterator")
+            .collect()
+    };
 
     // compute sliding window to find minimums over m-mer hashes
     // for each k-mer starting at position i, the m-mers inside it are:
@@ -1612,10 +1632,18 @@ fn kmer_minimizers_seq_level<'a>(
     // at this point, the number of minima should equal the number of k-mers !!
     //assert_eq!(minima.len(), seq.len() - k + 1); //todo remove
 
-    let kmer_hash_iter = NtHashIterator::new(seq, k) // hash kmers
-    .unwrap_or_else(|err| {
-        panic!("Error creating NtHashIterator for k-mers: {:?}", err)
-    });
+    let kmer_hash_iter: Box<dyn Iterator<Item = u64>> = if canonical {
+        Box::new(
+            NtHashIterator::new(seq, k)
+                .expect("should have been able to create canonical hash iterator"),
+        )
+    } else {
+        Box::new(
+            NtHashForwardIterator::new(seq, k)
+                .expect("should have been able to create hash iterator"),
+        )
+    };
+
     // return an iterator over (hashed k-mers,corresponding minimizers)
     kmer_hash_iter.zip(minima)
 }
@@ -1877,8 +1905,10 @@ mod tests {
 
         let k = 7;
         let m = 3;
+        let canonical = true;
 
-        let pairs: Vec<(u64, u64)> = kmer_minimizers_seq_level(seq_bytes, k, m).collect();
+        let pairs: Vec<(u64, u64)> =
+            kmer_minimizers_seq_level(seq_bytes, k, m, canonical).collect();
 
         // there should be seq.len() - k + 1 pairs.
         assert_eq!(pairs.len(), seq_bytes.len() - k + 1);
@@ -1988,6 +2018,7 @@ mod tests {
         let abundance_number = 2;
         let abundance_max = 512;
         let dense_option = false;
+        let canonical = false;
 
         fs::create_dir_all(bf_dir).expect("Failed to create test directory");
 
@@ -2001,6 +2032,7 @@ mod tests {
             abundance_number,
             abundance_max,
             dense_option,
+            canonical,
         );
         assert!(write_result.is_ok(), "Failed to write CSV");
 
@@ -2016,6 +2048,7 @@ mod tests {
             read_abundance_number,
             read_abundance_max,
             read_dense_option,
+            read_canonical,
         ) = read_result.unwrap();
 
         assert_eq!(read_k, k, "Mismatch in k value");
@@ -2041,6 +2074,7 @@ mod tests {
             read_dense_option, dense_option,
             "Mismatch in dense_option value"
         );
+        assert_eq!(read_canonical, canonical, "Mismatch in canonical value");
 
         fs::remove_dir_all(bf_dir).expect("Failed to remove test directory");
     }
@@ -2070,6 +2104,7 @@ mod tests {
             abundance_number,
             abundance_max,
             dense_option,
+            true,
         );
         let (_file_paths, index_dir) = index
             .build(file_paths.clone(), test_dir, dense_option, threshold, false)
@@ -2132,6 +2167,7 @@ mod tests {
             abundance_number,
             abundance_max,
             dense_option,
+            false,
         );
         let (_file_paths, index_dir) = index
             .build(
@@ -4125,6 +4161,7 @@ mod tests {
             abundance_number,
             abundance_max,
             dense_option,
+            false,
         );
 
         let (_file_paths, index_dir) = index

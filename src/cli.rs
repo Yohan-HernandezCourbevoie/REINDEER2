@@ -108,6 +108,10 @@ pub struct IndexArgs {
     /// Sets the index output directory (default: random name in the form of PACAS_index_)
     #[arg(short = 'o', long = "output-dir", value_name = "OUT")]
     pub output_dir: Option<String>,
+
+    /// Use canonical version of k-mers (default: true)
+    #[arg(long, default_value_t = true)]
+    pub canonical: bool,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, ValueEnum)]

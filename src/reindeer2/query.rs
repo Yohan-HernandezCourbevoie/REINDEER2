@@ -25,6 +25,7 @@ fn build_partitions_kmers(
     k: usize,
     m: usize,
     partition_number: u64,
+    canonical: bool,
 ) -> HashMap<usize, Vec<(String, u64)>> {
     let mut partition_kmers: HashMap<usize, Vec<(String, u64)>> = HashMap::new();
 
@@ -47,7 +48,8 @@ fn build_partitions_kmers(
         //    .width((k - m + 1).try_into().unwrap())
         //    .iter(seq_str.as_bytes());
 
-        for (kmer_hash, minimizer) in kmer_minimizers_seq_level(seq_str.as_bytes(), k, m) {
+        for (kmer_hash, minimizer) in kmer_minimizers_seq_level(seq_str.as_bytes(), k, m, canonical)
+        {
             //for (kmer_hash, (minimizer, _position)) in nt_hash_iterator.zip(min_iter) {
             let partition_index = (minimizer % partition_number) as usize;
             partition_kmers
@@ -334,6 +336,7 @@ pub fn query_sequences_in_batches(
     dense_option: bool,
     output_format: OutputFormat,
     coverage: f32,
+    canonical: bool,
 ) -> io::Result<()> {
     let reader = read_file(fasta_file)?;
     let mut writer = BufWriter::new(File::create(output_file)?);
@@ -342,7 +345,8 @@ pub fn query_sequences_in_batches(
 
     // Process FASTA in chunks of `batch_size` records
     process_fasta_in_batches(reader, batch_size, |batch| {
-        let partition_kmers = build_partitions_kmers(batch, k, m, partition_number as u64);
+        let partition_kmers =
+            build_partitions_kmers(batch, k, m, partition_number as u64, canonical);
 
         // --- PARALLEL PHASE: process each partition's k-mers in parallel ---
         // This will store final results for *all* sequences in this batch.
