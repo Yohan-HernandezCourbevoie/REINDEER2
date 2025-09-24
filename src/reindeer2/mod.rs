@@ -1445,7 +1445,7 @@ fn compute_base(abundance_number: usize, abundance_max: u16) -> f64 {
         panic!("abundance number must be greater than 0");
     }
 
-    // TODO pourquoi <= et pas == ?
+    #[expect(clippy::absurd_extreme_comparisons)]
     if abundance_max <= 0 {
         panic!("Maximal abundance must be greater than 0");
     }
