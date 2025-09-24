@@ -18,6 +18,8 @@ use std::time::Instant;
 use thousands::Separable;
 use zstd::stream::decode_all;
 
+use crate::OutputFormat;
+
 // === INDEX ===
 
 pub struct Reindeer2 {
@@ -221,8 +223,8 @@ impl Reindeer2 {
         if debug {
             // k-mers repartition between dense and sparse index
             println!("The index contains {:?} 'dense' k-mers and {:?} 'sparse' k-mers (total k-mers: {:?})", 
-            atomic_dense_kmers_count.get_mut().separate_with_commas(), 
-            atomic_sparse_kmers_count.get_mut().separate_with_commas(), 
+            atomic_dense_kmers_count.get_mut().separate_with_commas(),
+            atomic_sparse_kmers_count.get_mut().separate_with_commas(),
             total_kmers.get_mut().separate_with_commas());
 
             let ones = atomic_sparse_one_seen.get_mut();
@@ -230,9 +232,9 @@ impl Reindeer2 {
             let fp = atomic_sparse_fp_seen.get_mut();
             // k-mers indexed in the sparse index, FP silent and FP seen
             println!("Among the {:?} k-mers added in the 'sparse' index, {:?} encountered hash collisions ({:?} silent and {:?} misleading).", 
-            atomic_sparse_kmers_count.get_mut().separate_with_commas(), 
+            atomic_sparse_kmers_count.get_mut().separate_with_commas(),
             (silent+*fp).separate_with_commas(),
-            silent.separate_with_commas(), 
+            silent.separate_with_commas(),
             fp.separate_with_commas());
         }
 
@@ -285,10 +287,8 @@ impl Reindeer2 {
         fasta_file: &str,
         bf_dir: &str,
         output_file: &str,
-        color_graph: bool,
-        normalize_option: bool,
+        output_format: OutputFormat,
         coverage: f32,
-        rd1_like: bool,
     ) -> io::Result<()> {
         let query_results = query::query_sequences_in_batches(
             fasta_file,
@@ -302,11 +302,9 @@ impl Reindeer2 {
             self.abundance_max,
             10_000_000,
             &output_file,
-            color_graph,
             self.dense_option,
-            normalize_option,
+            output_format,
             coverage,
-            rd1_like,
         )?;
         println!("Writing results in {}", output_file);
         //write_query_results_to_csv(&query_results, bf_dir)
@@ -549,9 +547,9 @@ pub fn build_index_muset(
         let fp = atomic_sparse_fp_seen.get_mut();
         // k-mers indexed in the sparse index, FP silent and FP seen
         println!("Among the {:?} k-mers added in the 'sparse' index, {:?} encountered hash collisions ({:?} silent and {:?} misleading).", 
-            atomic_sparse_kmers_count.get_mut().separate_with_commas(), 
+            atomic_sparse_kmers_count.get_mut().separate_with_commas(),
             (silent+*fp).separate_with_commas(),
-            silent.separate_with_commas(), 
+            silent.separate_with_commas(),
             fp.separate_with_commas());
     }
 
@@ -2074,13 +2072,7 @@ mod tests {
             dense_option,
         );
         let (_file_paths, index_dir) = index
-            .build(
-                file_paths.clone(),
-                test_dir,
-                dense_option,
-                threshold,
-                false,
-            )
+            .build(file_paths.clone(), test_dir, dense_option, threshold, false)
             .expect("Failed to build index");
 
         let query_results_path = format!("{}/query_results.csv", index_dir);

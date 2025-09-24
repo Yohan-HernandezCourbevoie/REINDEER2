@@ -6,6 +6,7 @@ use rand::Rng;
 use std::io::{self};
 use std::time::Instant;
 
+use crate::cli::OutputFormat;
 use crate::reindeer2::{build_index_muset, explore_muset_dir, read_fof_file, Reindeer2};
 use cli::Cli;
 
@@ -118,17 +119,15 @@ fn main() -> io::Result<()> {
 
             let fasta_file = args.fasta;
             let index_dir = args.index;
-            let color_graph = args.color;
             let coverage = args.coverage;
-            let normalize_option = args.normalize;
-            let rd1_like = args.rd1_like;
+            let output_format = args.output_format;
 
             println!("Index directory: {}", index_dir);
 
-            let mut query_output = format!("{}/query_results.csv", index_dir);
-            if color_graph {
-                query_output = format!("{}/colored_graph.fa", index_dir);
-            }
+            let query_output = match output_format {
+                OutputFormat::Colored => format!("{}/colored_graph.fa", index_dir),
+                _ => format!("{}/query_results.csv", index_dir),
+            };
 
             let start_time = Instant::now();
             let index = Reindeer2::from_csv(&index_dir)
@@ -138,10 +137,8 @@ fn main() -> io::Result<()> {
                     &fasta_file,
                     &index_dir,
                     &query_output,
-                    color_graph,
-                    normalize_option,
+                    output_format,
                     coverage,
-                    rd1_like,
                 )
                 .expect("Failed to query sequences");
 
