@@ -1663,8 +1663,8 @@ fn kmer_minimizers_seq_level<'a>(
         }
     }
 
-    // at this point, the number of minima should equal the number of k-mers !!
-    //assert_eq!(minima.len(), seq.len() - k + 1); //todo remove
+    // the number of minima should equal the number of k-mers
+    debug_assert_eq!(minima.len(), seq.len() - k + 1);
 
     let kmer_hash_iter: Box<dyn Iterator<Item = u64>> = if canonical {
         Box::new(
@@ -4239,6 +4239,146 @@ mod tests {
             expected_output, actual_output,
             "Mismatch between expected and actual output"
         );
+
+        fs::remove_dir_all(test_dir).expect("Failed to clean up test directory");
+    }
+
+    #[test]
+    fn test_output_rd1() {
+        use itertools::Itertools;
+        let test_dir = "test_output_rd1";
+        fs::create_dir_all(test_dir).expect("Failed to create test directory");
+
+        let file1_path = String::from("tests/unit_tests_data/random_seq_with_revcomp.fa");
+        let file2_path = String::from("tests/unit_tests_data/random_seq.fa");
+        let file_paths = vec![file1_path, file2_path];
+
+        let k = 31;
+        let m = 15;
+        let bf_size = 1024 * 1024;
+        let partition_number = 4;
+        let color_number = 2;
+        let abundance_number = 256;
+        let abundance_max = 65535;
+        let dense_option = false;
+        let threshold = color_number;
+        let canonical = true;
+
+        let index = Reindeer2::new(
+            bf_size,
+            partition_number,
+            k,
+            m,
+            color_number,
+            abundance_number,
+            abundance_max,
+            dense_option,
+            canonical,
+        );
+        let (_, index_dir) = index
+            .build(file_paths.clone(), test_dir, dense_option, threshold, false)
+            .expect("Failed to build index");
+
+        let query_results_path = format!("{}/query_results.csv", index_dir);
+
+        let index_from_csv = Reindeer2::from_csv(&index_dir).unwrap();
+        index_from_csv
+            .query(
+                &file_paths[1],
+                &index_dir,
+                &query_results_path,
+                OutputFormat::Raw,
+                0.5,
+            )
+            .expect("Failed to query sequences");
+
+        // Validate the results written to the query results file
+        let actual = fs::read_to_string(&query_results_path)
+            .unwrap()
+            .trim()
+            .split("\n")
+            .sorted()
+            .join("\n");
+        let expected = String::from(
+            ">header_0 ka:f:1 0-69:* 0-69:1
+>header_1 ka:f:1 0-69:* 0-69:1
+>header_2 ka:f:1 0-69:* 0-69:1
+>header_3 ka:f:1 0-69:* 0-69:1
+>header_4 ka:f:1 0-69:* 0-69:1
+>shared_revcomp_with_other_test_file ka:f:10 0-19:3 0-19:10",
+        );
+
+        assert_eq!(expected, actual);
+
+        fs::remove_dir_all(test_dir).expect("Failed to clean up test directory");
+    }
+
+    #[test]
+    fn test_output_rd1_non_canonical() {
+        use itertools::Itertools;
+        let test_dir = "test_output_rd1_canonical";
+        fs::create_dir_all(test_dir).expect("Failed to create test directory");
+
+        let file1_path = String::from("tests/unit_tests_data/random_seq_with_revcomp.fa");
+        let file2_path = String::from("tests/unit_tests_data/random_seq.fa");
+        let file_paths = vec![file1_path, file2_path];
+
+        let k = 31;
+        let m = 15;
+        let bf_size = 1024 * 1024;
+        let partition_number = 4;
+        let color_number = 2;
+        let abundance_number = 256;
+        let abundance_max = 65535;
+        let dense_option = false;
+        let threshold = color_number;
+        let canonical = false;
+
+        let index = Reindeer2::new(
+            bf_size,
+            partition_number,
+            k,
+            m,
+            color_number,
+            abundance_number,
+            abundance_max,
+            dense_option,
+            canonical,
+        );
+        let (_, index_dir) = index
+            .build(file_paths.clone(), test_dir, dense_option, threshold, false)
+            .expect("Failed to build index");
+
+        let query_results_path = format!("{}/query_results.csv", index_dir);
+
+        let index_from_csv = Reindeer2::from_csv(&index_dir).unwrap();
+        index_from_csv
+            .query(
+                &file_paths[1],
+                &index_dir,
+                &query_results_path,
+                OutputFormat::Raw,
+                0.5,
+            )
+            .expect("Failed to query sequences");
+
+        // Validate the results written to the query results file
+        let actual = fs::read_to_string(&query_results_path)
+            .unwrap()
+            .trim()
+            .split("\n")
+            .sorted()
+            .join("\n");
+        let expected = String::from(
+            ">header_0 ka:f:1 0-69:* 0-69:1
+>header_1 ka:f:1 0-69:* 0-69:1
+>header_2 ka:f:1 0-69:* 0-69:1
+>header_3 ka:f:1 0-69:* 0-69:1
+>header_4 ka:f:1 0-69:* 0-69:1
+>shared_revcomp_with_other_test_file ka:f:10 0-19:* 0-19:10",
+        );
+
+        assert_eq!(expected, actual);
 
         fs::remove_dir_all(test_dir).expect("Failed to clean up test directory");
     }
