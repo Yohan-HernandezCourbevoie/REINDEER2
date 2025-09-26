@@ -28,13 +28,7 @@ thousands = "0.2.0"
 
 [profile.dev]
 opt-level = 3
-debug = false
 split-debuginfo = "unpacked"
-lto = true
-codegen-units = 1
-incremental = false
-panic = "abort"
-overflow-checks = false
 
 
 [profile.release]
