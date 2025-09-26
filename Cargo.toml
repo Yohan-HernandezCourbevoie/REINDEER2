@@ -13,7 +13,7 @@ description = "REINDEER2: k-mer quantification in large collections of samples"
 # minimizer-iter = { git = "https://github.com/rust-seq/minimizer-iter.git" }
 # bit-vec = "0.6"
 bio = "0.42.0"
-rand = "0.8"
+rand = "0.9"
 clap = { version = "4.1", features = ["derive"] }
 zstd = "0.11"
 roaring = "0.10.9"

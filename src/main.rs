@@ -28,7 +28,7 @@ fn main() -> io::Result<()> {
             let dense_option = args.dense;
             let canonical = !args.stranded;
             let output_dir = args.output_dir.unwrap_or_else(|| {
-                format!("PACAS_index_{}", rand::thread_rng().gen::<u64>()) // Generate a unique directory name
+                format!("PACAS_index_{}", rand::rng().random::<u64>()) // Generate a unique directory name
             });
             // let muset_option = args.muset;
             // TODO add threads
