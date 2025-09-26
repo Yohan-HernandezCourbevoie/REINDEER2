@@ -109,9 +109,9 @@ pub struct IndexArgs {
     #[arg(short = 'o', long = "output-dir", value_name = "OUT")]
     pub output_dir: Option<String>,
 
-    /// Use canonical version of k-mers (default: true)
-    #[arg(long, default_value_t = true)]
-    pub canonical: bool,
+    /// Use non-canonical version of k-mers (default: false)
+    #[arg(long, default_value_t = false)]
+    pub stranded: bool,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, ValueEnum)]
