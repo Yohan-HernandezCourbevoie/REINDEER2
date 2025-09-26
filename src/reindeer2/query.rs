@@ -76,7 +76,7 @@ fn fold_into_hashmap(
 ) -> HashMap<String, Vec<Vec<u16>>> {
     // Load the partition's Bloom filter
     let path_bf = format!(
-        "{}/partition_bloom_filters_p{}.txt",
+        "{}/partition_bloom_filters_p{}.bin",
         bf_dir, partition_index
     );
     let maybe_bf = load_bloom_filter(&path_bf);
@@ -84,7 +84,7 @@ fn fold_into_hashmap(
     if let Ok((bitmap, _maybe_aux_data)) = maybe_bf {
         let hashmap: HashMap<u64, Box<Vec<u8>>> = if is_dense {
             let path_dense_index =
-                format!("{}/partition_dense_index_p{}.txt", bf_dir, partition_index);
+                format!("{}/partition_dense_index_p{}.bin", bf_dir, partition_index);
             load_dense_index(&path_dense_index).expect(&format!(
                 "Failed to load dense index for partition {}",
                 partition_index
@@ -169,7 +169,7 @@ fn fold_into_hashmap(
 }
 
 fn load_kmer_counts_vector(dir_path: &str) -> io::Result<Vec<usize>> {
-    let mut file = File::open(Path::new(dir_path).join("kmer_counts_per_color.txt"))?;
+    let mut file = File::open(Path::new(dir_path).join("kmer_counts_per_color.bin"))?;
 
     // Read the rest of the file to deserialize the hashmap
     let mut buffer = Vec::new();
