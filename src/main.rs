@@ -124,13 +124,15 @@ fn main() -> io::Result<()> {
             let index_dir = args.index;
             let coverage = args.coverage;
             let output_format = args.output_format;
+            let query_output = match args.output {
+                Some(output) => output,
+                None => match output_format {
+                    OutputFormat::Colored => format!("{}_colored_graph.fa", index_dir),
+                    _ => format!("{}_query_results.csv", index_dir),
+                },
+            };
 
             println!("Index directory: {}", index_dir);
-
-            let query_output = match output_format {
-                OutputFormat::Colored => format!("{}/colored_graph.fa", index_dir),
-                _ => format!("{}/query_results.csv", index_dir),
-            };
 
             let start_time = Instant::now();
             let index = Reindeer2::from_csv(&index_dir)

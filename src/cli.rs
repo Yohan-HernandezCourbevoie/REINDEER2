@@ -136,6 +136,11 @@ pub struct QueryArgs {
     #[arg(long, value_enum, default_value_t = OutputFormat::Median)]
     pub output_format: OutputFormat,
 
+    /// Precision of the format output
+    #[arg(short, long)]
+    pub output: Option<String>,
+
+    // TODO discuss that 0.5 default value
     /// Minimum proportion of kmers that must be present in the query sequence in order to propose an abundance value, 0 < C <= 1 (default: 0.5)
     #[arg(
         short = 'C',
