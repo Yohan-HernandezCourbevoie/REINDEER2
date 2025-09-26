@@ -62,7 +62,7 @@ impl Reindeer2 {
 
     pub fn from_csv(bf_dir: &str) -> io::Result<Self> {
         //load index metadata from CSV
-        println!("Loading index metadata for query.");
+        print!("Loading index metadata for query...");
         let (
             k,
             m,
@@ -74,6 +74,7 @@ impl Reindeer2 {
             dense_option,
             canonical,
         ) = read_partition_from_csv(bf_dir, "index_info.csv")?;
+        println!(" Done.");
         Ok(Self {
             bf_size,
             partition_number,
@@ -259,11 +260,11 @@ impl Reindeer2 {
             // If there was only one chunk, rename files directly
             for partition_idx in 0..self.partition_number {
                 let input_path = format!(
-                    "{}/partition_bloom_filters_c0_p{}.txt",
+                    "{}/partition_bloom_filters_c0_p{}.bin",
                     dir_path, partition_idx
                 );
                 let output_path = format!(
-                    "{}/partition_bloom_filters_p{}.txt",
+                    "{}/partition_bloom_filters_p{}.bin",
                     dir_path, partition_idx
                 );
                 std::fs::rename(&input_path, &output_path)?;
@@ -566,11 +567,11 @@ pub fn build_index_muset(
     // If there was only one chunk, rename files directly
     for partition_idx in 0..partition_number {
         let input_path = format!(
-            "{}/partition_bloom_filters_c0_p{}.txt",
+            "{}/partition_bloom_filters_c0_p{}.bin",
             dir_path, partition_idx
         );
         let output_path = format!(
-            "{}/partition_bloom_filters_p{}.txt",
+            "{}/partition_bloom_filters_p{}.bin",
             dir_path, partition_idx
         );
         std::fs::rename(&input_path, &output_path)?;
@@ -653,7 +654,7 @@ pub fn build_index_muset(
 //         let chunk_files: Vec<String> = indexes_metadata
 //             .iter()
 //             .map(|(index_dir, _)| {
-//                 format!("{}/partition_bloom_filters_p{}.txt", index_dir, partition_idx)
+//                 format!("{}/partition_bloom_filters_p{}.bin", index_dir, partition_idx)
 //             })
 //             .collect();
 
@@ -719,7 +720,7 @@ fn merge_all_partitions(
                 .enumerate()
                 .map(|(chunk_idx, _)| {
                     format!(
-                        "{}/partition_bloom_filters_c{}_p{}.txt",
+                        "{}/partition_bloom_filters_c{}_p{}.bin",
                         chunk_files_dir, chunk_idx, partition_idx
                     )
                 })
@@ -777,7 +778,7 @@ fn merge_partition_bloom_filters(
         color_counts,
     );
     let output_file_path = format!(
-        "{}/partition_bloom_filters_p{}.txt",
+        "{}/partition_bloom_filters_p{}.bin",
         output_dir, partition_idx
     );
     let output_file = File::create(&output_file_path)?;
@@ -1087,7 +1088,7 @@ fn write_bloom_filters_to_disk(
         // let c = get_current_chunk_index(i, chunks, partition_nb); // chunk idx
         let p = i % partition_nb; // TOUN
         let file_path =
-            Path::new(dir_path).join(format!("partition_bloom_filters_c{}_p{}.txt", chunk_id, p));
+            Path::new(dir_path).join(format!("partition_bloom_filters_c{}_p{}.bin", chunk_id, p));
         let file = File::create(&file_path)?;
         let mut writer = BufWriter::new(file);
         let chunk_colors = chunks[chunk_id];
@@ -1110,7 +1111,7 @@ fn _write_bloom_filters_to_disk_nochunk(
     nb_colors: usize,
 ) -> io::Result<()> {
     for (i, bitmap) in bloom_filters.iter().enumerate() {
-        let file_path = Path::new(dir_path).join(format!("partition_bloom_filters_p{}.txt", i));
+        let file_path = Path::new(dir_path).join(format!("partition_bloom_filters_p{}.bin", i));
         let file = File::create(&file_path)?;
         let mut writer = BufWriter::new(file);
         writer.write_all(&nb_colors.to_le_bytes())?;
@@ -1125,7 +1126,7 @@ fn write_dense_indexes_to_disk(
 ) -> io::Result<()> {
     for (partition, hashmap) in dense_indexes.iter().enumerate() {
         let file_path =
-            Path::new(dir_path).join(format!("partition_dense_index_p{}.txt", partition));
+            Path::new(dir_path).join(format!("partition_dense_index_p{}.bin", partition));
         let file = File::create(&file_path)?;
         let mut writer = BufWriter::new(file);
         let mut locked_hashmap = hashmap.lock().unwrap();
@@ -1140,7 +1141,7 @@ fn write_kmer_counts_to_disk(
     dir_path: &str,
     kmer_counts_vector: &Arc<Mutex<Vec<usize>>>,
 ) -> io::Result<()> {
-    let file_path = Path::new(dir_path).join("kmer_counts_per_color.txt");
+    let file_path = Path::new(dir_path).join("kmer_counts_per_color.bin");
     let file = File::create(&file_path)?;
     let mut writer = BufWriter::new(file);
     let mut locked_vector = kmer_counts_vector.lock().unwrap();
@@ -3918,9 +3919,9 @@ mod tests {
         let test_dir = "test_merge_partition_bloom_filters";
         create_dir_all(test_dir).expect("Failed to create test directory");
 
-        let chunk1_path = format!("{}/chunk1_p0.txt", test_dir);
-        let chunk2_path = format!("{}/chunk2_p0.txt", test_dir);
-        let chunk3_path = format!("{}/chunk3_p0.txt", test_dir);
+        let chunk1_path = format!("{}/chunk1_p0.bin", test_dir);
+        let chunk2_path = format!("{}/chunk2_p0.bin", test_dir);
+        let chunk3_path = format!("{}/chunk3_p0.bin", test_dir);
 
         let partition_idx = 0;
         let partitioned_bf_size = 2;
@@ -3972,7 +3973,7 @@ mod tests {
         // check the merged Bloom filter
         // let merged_bf = merged_bloom_filter.lock().unwrap();
 
-        //let final_output_path = format!("{}/partition_bloom_filters_p{}.txt", output_dir, partition_idx);
+        //let final_output_path = format!("{}/partition_bloom_filters_p{}.bin", output_dir, partition_idx);
         //let (merged_bf, color_nb) = load_bloom_filter(&final_output_path).expect("Failed to load merged Bloom filter");
 
         //assert_eq!(
@@ -4304,7 +4305,7 @@ mod tests {
 
     //     // check that each partition file in the merged index exists
     //     for partition in 0..partitions {
-    //         let part_path = format!("{}/partition_bloom_filters_p{}.txt", merged_index_dir, partition);
+    //         let part_path = format!("{}/partition_bloom_filters_p{}.bin", merged_index_dir, partition);
     //         assert!(Path::new(&part_path).exists(), "Merged partition file {} does not exist", part_path);
     //     }
 
