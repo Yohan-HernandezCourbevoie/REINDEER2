@@ -1,4 +1,4 @@
-use clap::{ArgAction, Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 
 #[derive(Parser, Debug)]
 // #[command(disable_version_flag = true, disable_help_flag = true)]// TODO discuss
@@ -108,6 +108,18 @@ pub struct IndexArgs {
     /// Sets the index output directory (default: random name in the form of PACAS_index_)
     #[arg(short = 'o', long = "output-dir", value_name = "OUT")]
     pub output_dir: Option<String>,
+
+    /// Use canonical version of k-mers (default: true)
+    #[arg(long, default_value_t = true)]
+    pub canonical: bool,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, ValueEnum)]
+pub enum OutputFormat {
+    Colored,
+    NormalizedMedian,
+    Median,
+    Raw,
 }
 
 #[derive(Args, Debug)]
@@ -120,17 +132,9 @@ pub struct QueryArgs {
     #[arg(short = 'i', long = "index", value_name = "DIR")]
     pub index: String,
 
-    /// bool for coloring a graph instead of regular query (default: false)
-    #[arg(short = 'c', long = "color", default_value_t = false)]
-    pub color: bool,
-
-    /// bool for normalizing abundances based on sequencing depth estimates (default: false)
-    #[arg(short = 'n', long = "normalize", default_value_t = false)]
-    pub normalize: bool,
-
-    /// Print abundace per k-mer, like REINDEER 1? (default: false)
-    #[arg(long, default_value_t = false)]
-    pub rd1_like: bool,
+    /// Precision of the format output
+    #[arg(long, value_enum, default_value_t = OutputFormat::Median)]
+    pub output_format: OutputFormat,
 
     /// Minimum proportion of kmers that must be present in the query sequence in order to propose an abundance value, 0 < C <= 1 (default: 0.5)
     #[arg(

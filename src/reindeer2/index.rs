@@ -34,6 +34,7 @@ pub fn process_fasta_file(
     atomic_dense_kmers_count: &atomic::AtomicU64,
     atomic_sparse_kmers_count: &atomic::AtomicU64,
     kmer_counts_vector: &Arc<Mutex<Vec<usize>>>,
+    canonical: bool,
 ) -> io::Result<()> {
     let atomic_record_count = atomic::AtomicU64::new(0);
     let mut kmer_count: usize = 0;
@@ -86,7 +87,7 @@ pub fn process_fasta_file(
                         let seq_str = std::str::from_utf8(&seq).expect("Invalid UTF-8 sequence");
 
                         for (kmer_hash, minimizer) in
-                            kmer_minimizers_seq_level(seq_str.as_bytes(), k, m)
+                            kmer_minimizers_seq_level(seq_str.as_bytes(), k, m, canonical)
                         {
                             kmer_count += count_value as usize;
                             //for (kmer_hash, (minimizer, _)) in nt_hash_iterator.zip(min_iter) { // iterate on both minimizer and hash for each kmer
@@ -113,8 +114,7 @@ pub fn process_fasta_file(
                                     } else if path_num_global <= threshold {
                                         // create a new abundance vector for the k-mer
                                         let mut abundance_vector: Vec<u8> =
-                                            Vec::with_capacity(color_number_global);
-                                        abundance_vector.resize(color_number_global, 0);
+                                            vec![0; color_number_global];
                                         abundance_vector[path_num_global] =
                                             (log_abundance + 1) as u8;
                                         dense_index.insert(kmer_hash, abundance_vector);

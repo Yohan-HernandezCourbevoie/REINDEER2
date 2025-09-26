@@ -46,7 +46,7 @@ The generale use of REINDEER 2 is divided in to steps : index building and abund
 
 For the **index** mode, the mandatory parameters are the file of files (a plain text file where each line represented a unitigs file) and the size of the k-mers to be indexed.
 
-`Reindeer2 --mode index --input file_of_files.txt --kmer 31`
+`Reindeer2 index --input file_of_files.txt --kmer 31`
 
 
 General parameters:
@@ -68,11 +68,14 @@ Advanced parameters:
 
 For **query** mode, the parameters are the FASTA file containing the sequence(s) to be queried and the index directory.
 
-`Reindeer2 --mode query --fasta sequences_query.fa --index ~/index_directory`
+`Reindeer2 query --fasta sequences_query.fa --index ~/index_directory`
 
 Optional parameters:
-- `-c, --color` (true/false) is used to annotate the input file with abundances rather than producing the standard output file (as showed in the examples below) (default: false)
-- `-n, --normalize` (true/false) parameter allows to normalize abundances based on sequencing depth estimates. The calculation is _normalized\_abundance = raw\_abundance / number\_of\_kmers\_in\_the\_dataset * 1\_000\_000_ (default: false)
+- `--output-format` allows to change the output format. Suported formats are:
+    - `median` (default): for each color, returns the median of k-mer abundance per read
+    - `normalized-median`: normalize abundances based on sequencing depth estimates. The calculation is _normalized\_abundance = raw\_abundance / number\_of\_kmers\_in\_the\_dataset * 1\_000\_000_
+    - `colored`: annotate the input file with abundances rather than producing the standard output file (as showed in the examples below)
+    - `raw`: for each color, for each read, returns the abundance of every k-mer (similar to REINDEER 1).
 - `-C, --coverage-min` minimum proportion of kmers that must be present in the query sequence in order to propose an abundance value
 
 #### CSV file with --color false (default)
@@ -90,13 +93,13 @@ To illustrate how the tool works, a small example is available. The commands are
 #### INDEX
 How to build the index:
 ```
-Reindeer2 --mode index --input test_files/fof.txt --kmer 31 --output-dir ../index_test
+Reindeer2 index --input test_files/fof.txt --kmer 31 --output-dir ../index_test
 ```
 
 #### QUERY (results: CSV)
 With the command:
 ```
-Reindeer2 --mode query --fasta test_files/file1Q.fa --index ../index_test
+Reindeer2 query --fasta test_files/file1Q.fa --index ../index_test
 cat ../index_test/query_results.csv
 ```
 is expected the result:
@@ -112,7 +115,7 @@ header,file,abundance
 #### QUERY (results: colored graph FASTA)
 With the command:
 ```
-Reindeer2 --mode query --fasta test_files/file1Q.fa --index ../index_test --color true 
+Reindeer2 query --fasta test_files/file1Q.fa --index ../index_test --output-format colored 
 cat ../index_test/colored_graph.fa
 ```
 is expected the result:
