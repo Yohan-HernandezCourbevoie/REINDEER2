@@ -62,7 +62,7 @@ impl Reindeer2 {
 
     pub fn from_csv(bf_dir: &str) -> io::Result<Self> {
         //load index metadata from CSV
-        println!("Loading index metadata for query.");
+        print!("Loading index metadata for query...");
         let (
             k,
             m,
@@ -74,6 +74,7 @@ impl Reindeer2 {
             dense_option,
             canonical,
         ) = read_partition_from_csv(bf_dir, "index_info.csv")?;
+        println!(" Done.");
         Ok(Self {
             bf_size,
             partition_number,
