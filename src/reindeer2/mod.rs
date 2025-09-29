@@ -116,6 +116,11 @@ impl Reindeer2 {
 
         let (_, dir_path) = create_dir_and_files(self.partition_number, output_dir)?;
 
+        // keep a trace of the input files in the index,
+        // so that we can put their name in the matrix output if needed
+        let indexed_files = Path::new(&dir_path).join("path.txt");
+        write_indexed_file_names(&indexed_files, &file_paths);
+
         // Shared data structures protected by Mutex for safe parallel access
         let maybe_dense_indexes: Option<Arc<Vec<Mutex<HashMap<u64, Vec<u8>>>>>> = if dense_option {
             Some(Arc::new(
@@ -123,7 +128,7 @@ impl Reindeer2 {
                     .map(|_| {
                         Mutex::new(HashMap::with_capacity(200_000_000 / self.partition_number))
                     })
-                    .collect::<Vec<_>>(),
+                    .collect(),
             ))
         } else {
             None
@@ -319,6 +324,34 @@ impl Reindeer2 {
         //write_query_results_to_csv(&query_results, bf_dir)
         Ok(query_results)
     }
+}
+
+/// Write each filename in `file_paths` in `dir_path`.
+fn write_indexed_file_names<P>(indexed_files: P, file_paths: &[String])
+where
+    P: AsRef<Path>,
+{
+    let file = File::create(&indexed_files).expect("should be able to create file");
+    let mut writer = BufWriter::new(file);
+    for file_path in file_paths {
+        // get the file name, excluding everything after the first "."
+        let filename = Path::new(file_path).file_name().unwrap().to_str().unwrap();
+        let name = filename.split('.').next().unwrap();
+        writeln!(writer, "{}", name).expect("should be able to write indexed file name");
+    }
+    writer.flush().expect("should be able to flush writer");
+}
+
+fn read_indexed_file_names<P>(indexed_files: P) -> Vec<String>
+where
+    P: AsRef<Path>,
+{
+    let file = File::open(indexed_files).expect("should be able to open file");
+    let reader = BufReader::new(file);
+    reader
+        .lines()
+        .map(|line| line.expect("should be able to read line"))
+        .collect()
 }
 
 fn process_fasta_in_batches<R: io::BufRead>(
