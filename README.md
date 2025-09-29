@@ -75,7 +75,7 @@ Optional parameters:
     - `median` (default): for each color, returns the median of k-mer abundance per read
     - `normalized-median`: normalize abundances based on sequencing depth estimates. The calculation is _normalized\_abundance = raw\_abundance / number\_of\_kmers\_in\_the\_dataset * 1\_000\_000_
     - `colored`: annotate the input file with abundances rather than producing the standard output file (as showed in the examples below)
-    - `raw`: for each color, for each read, returns the abundance of every k-mer (similar to REINDEER 1).
+    - `abundance-matrix`: for each color, for each read, returns the abundance of every k-mer (similar to REINDEER 1).
 - `-C, --coverage-min` minimum proportion of kmers that must be present in the query sequence in order to propose an abundance value
 
 #### CSV file with --color false (default)
