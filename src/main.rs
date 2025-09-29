@@ -1,4 +1,5 @@
 mod cli;
+mod memory_measure;
 mod reindeer2;
 
 use clap::Parser;
@@ -112,6 +113,14 @@ fn main() -> io::Result<()> {
             }
 
             println!("Indexing complete in {:.2?}", start_time.elapsed());
+            if cfg!(unix) {
+                // linux returns memory in kb, no idea if all platforms do the same
+                // just print on linux to prevent being inaccurate
+                println!(
+                    "Peak memory usage: {} kibibytes",
+                    memory_measure::format_int_with_spaces(memory_measure::get_max_rss())
+                );
+            }
         }
 
         cli::Command::Query(args) => {
