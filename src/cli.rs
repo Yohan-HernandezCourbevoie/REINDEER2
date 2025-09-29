@@ -119,7 +119,7 @@ pub enum OutputFormat {
     Colored,
     NormalizedMedian,
     Median,
-    Raw,
+    AbundanceMatrix,
 }
 
 #[derive(Args, Debug)]

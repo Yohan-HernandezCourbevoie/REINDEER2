@@ -183,21 +183,49 @@ fn load_kmer_counts_vector(dir_path: &str) -> io::Result<Vec<usize>> {
     Ok(counts_vector)
 }
 
+/// Writes the header of the matrix, including a `\n` at the end
+fn write_header_matrix(
+    writer: &mut impl Write,
+    indexed_files: Vec<String>,
+    sep: &str,
+) -> io::Result<()> {
+    write!(writer, "query")?;
+    for indexed_file in indexed_files {
+        write!(writer, "{sep}{indexed_file}")?;
+    }
+    writeln!(writer)?;
+    Ok(())
+}
+
+/// Formats a fasta header by removing the first `>` and taking up to the first space (excluded).
+/// E.g.: `>seq1 ka:f:30` -> `seq1`
+fn strip_header(s: &str) -> &str {
+    let stripped = if let Some(stripped) = s.strip_prefix('>') {
+        stripped
+    } else {
+        s
+    };
+    stripped.split(' ').next().unwrap()
+}
+
 /// Write abundances per kmer like RD1.
-fn write_raw_abundance(
+fn write_abundance_matrix(
     bf_dir: &str,
     sequence_results: &HashMap<String, Vec<Vec<u16>>>,
     writer: &mut impl Write,
 ) -> io::Result<()> {
-    // TODO make RD1 and normalize mutually exclusive at compile time
-    // we need the count of kmers for an outpout like the one of Reindeer 1
-    load_kmer_counts_vector(bf_dir).expect("Failed to load from disk the kmer counts vector");
+    let indexed_files = Path::new(&bf_dir).join("path.txt");
+    let indexed_files: Vec<String> = super::read_indexed_file_names(indexed_files);
+    let sep = " ";
+
+    write_header_matrix(writer, indexed_files, sep)?;
 
     for (seq_header, color_vectors) in sequence_results {
-        write!(writer, "{seq_header}")?;
+        let header = strip_header(seq_header);
+        write!(writer, "{header}")?;
         for abund_values in color_vectors.iter() {
-            // new color => a space
-            write!(writer, " ")?;
+            // new color => a separator
+            write!(writer, "{sep}")?;
             let mut start = 0;
             let mut current = abund_values[0];
 
@@ -304,7 +332,9 @@ fn write_kmer_query(
             // Flush the writer to separate batch outputs if needed
             graph_coloring(fasta_file, batch_size, writer, &sequence_results)
         }
-        OutputFormat::Raw => write_raw_abundance(bf_dir, &sequence_results, &mut writer),
+        OutputFormat::AbundanceMatrix => {
+            write_abundance_matrix(bf_dir, &sequence_results, &mut writer)
+        }
         OutputFormat::Median | OutputFormat::NormalizedMedian => {
             let normalize = output_format == OutputFormat::NormalizedMedian;
             write_median_abundance(
