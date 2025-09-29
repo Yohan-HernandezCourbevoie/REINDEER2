@@ -1706,6 +1706,8 @@ mod tests {
     use bio::io::fasta;
     use std::io::Cursor;
 
+    use itertools::Itertools;
+
     #[test]
     fn test_read_fof_file() {
         let test_file_path = "test_fof.txt";
@@ -4243,6 +4245,20 @@ mod tests {
         fs::remove_dir_all(test_dir).expect("Failed to clean up test directory");
     }
 
+    /// Asserts if the two contents are "equal", in the sense that:
+    /// - their headers match
+    /// - their **sorted** content match
+    fn assert_equal_sorted_content_with_equal_header(content_a: &str, content_b: &str) {
+        let mut lines_a = content_a.lines();
+        let mut lines_b = content_b.lines();
+
+        assert_eq!(lines_a.next().unwrap(), lines_b.next().unwrap());
+
+        assert_eq!(
+            lines_a.sorted().collect_vec(),
+            lines_b.sorted().collect_vec()
+        );
+    }
     #[test]
     fn test_output_rd1() {
         use itertools::Itertools;
@@ -4287,28 +4303,26 @@ mod tests {
                 &file_paths[1],
                 &index_dir,
                 &query_results_path,
-                OutputFormat::Raw,
+                OutputFormat::AbundanceMatrix,
                 0.5,
             )
             .expect("Failed to query sequences");
 
-        // Validate the results written to the query results file
-        let actual = fs::read_to_string(&query_results_path)
-            .unwrap()
-            .trim()
-            .split("\n")
-            .sorted()
-            .join("\n");
+        // Validate the results written to the query result file
+        let actual = fs::read_to_string(&query_results_path).unwrap();
+        let actual = actual.trim();
+
         let expected = String::from(
-            ">header_0 ka:f:1 0-69:* 0-69:1
->header_1 ka:f:1 0-69:* 0-69:1
->header_2 ka:f:1 0-69:* 0-69:1
->header_3 ka:f:1 0-69:* 0-69:1
->header_4 ka:f:1 0-69:* 0-69:1
->shared_revcomp_with_other_test_file ka:f:10 0-19:3 0-19:10",
+            "query random_seq_with_revcomp random_seq
+header_0 0-69:* 0-69:1
+header_1 0-69:* 0-69:1
+header_2 0-69:* 0-69:1
+header_3 0-69:* 0-69:1
+header_4 0-69:* 0-69:1
+shared_revcomp_with_other_test_file 0-19:3 0-19:10",
         );
 
-        assert_eq!(expected, actual);
+        assert_equal_sorted_content_with_equal_header(&expected, actual);
 
         fs::remove_dir_all(test_dir).expect("Failed to clean up test directory");
     }
@@ -4357,28 +4371,25 @@ mod tests {
                 &file_paths[1],
                 &index_dir,
                 &query_results_path,
-                OutputFormat::Raw,
+                OutputFormat::AbundanceMatrix,
                 0.5,
             )
             .expect("Failed to query sequences");
 
-        // Validate the results written to the query results file
-        let actual = fs::read_to_string(&query_results_path)
-            .unwrap()
-            .trim()
-            .split("\n")
-            .sorted()
-            .join("\n");
+        // Validate the results written to the query result file
+        let actual = fs::read_to_string(&query_results_path).unwrap();
+        let actual = actual.trim();
         let expected = String::from(
-            ">header_0 ka:f:1 0-69:* 0-69:1
->header_1 ka:f:1 0-69:* 0-69:1
->header_2 ka:f:1 0-69:* 0-69:1
->header_3 ka:f:1 0-69:* 0-69:1
->header_4 ka:f:1 0-69:* 0-69:1
->shared_revcomp_with_other_test_file ka:f:10 0-19:* 0-19:10",
+            "query random_seq_with_revcomp random_seq
+header_0 0-69:* 0-69:1
+header_1 0-69:* 0-69:1
+header_2 0-69:* 0-69:1
+header_3 0-69:* 0-69:1
+header_4 0-69:* 0-69:1
+shared_revcomp_with_other_test_file 0-19:* 0-19:10",
         );
 
-        assert_eq!(expected, actual);
+        assert_equal_sorted_content_with_equal_header(&expected, actual);
 
         fs::remove_dir_all(test_dir).expect("Failed to clean up test directory");
     }
