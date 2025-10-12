@@ -136,7 +136,7 @@ pub struct QueryArgs {
     #[arg(long, value_enum, default_value_t = OutputFormat::Median)]
     pub output_format: OutputFormat,
 
-    /// Precision of the format output
+    /// Path to the output file
     #[arg(short, long)]
     pub output: Option<String>,
 
@@ -149,4 +149,8 @@ pub struct QueryArgs {
         default_value_t = 0.5
     )]
     pub coverage: f32,
+
+    /// Allows to detect the (non ordered) set of breakpoints in the output.
+    #[arg(short, long)]
+    pub breakpoints: Option<f64>,
 }

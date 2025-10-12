@@ -4,6 +4,7 @@ use std::io::{self, BufWriter, Read, Write};
 use std::path::Path;
 
 use bio::io::fasta;
+use pelt::pelt;
 use rayon::prelude::*;
 
 use crate::reindeer2::{
@@ -19,16 +20,19 @@ use crate::OutputFormat;
 
 // --- QUERY FUNCTIONS ---
 
-/// Builds a map from partition_index -> Vec of (sequence_id, kmer_hash).
+/// Builds a map from partition_index -> Vec of (sequence_id, position_kmer_in_sequence, kmer_hash).
 fn build_partitions_kmers(
-    batch: Vec<fasta::Record>,
+    batch: &[fasta::Record],
     k: usize,
     m: usize,
     partition_number: u64,
     canonical: bool,
-) -> HashMap<usize, Vec<(String, u64)>> {
-    let mut partition_kmers: HashMap<usize, Vec<(String, u64)>> = HashMap::new();
-
+) -> (
+    HashMap<usize, Vec<(String, usize, u64)>>,
+    HashMap<String, usize>,
+) {
+    let mut partition_kmers: HashMap<usize, Vec<(String, usize, u64)>> = HashMap::new();
+    let mut header_to_nb_kmer = HashMap::new();
     // Build all partition-kmers upfront
     for record in batch {
         let id = record.id();
@@ -41,6 +45,15 @@ fn build_partitions_kmers(
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "Invalid UTF-8 sequence"))
             .unwrap(); // or handle error gracefully
 
+        let nb_kmer = if seq_str.len() >= k {
+            seq_str.len() - k + 1
+        } else {
+            0
+        };
+        header_to_nb_kmer
+            .entry(full_header.clone())
+            .insert_entry(nb_kmer);
+
         // k-mer hash + minimizer
         //let nt_hash_iterator = NtHashIterator::new(seq_str.as_bytes(), k).unwrap();
         //let min_iter = MinimizerBuilder::<u64>::new()
@@ -48,24 +61,26 @@ fn build_partitions_kmers(
         //    .width((k - m + 1).try_into().unwrap())
         //    .iter(seq_str.as_bytes());
 
-        for (kmer_hash, minimizer) in kmer_minimizers_seq_level(seq_str.as_bytes(), k, m, canonical)
+        for (position, (kmer_hash, minimizer)) in
+            kmer_minimizers_seq_level(seq_str.as_bytes(), k, m, canonical).enumerate()
         {
             //for (kmer_hash, (minimizer, _position)) in nt_hash_iterator.zip(min_iter) {
             let partition_index = (minimizer % partition_number) as usize;
-            partition_kmers
-                .entry(partition_index)
-                .or_default()
-                .push((full_header.clone(), kmer_hash));
+            partition_kmers.entry(partition_index).or_default().push((
+                full_header.clone(),
+                position,
+                kmer_hash,
+            ));
         }
     }
-    partition_kmers
+    (partition_kmers, header_to_nb_kmer)
 }
 
 // TODO rename
 fn fold_into_hashmap(
-    mut local_results: HashMap<String, Vec<Vec<u16>>>,
+    mut local_results: HashMap<String, Vec<Vec<(usize, u16)>>>,
     partition_index: usize,
-    kmers: Vec<(String, u64)>,
+    kmers: Vec<(String, usize, u64)>,
     base: f64,
     bf_dir: &str,
     bf_size: u64,
@@ -73,7 +88,7 @@ fn fold_into_hashmap(
     color_number: usize,
     abundance_number: usize,
     is_dense: bool,
-) -> HashMap<String, Vec<Vec<u16>>> {
+) -> HashMap<String, Vec<Vec<(usize, u16)>>> {
     // Load the partition's Bloom filter
     let path_bf = format!(
         "{}/partition_bloom_filters_p{}.bin",
@@ -93,7 +108,7 @@ fn fold_into_hashmap(
             HashMap::new()
         };
         //  For each k-mer in this partition
-        for (sequence_id, kmer_hash) in kmers {
+        for (sequence_id, kmer_position, kmer_hash) in kmers {
             let color_abundances = if hashmap.contains_key(&kmer_hash) {
                 let log_abundance_vector =
                     hashmap.get(&kmer_hash).expect("failed to read the hashmap");
@@ -101,9 +116,10 @@ fn fold_into_hashmap(
                 for (color, log_abundance) in log_abundance_vector.iter().enumerate() {
                     if *log_abundance == 0 {
                         // TODO discuss weird value
-                        color_abundances[color].push(666);
+                        color_abundances[color].push((kmer_position, 666));
                     } else {
-                        color_abundances[color].push((*log_abundance - 1) as usize);
+                        color_abundances[color]
+                            .push((kmer_position, (*log_abundance - 1) as usize));
                     }
                 }
                 color_abundances
@@ -118,28 +134,31 @@ fn fold_into_hashmap(
 
                 // color_abundances[color] -> Vec of (log) counts for that color
                 let mut color_abundances = vec![Vec::new(); color_number];
+                // TODO this function could have a better name
                 update_color_abundances(
                     &bitmap,
                     base_position,
                     color_number,
                     abundance_number,
+                    kmer_position,
                     &mut color_abundances,
                 );
                 color_abundances
             };
 
             // Convert log abundances to approximate integer counts
-            let approximate_counts: Vec<Vec<u16>> = color_abundances
+            let approximate_counts: Vec<Vec<(usize, u16)>> = color_abundances
                 .into_iter()
                 .map(|abunds_for_color| {
                     abunds_for_color
                         .into_iter()
-                        .map(|log_abund| {
-                            if log_abund == 666 {
+                        .map(|(kmer_pos, log_abund)| {
+                            let approx_count = if log_abund == 666 {
                                 0
                             } else {
                                 approximate_value(log_abund, base)
-                            }
+                            };
+                            (kmer_pos, approx_count)
                         })
                         .collect()
                 })
@@ -212,6 +231,7 @@ fn strip_header(s: &str) -> &str {
 fn write_abundance_matrix(
     bf_dir: &str,
     sequence_results: &HashMap<String, Vec<Vec<u16>>>,
+    breakpoints: Option<f64>,
     writer: &mut impl Write,
 ) -> io::Result<()> {
     let indexed_files = Path::new(&bf_dir).join("path.txt");
@@ -226,25 +246,37 @@ fn write_abundance_matrix(
         for abund_values in color_vectors.iter() {
             // new color => a separator
             write!(writer, "{sep}")?;
-            let mut start = 0;
-            let mut current = abund_values[0];
 
-            for i in 1..=abund_values.len() {
-                if i == abund_values.len() || abund_values[i] != current {
-                    let val_str = if current == 0 {
-                        "*"
-                    } else {
-                        &current.to_string()
-                    };
-                    if start + 1 == i {
-                        write!(writer, "{}:{}", start, val_str)?;
-                    } else {
-                        write!(writer, "{}-{}:{}", start, i - 1, val_str)?;
-                    }
-                    if i < abund_values.len() {
-                        write!(writer, ",")?;
-                        start = i;
-                        current = abund_values[i];
+            if let Some(penalty) = breakpoints {
+                let abund_values: Vec<u64> = abund_values.iter().copied().map(u64::from).collect();
+                let breakpoints = pelt(&abund_values, pelt::score, penalty);
+                let s = breakpoints
+                    .iter()
+                    .map(usize::to_string)
+                    .collect::<Vec<_>>()
+                    .join(",");
+                write!(writer, "{}", s)?;
+            } else {
+                let mut start = 0;
+                let mut current = abund_values[0];
+
+                for i in 1..=abund_values.len() {
+                    if i == abund_values.len() || abund_values[i] != current {
+                        let val_str = if current == 0 {
+                            "*"
+                        } else {
+                            &current.to_string()
+                        };
+                        if start + 1 == i {
+                            write!(writer, "{}:{}", start, val_str)?;
+                        } else {
+                            write!(writer, "{}-{}:{}", start, i - 1, val_str)?;
+                        }
+                        if i < abund_values.len() {
+                            write!(writer, ",")?;
+                            start = i;
+                            current = abund_values[i];
+                        }
                     }
                 }
             }
@@ -323,6 +355,7 @@ fn write_kmer_query(
     output_format: OutputFormat,
     coverage: f32,
     sequence_results: HashMap<String, Vec<Vec<u16>>>,
+    breakpoints: Option<f64>,
     mut writer: &mut impl Write,
 ) -> io::Result<()> {
     match output_format {
@@ -333,7 +366,7 @@ fn write_kmer_query(
             graph_coloring(fasta_file, batch_size, writer, &sequence_results)
         }
         OutputFormat::AbundanceMatrix => {
-            write_abundance_matrix(bf_dir, &sequence_results, &mut writer)
+            write_abundance_matrix(bf_dir, &sequence_results, breakpoints, &mut writer)
         }
         OutputFormat::Median | OutputFormat::NormalizedMedian => {
             let normalize = output_format == OutputFormat::NormalizedMedian;
@@ -349,6 +382,95 @@ fn write_kmer_query(
     }?;
     writer.flush()?;
     Ok(())
+}
+
+fn sort_abundance_vec(abund_values: Vec<(usize, u16)>) -> Vec<u16> {
+    use itertools::Itertools;
+
+    #[cfg(debug_assertions)]
+    {
+        use std::collections::HashSet;
+
+        let set_positions: HashSet<&usize> = abund_values
+            .iter()
+            .map(|(kmer_pos, _abundance)| kmer_pos)
+            .collect();
+        debug_assert_eq!(set_positions.len(), abund_values.len());
+        debug_assert_eq!(
+            **set_positions.iter().max().unwrap(),
+            abund_values.len() - 1
+        );
+        debug_assert_eq!(**set_positions.iter().min().unwrap(), 0);
+    }
+    abund_values
+        .into_iter()
+        .sorted_by_key(|(kmer_pos, _abundance)| *kmer_pos)
+        .map(|(_kmer_pos, abundance)| abundance)
+        .collect()
+}
+
+// TODO use compile time to decide wether to sort the output or not
+fn query_single_fasta_batch(
+    bf_dir: &str,
+    k: usize,
+    m: usize,
+    bf_size: u64,
+    partition_number: usize,
+    color_number: usize,
+    abundance_number: usize,
+    dense_option: bool,
+    canonical: bool,
+    base: f64,
+    batch: &[fasta::Record],
+) -> HashMap<String, Vec<Vec<u16>>> {
+    let (partition_kmers, _header_to_nb_kmer) =
+        build_partitions_kmers(batch, k, m, partition_number as u64, canonical);
+
+    // --- PARALLEL PHASE: process each partition's k-mers in parallel ---
+    // This will store final results for *all* sequences in this batch.
+    // Key: sequence header; Value: vector of vector of abundances
+    let result_with_positions: HashMap<String, Vec<Vec<(usize, u16)>>> = partition_kmers
+        .into_par_iter()
+        // 1) Create a local HashMap in each thread
+        .fold(
+            // OPTIMIZE use compile time monomorphization to get rid of this (usize, u16)
+            // (I expect to go from 128 per element in the vector to 16)
+            // (I needed this extra usize to get the correct order of kmer in the output)
+            HashMap::<String, Vec<Vec<(usize, u16)>>>::new,
+            |local_results: HashMap<String, Vec<Vec<(usize, u16)>>>, (partition_index, kmers)| {
+                fold_into_hashmap(
+                    local_results,
+                    partition_index,
+                    kmers,
+                    base,
+                    bf_dir,
+                    bf_size,
+                    partition_number,
+                    color_number,
+                    abundance_number,
+                    dense_option,
+                )
+            },
+        )
+        // 2) Reduce all local HashMaps into a single HashMap
+        .reduce(
+            HashMap::<String, Vec<Vec<(usize, u16)>>>::new,
+            merge_results,
+        );
+
+    let result_without_positions = result_with_positions
+        .into_iter()
+        .map(|(header, color_vectors)| {
+            (
+                header,
+                color_vectors
+                    .into_iter()
+                    .map(|abund_values| sort_abundance_vec(abund_values))
+                    .collect(),
+            )
+        })
+        .collect();
+    result_without_positions
 }
 
 pub fn query_sequences_in_batches(
@@ -367,6 +489,7 @@ pub fn query_sequences_in_batches(
     output_format: OutputFormat,
     coverage: f32,
     canonical: bool,
+    breakpoints: Option<f64>,
 ) -> io::Result<()> {
     let reader = read_file(fasta_file)?;
     let mut writer = BufWriter::new(File::create(output_file)?);
@@ -375,35 +498,19 @@ pub fn query_sequences_in_batches(
 
     // Process FASTA in chunks of `batch_size` records
     process_fasta_in_batches(reader, batch_size, |batch| {
-        let partition_kmers =
-            build_partitions_kmers(batch, k, m, partition_number as u64, canonical);
-
-        // --- PARALLEL PHASE: process each partition's k-mers in parallel ---
-        // This will store final results for *all* sequences in this batch.
-        // Key: sequence header; Value: vector of vector of abundances
-        let sequence_results = partition_kmers
-            .into_par_iter()
-            // 1) Create a local HashMap in each thread
-            .fold(
-                HashMap::<String, Vec<Vec<u16>>>::new,
-                |local_results, (partition_index, kmers)| {
-                    fold_into_hashmap(
-                        local_results,
-                        partition_index,
-                        kmers,
-                        base,
-                        bf_dir,
-                        bf_size,
-                        partition_number,
-                        color_number,
-                        abundance_number,
-                        dense_option,
-                    )
-                },
-            )
-            // 2) Reduce all local HashMaps into a single HashMap
-            .reduce(HashMap::<String, Vec<Vec<u16>>>::new, merge_results);
-
+        let sequence_results = query_single_fasta_batch(
+            bf_dir,
+            k,
+            m,
+            bf_size,
+            partition_number,
+            color_number,
+            abundance_number,
+            dense_option,
+            canonical,
+            base,
+            &batch,
+        );
         // Now `sequence_results` has the combined data for this batch.
         // Let's compute the output in the requested format.
         write_kmer_query(
@@ -414,6 +521,7 @@ pub fn query_sequences_in_batches(
             output_format,
             coverage,
             sequence_results,
+            breakpoints,
             &mut writer,
         )
         .expect("should have been able to write the query result");
@@ -424,9 +532,9 @@ pub fn query_sequences_in_batches(
 }
 
 fn merge_results(
-    mut acc: HashMap<String, Vec<Vec<u16>>>,
-    local: HashMap<String, Vec<Vec<u16>>>,
-) -> HashMap<String, Vec<Vec<u16>>> {
+    mut acc: HashMap<String, Vec<Vec<(usize, u16)>>>,
+    local: HashMap<String, Vec<Vec<(usize, u16)>>>,
+) -> HashMap<String, Vec<Vec<(usize, u16)>>> {
     for (seq_id, color_vecs) in local {
         let entry = acc
             .entry(seq_id)

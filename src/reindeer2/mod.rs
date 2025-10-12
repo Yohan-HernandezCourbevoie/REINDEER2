@@ -302,6 +302,7 @@ impl Reindeer2 {
         output_file: &str,
         output_format: OutputFormat,
         coverage: f32,
+        breakpoints: Option<f64>,
     ) -> io::Result<()> {
         let query_results = query::query_sequences_in_batches(
             fasta_file,
@@ -319,6 +320,7 @@ impl Reindeer2 {
             output_format,
             coverage,
             self.canonical,
+            breakpoints,
         )?;
         println!("Results written to {}", output_file);
         //write_query_results_to_csv(&query_results, bf_dir)
@@ -916,13 +918,15 @@ fn compute_base_position(
 }
 
 // TOUN
+// TODO why the outparameter ?
 /// update color abundances for a specific base position in the Bloom filter
 fn update_color_abundances(
     bitmap: &RoaringBitmap,
     base_position: u64,
     color_number: usize,
     abundance_number: usize,
-    color_abundances: &mut Vec<Vec<usize>>,
+    kmer_position: usize,
+    color_abundances: &mut Vec<Vec<(usize, usize)>>,
 ) {
     for color in 0..color_number {
         let mut insert = false;
@@ -931,14 +935,14 @@ fn update_color_abundances(
                 base_position + (color as u64) * (abundance_number as u64) + (abundance as u64);
 
             if bitmap.contains(position_to_check as u32) {
-                color_abundances[color].push(abundance);
+                color_abundances[color].push((kmer_position, abundance));
                 insert = true;
                 break; // keep the minimum
             }
         }
         if !insert {
             // TODO weird discuss value
-            color_abundances[color].push(666); // important to record absent k-mers, to compute the median value, also, todo test
+            color_abundances[color].push((kmer_position, 666)); // important to record absent k-mers, to compute the median value, also, todo test
         }
     }
 }
@@ -2026,13 +2030,14 @@ mod tests {
             base_position,
             color_number,
             abundance_number,
+            0,
             &mut color_abundances,
         );
 
         let expected_color_abundances = vec![
-            vec![0],   // color 0 has abundance levels 0 and 1 -> will keep the min
-            vec![0],   // color 1 has abundance level 0
-            vec![666], // color 2 has no abundance, set to 666 instead (handle later in the pipeline)
+            vec![(0, 0)],   // color 0 has abundance levels 0 and 1 -> will keep the min
+            vec![(0, 0)],   // color 1 has abundance level 0
+            vec![(0, 666)], // color 2 has no abundance, set to 666 instead (handle later in the pipeline)
         ];
 
         assert_eq!(
@@ -2157,6 +2162,7 @@ mod tests {
                 &query_results_path,
                 OutputFormat::Median,
                 0.5,
+                None,
             )
             .expect("Failed to query sequences");
         query_results_path
@@ -2226,6 +2232,7 @@ mod tests {
                 &query_results_path,
                 OutputFormat::Median,
                 0.5,
+                None,
             )
             .expect("Failed to query sequences");
 
@@ -3297,6 +3304,7 @@ mod tests {
                 base_position,
                 color_number,
                 abundance_number,
+                0,
                 &mut color_abundances,
             );
         }
@@ -3305,7 +3313,10 @@ mod tests {
             .into_iter()
             .enumerate()
             .filter_map(|(color, abundances)| {
-                let min_abundance = abundances.into_iter().min();
+                let min_abundance = abundances
+                    .into_iter()
+                    .map(|(_kmer_pos, abundance)| abundance)
+                    .min();
                 min_abundance.map(|abundance| (color, abundance))
             })
             .collect();
@@ -4219,6 +4230,7 @@ mod tests {
                 &output_path,
                 OutputFormat::Colored,
                 0.5,
+                None,
             )
             .expect("Failed to color graph");
 
@@ -4305,6 +4317,7 @@ mod tests {
                 &query_results_path,
                 OutputFormat::AbundanceMatrix,
                 0.5,
+                None,
             )
             .expect("Failed to query sequences");
 
@@ -4373,6 +4386,7 @@ shared_revcomp_with_other_test_file 0-19:3 0-19:10",
                 &query_results_path,
                 OutputFormat::AbundanceMatrix,
                 0.5,
+                None,
             )
             .expect("Failed to query sequences");
 
