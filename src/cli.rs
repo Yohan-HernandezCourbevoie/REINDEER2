@@ -149,4 +149,8 @@ pub struct QueryArgs {
         default_value_t = 0.5
     )]
     pub coverage: f32,
+
+    /// Allows to detect breakpoints in the output
+    #[arg(short, long)]
+    pub breakpoints: Option<f64>,
 }

@@ -140,6 +140,7 @@ fn main() -> io::Result<()> {
                     _ => format!("{}_query_results.csv", index_dir),
                 },
             };
+            let breakpoints = args.breakpoints;
 
             println!("Index directory: {}", index_dir);
 
@@ -153,6 +154,7 @@ fn main() -> io::Result<()> {
                     &query_output,
                     output_format,
                     coverage,
+                    breakpoints,
                 )
                 .expect("Failed to query sequences");
 
