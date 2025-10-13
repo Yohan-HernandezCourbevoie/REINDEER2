@@ -10,13 +10,8 @@ pub struct Cli {
     #[command(subcommand)]
     pub command: Command,
 
-    /// Define a number of threads available (default: 1)
-    #[arg(
-        short = 't',
-        long = "threads",
-        value_name = "THREADS",
-        default_value_t = 1
-    )]
+    /// Define a number of threads available
+    #[arg(short, long, value_name = "THREADS", default_value_t = 1)]
     pub threads: usize,
 
     /// Show additional information for debugging purposes
@@ -53,50 +48,24 @@ pub struct IndexArgs {
     #[arg(short = 'k', long = "kmer", value_name = "SIZE")]
     pub kmer: usize,
 
-    /// Sets the minimizer size (default: 15)
-    #[arg(
-        short = 'm',
-        long = "minimizer",
-        value_name = "MINSIZE",
-        default_value_t = 15
-    )]
+    /// Sets the minimizer size
+    #[arg(short, long, value_name = "MINSIZE", default_value_t = 15)]
     pub minimizer: usize,
 
-    // TODO check default is printed any ?
-    /// Sets the number of partitions (default: 512)
-    #[arg(
-        short = 'p',
-        long = "partitions",
-        value_name = "MINSIZE",
-        default_value_t = 512
-    )]
+    /// Sets the number of partitions
+    #[arg(short, long, value_name = "MINSIZE", default_value_t = 512)]
     pub partitions: usize,
 
-    /// Sets the Bloom filter size in log2 scale (default: 32)
-    #[arg(
-        short = 'b',
-        long = "bloomfilter",
-        value_name = "BF",
-        default_value_t = 32
-    )]
+    /// Sets the Bloom filter size in log2 scale
+    #[arg(short, long, value_name = "BF", default_value_t = 32)]
     pub bloomfilter: usize,
 
-    /// Sets the abundance granularity (default: 255)
-    #[arg(
-        short = 'a',
-        long = "abundance",
-        value_name = "ABUND",
-        default_value_t = 255
-    )]
+    /// Sets the abundance granularity
+    #[arg(short, long, value_name = "ABUND", default_value_t = 255)]
     pub abundance: usize,
 
-    /// Sets the maximal abundance to take into account (default: 65024)
-    #[arg(
-        short = 'A',
-        long = "abundance-max",
-        value_name = "ABUND_MAX",
-        default_value_t = 65024
-    )]
+    /// Sets the maximal abundance to take into account
+    #[arg(short = 'A', long, value_name = "ABUND_MAX", default_value_t = 65024)]
     pub abundance_max: u16,
 
     /// If set, allows to index dense k-mers - i.e. shared k-mers among datasets - more efficiently,
@@ -125,11 +94,11 @@ pub enum OutputFormat {
 #[derive(Args, Debug)]
 pub struct QueryArgs {
     /// Path to the FASTA file containing query sequences
-    #[arg(short = 'f', long = "fasta", value_name = "FILE")]
+    #[arg(short, long, value_name = "FILE")]
     pub fasta: String,
 
     /// Path to the directory containing the prebuilt index
-    #[arg(short = 'i', long = "index", value_name = "DIR")]
+    #[arg(short, long, value_name = "DIR")]
     pub index: String,
 
     /// Precision of the format output
