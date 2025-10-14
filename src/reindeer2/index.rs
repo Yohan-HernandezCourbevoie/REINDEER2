@@ -1,12 +1,12 @@
 use bio::io::fasta;
-use roaring::RoaringBitmap;
 use std::collections::HashMap;
 use std::io;
 use std::sync::{atomic, Arc, Mutex};
 
+use crate::reindeer2::filter::Filters;
 use crate::reindeer2::{
-    compute_location_filter, compute_log_abundance, extract_count, kmer_minimizers_seq_level,
-    process_fasta_in_batches, read_file, HeaderType,
+    compute_log_abundance, extract_count, kmer_minimizers_seq_level, process_fasta_in_batches,
+    read_file, HeaderType,
 };
 
 // --- INDEX FUNCTIONS ---
@@ -14,15 +14,12 @@ use crate::reindeer2::{
 pub fn process_fasta_file(
     path: &str,
     maybe_dense_indexes: &Option<Arc<Vec<Mutex<HashMap<u64, Vec<u8>>>>>>,
-    bloom_filters: &Arc<Vec<Mutex<RoaringBitmap>>>,
+    bloom_filters: &Arc<Filters>,
     k: usize,
     m: usize,
-    partitioned_bf_size: usize,
     partition_number: usize,
-    color_number: usize,
     color_number_global: usize,
     threshold: usize,
-    abundance_number: usize,
     abundance_max: u16,
     path_num: usize,
     path_num_global: usize,
@@ -39,38 +36,6 @@ pub fn process_fasta_file(
     let atomic_record_count = atomic::AtomicU64::new(0);
     let mut kmer_count: usize = 0;
     let reader = read_file(path)?;
-
-    // this part fills the BFs per partition
-    fn flush_map(
-        partition_kmers: &mut HashMap<usize, Vec<(u64, u16, usize, usize)>>,
-        partitioned_bf_size: usize,
-        color_number: usize,
-        abundance_number: usize,
-        bloom_filters: &Arc<Vec<Mutex<RoaringBitmap>>>,
-    ) {
-        for (partition_index, kmers) in partition_kmers.drain() {
-            // iterates and empties the hash map when needed
-
-            let mut kmer_hashes_to_update = Vec::with_capacity(kmers.len());
-            for (kmer_hash, log_abundance, path_num, _chunk_index) in kmers {
-                // select the bit in the BF
-                let position = compute_location_filter(
-                    kmer_hash,
-                    partitioned_bf_size,
-                    color_number,
-                    path_num,
-                    abundance_number,
-                    log_abundance,
-                );
-                kmer_hashes_to_update.push(position as u32); // accumulate bits to be modified for this bf
-            }
-            let mut bloom_filter = bloom_filters[partition_index] // select the correct BF for the given partition
-                .lock()
-                .expect("Failed to lock bloom filter");
-            // TODO this takes a lot of time
-            bloom_filter.extend(kmer_hashes_to_update);
-        }
-    }
 
     process_fasta_in_batches(reader, 10_000, |batch| {
         // read file 10_000 lines at once
@@ -147,13 +112,8 @@ pub fn process_fasta_file(
                             }
 
                             if partition_kmers.len() >= max_map_size {
-                                flush_map(
-                                    &mut partition_kmers,
-                                    partitioned_bf_size,
-                                    color_number,
-                                    abundance_number,
-                                    bloom_filters,
-                                );
+                                bloom_filters
+                                    .extend_by_draining_partitions_map(&mut partition_kmers);
                             }
                         }
                     }
@@ -162,13 +122,7 @@ pub fn process_fasta_file(
             }
         }
         // Flush remaining k-mers in the map by calling the earlier closure
-        flush_map(
-            &mut partition_kmers,
-            partitioned_bf_size,
-            color_number,
-            abundance_number,
-            bloom_filters,
-        );
+        bloom_filters.extend_by_draining_partitions_map(&mut partition_kmers);
     })?;
     // flush the dense indexes from sparse k-mers after each file *in the first chunk*
     if chunk_index == 0 {
@@ -205,13 +159,7 @@ pub fn process_fasta_file(
                             }
                         }
                         if partition_kmers.len() >= max_map_size {
-                            flush_map(
-                                &mut partition_kmers,
-                                partitioned_bf_size,
-                                color_number,
-                                abundance_number,
-                                bloom_filters,
-                            );
+                            bloom_filters.extend_by_draining_partitions_map(&mut partition_kmers);
                         }
                     }
                 }
@@ -221,13 +169,7 @@ pub fn process_fasta_file(
                 dense_index.shrink_to_fit();
             }
             // Flush remaining k-mers in the map by calling the earlier closure
-            flush_map(
-                &mut partition_kmers,
-                partitioned_bf_size,
-                color_number,
-                abundance_number,
-                bloom_filters,
-            );
+            bloom_filters.extend_by_draining_partitions_map(&mut partition_kmers);
         }
     }
     kmer_counts_vector

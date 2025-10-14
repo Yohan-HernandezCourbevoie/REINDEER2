@@ -458,19 +458,15 @@ fn query_single_fasta_batch(
             merge_results,
         );
 
-    let result_without_positions = result_with_positions
+    result_with_positions
         .into_iter()
         .map(|(header, color_vectors)| {
             (
                 header,
-                color_vectors
-                    .into_iter()
-                    .map(|abund_values| sort_abundance_vec(abund_values))
-                    .collect(),
+                color_vectors.into_iter().map(sort_abundance_vec).collect(),
             )
         })
-        .collect();
-    result_without_positions
+        .collect()
 }
 
 pub fn query_sequences_in_batches(

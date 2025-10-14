@@ -1,3 +1,4 @@
+mod filter;
 mod index;
 mod query;
 
@@ -17,6 +18,8 @@ use std::sync::{atomic, Arc, Mutex};
 use std::time::Instant;
 use thousands::Separable;
 use zstd::stream::decode_all;
+
+use crate::reindeer2::filter::Filters;
 
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum OutputFormat {
@@ -140,11 +143,14 @@ impl Reindeer2 {
             None
         };
 
-        let bloom_filters = Arc::new(
-            (0..self.partition_number)
-                .map(|_| Mutex::new(RoaringBitmap::new()))
-                .collect::<Vec<_>>(),
-        );
+        let bloom_filters = Arc::new(Filters::with_number_partition(
+            self.partition_number,
+            self.nb_color,
+            // TODO unit: is it in buts ?
+            // TODO can I use usize here ?
+            self.bf_size as usize,
+            self.abundance_number,
+        ));
 
         for (chunk_i, chunk) in chunks.iter().enumerate() {
             // For each file in this chunk, process in *parallel* (soon)
@@ -180,12 +186,9 @@ impl Reindeer2 {
                                     &bloom_filters,
                                     self.k,
                                     self.m,
-                                    partitioned_bf_size,
                                     self.partition_number,
-                                    color_chunks[chunk_i],
                                     self.nb_color,
                                     threshold,
-                                    self.abundance_number,
                                     self.abundance_max,
                                     path_num % color_chunks[0],
                                     path_num,
@@ -212,16 +215,14 @@ impl Reindeer2 {
                 }
             });
             if debug {
-                update_sparse_counts(
-                    &bloom_filters,
+                bloom_filters.update_sparse_counts(
                     &atomic_sparse_one_seen,
                     &atomic_sparse_fp_seen,
                     self.abundance_number,
                 )?;
             }
-            if let Err(e) = write_bloom_filters_to_disk(
+            if let Err(e) = bloom_filters.write_to_disk(
                 &dir_path,
-                &bloom_filters,
                 &color_chunks,
                 self.partition_number,
                 chunk_i,
@@ -434,11 +435,12 @@ pub fn build_index_muset(
         None
     };
 
-    let bloom_filters = Arc::new(
-        (0..partition_number)
-            .map(|_| Mutex::new(RoaringBitmap::new()))
-            .collect::<Vec<_>>(),
-    );
+    let bloom_filters = Arc::new(Filters::with_number_partition(
+        partition_number,
+        color_nb,
+        bf_size as usize, // TODO check unit
+        abundance_number,
+    ));
 
     let unitigs_reader = match read_file(&unitigs_file) {
         Ok(r) => r,
@@ -540,40 +542,21 @@ pub fn build_index_muset(
                 }
             }
             if partition_kmers.len() >= max_map_size {
-                flush_map_into_bfs(
-                    &mut partition_kmers,
-                    &bloom_filters,
-                    partitioned_bf_size,
-                    color_nb,
-                    abundance_number,
-                )?;
+                bloom_filters.extend_by_draining_partitions_map(&mut partition_kmers);
             }
         }
     }
     // Index remaining kmers
-    flush_map_into_bfs(
-        &mut partition_kmers,
-        &bloom_filters,
-        partitioned_bf_size,
-        color_nb,
+    bloom_filters.extend_by_draining_partitions_map(&mut partition_kmers);
+
+    #[cfg(any(debug_assertions, test))]
+    bloom_filters.update_sparse_counts(
+        &atomic_sparse_one_seen,
+        &atomic_sparse_fp_seen,
         abundance_number,
     )?;
 
-    if debug {
-        update_sparse_counts(
-            &bloom_filters,
-            &atomic_sparse_one_seen,
-            &atomic_sparse_fp_seen,
-            abundance_number,
-        )?;
-    }
-    if let Err(e) = write_bloom_filters_to_disk(
-        &dir_path,
-        &bloom_filters,
-        &vec![color_nb],
-        partition_number,
-        0,
-    ) {
+    if let Err(e) = bloom_filters.write_to_disk(&dir_path, &vec![color_nb], partition_number, 0) {
         eprintln!("Error writing Bloom filters on disk: {}", e);
     }
 
@@ -953,51 +936,6 @@ fn update_color_abundances(
     }
 }
 
-fn compute_location_filter(
-    hash_kmer: u64,
-    partitioned_bf_size: usize,
-    color_number: usize,      // the total nb of indexed fastas (in a chunk)
-    path_color_number: usize, // the index of the current indexed fasta
-    abundance_number: usize,
-    log_abundance: u16,
-) -> u64 {
-    // compute the position to write
-    (hash_kmer % (partitioned_bf_size as u64)) * (color_number as u64) * (abundance_number as u64)
-        + (path_color_number as u64) * (abundance_number as u64)
-        + (log_abundance as u64)
-    /* example
-                        c0  c1  c2  c3
-        color 0   abund 0   0   1   1
-                  abund 1   0   0   0
-        color 1   abund 0   0   1   0
-                  abund 1   0   0   1
-        color 2   abund 0   0   0   1
-                  abund 1   0   1   0
-        with two partitions becomes two files
-        f0=010101000000
-
-        f1=101001100110
-
-        let's say a k-mer x is in color 2 with abund 0, hashed in column 2
-                        c0  c1  c2  c3
-        color 0   abund 0   0   1   1
-                  abund 1   0   0   0
-        color 1   abund 0   0   1   0
-                  abund 1   0   0   1
-        color 2   abund 0   0   X   1
-                  abund 1   0   1   0
-
-        so we must do a modification so f1 becomes
-        f1=1=1010X1100110 with X = 1, so index 4 in the vector
-
-        partition number is 1, and the partition size (number of columns) is 2, composed of column 2 and 3.
-        We'll have hash(x)%2=0, which means we're in the first chunk of the vector ((hash_k % partitioned_bf_size)*color_number*abundance_number = 0 here)
-        then we want to go up to color 2, so we mus pass through color 0 and 1 that have two abundances each (path_color_number*abundance_number = 2*2 here)
-        then go to the right abundance, here 0 that corresponds to log_abundance
-        position_to_write = 0 + 2*2 + 0 = index 4 in the vector
-    */
-}
-
 fn _get_current_chunk_index(i: usize, chunk_sizes: &Vec<usize>, partition_nb: usize) -> usize {
     let mut cumulative_size = 0;
 
@@ -1013,76 +951,47 @@ fn _get_current_chunk_index(i: usize, chunk_sizes: &Vec<usize>, partition_nb: us
     );
 }
 
-fn update_sparse_counts(
-    bloom_filters: &Arc<Vec<Mutex<RoaringBitmap>>>,
-    atomic_sparse_one_seen: &atomic::AtomicU64,
-    atomic_sparse_fp_seen: &atomic::AtomicU64,
-    abundance_number: usize,
-) -> io::Result<()> {
-    let ones_by_partition = Arc::new(Mutex::new(Vec::<(usize, usize)>::new()));
-    bloom_filters.par_iter().for_each(|bitmap| {
-        let locked_bitmap = bitmap.lock().unwrap();
-        let mut color: usize = 0;
-        let mut new_color: usize = 0;
-        let mut ones: usize = 0;
-        let mut fp: usize = 0;
-        locked_bitmap.iter().for_each(|value| {
-            ones += 1;
-            new_color = (value as usize) / abundance_number;
-            if new_color != color {
-                color = new_color;
-            } else {
-                fp += 1;
-            }
-        });
-        let mut tmp_vector = ones_by_partition.lock().unwrap();
-        tmp_vector.push((ones, fp));
-        atomic_sparse_one_seen.fetch_add(ones as u64, atomic::Ordering::Relaxed);
-        atomic_sparse_fp_seen.fetch_add(fp as u64, atomic::Ordering::Relaxed);
-    });
+// // this part fills the BFs per partition
+// fn flush_map_into_bfs(
+//     partition_kmers: &mut HashMap<usize, Vec<(u64, u16, usize, usize)>>,
+//     bloom_filters: &Arc<Filters>,
+// ) {
+//     // iterates and empties the hash map when needed
+//     for (partition_index, kmers) in partition_kmers.drain() {
+//         bloom_filters.extend_partition(partition_index, &kmers);
+//     }
+// }
 
-    let file = File::create("partitions_info.log")?;
-    let mut writer = BufWriter::new(file);
-    let tmp_vector: std::sync::MutexGuard<'_, Vec<(usize, usize)>> =
-        ones_by_partition.lock().unwrap();
-    for (a1, a2) in tmp_vector.iter() {
-        writer.write_all(format!("{},{}\n", a1, a2).as_bytes())?;
-    }
-    writer.flush()?;
-
-    Ok(())
-}
-
-fn flush_map_into_bfs(
-    partition_kmers: &mut HashMap<usize, Vec<(u64, u16, usize, usize)>>,
-    bloom_filters: &Arc<Vec<Mutex<RoaringBitmap>>>,
-    partitioned_bf_size: usize,
-    color_number: usize,
-    abundance_number: usize,
-) -> io::Result<()> {
-    // this part fills the BFs per paritition
-    for (partition_index, kmers) in partition_kmers.drain() {
-        // iterates and empties the hash map when needed
-        let mut kmer_hashes_to_update = Vec::new();
-        for (kmer_hash, log_abundance, path_num, _chunk_index) in kmers {
-            // select the bit in the BF
-            let position = compute_location_filter(
-                kmer_hash,
-                partitioned_bf_size,
-                color_number,
-                path_num,
-                abundance_number,
-                log_abundance,
-            );
-            kmer_hashes_to_update.push(position as u32); // accumulate bits to be modified for this bf
-        }
-        let mut bloom_filter = bloom_filters[partition_index] // select the correct BF for the given partition
-            .lock()
-            .expect("Failed to lock bloom filter");
-        bloom_filter.extend(kmer_hashes_to_update);
-    }
-    Ok(())
-}
+// fn flush_map_into_bfs(
+//     partition_kmers: &mut HashMap<usize, Vec<(u64, u16, usize, usize)>>,
+//     bloom_filters: &Arc<Vec<Mutex<RoaringBitmap>>>,
+//     partitioned_bf_size: usize,
+//     color_number: usize,
+//     abundance_number: usize,
+// ) -> io::Result<()> {
+//     // this part fills the BFs per paritition
+//     for (partition_index, kmers) in partition_kmers.drain() {
+//         // iterates and empties the hash map when needed
+//         let mut kmer_hashes_to_update = Vec::new();
+//         for (kmer_hash, log_abundance, path_num, _chunk_index) in kmers {
+//             // select the bit in the BF
+//             let position = compute_location_filter(
+//                 kmer_hash,
+//                 partitioned_bf_size,
+//                 color_number,
+//                 path_num,
+//                 abundance_number,
+//                 log_abundance,
+//             );
+//             kmer_hashes_to_update.push(position as u32); // accumulate bits to be modified for this bf
+//         }
+//         let mut bloom_filter = bloom_filters[partition_index] // select the correct BF for the given partition
+//             .lock()
+//             .expect("Failed to lock bloom filter");
+//         bloom_filter.extend(kmer_hashes_to_update);
+//     }
+//     Ok(())
+// }
 
 // --- WRITE INDEX ON DISK ---
 
@@ -1118,34 +1027,6 @@ fn create_dir_and_files(
     so here the fn will write
     000000000000  as a partitioned_bloom_filters
     */
-}
-
-fn write_bloom_filters_to_disk(
-    dir_path: &str,
-    bloom_filters: &Arc<Vec<Mutex<RoaringBitmap>>>,
-    chunks: &[usize], //  number of colors for each chunk
-    partition_nb: usize,
-    chunk_id: usize,
-) -> io::Result<()> {
-    for (i, bitmap) in bloom_filters.iter().enumerate() {
-        // let c = get_current_chunk_index(i, chunks, partition_nb); // chunk idx
-        let p = i % partition_nb; // TOUN
-        let file_path =
-            Path::new(dir_path).join(format!("partition_bloom_filters_c{}_p{}.bin", chunk_id, p));
-        let file = File::create(&file_path)?;
-        let mut writer = BufWriter::new(file);
-        let chunk_colors = chunks[chunk_id];
-        // write the number of colors as a u64 to the file first
-        writer.write_all(&chunk_colors.to_le_bytes())?;
-        // serialize the bitmap into the file
-        let mut locked_bitmap = bitmap.lock().unwrap();
-        locked_bitmap.serialize_into(&mut writer)?;
-        locked_bitmap.clear();
-        // bitmap.serialize_into(&mut writer)?;
-        // bitmap.clear();
-    }
-
-    Ok(())
 }
 
 fn _write_bloom_filters_to_disk_nochunk(
@@ -3264,7 +3145,7 @@ mod tests {
         let mut bloom_filters: Vec<RoaringBitmap> = vec![RoaringBitmap::new(); partition_number];
 
         let partition_index_insert = (minimizer % (partition_number as u64)) as usize;
-        let position_to_write = compute_location_filter(
+        let position_to_write = Filters::compute_location(
             kmer_hash,
             partitioned_bf_size,
             color_number,
