@@ -1,5 +1,5 @@
 [package]
-name = "Reindeer2"
+name = "reindeer2"
 version = "1.0.0"
 edition = "2021"
 authors = ["Camille Marchet", "Yohan Hernandez--Courbevoie"]
