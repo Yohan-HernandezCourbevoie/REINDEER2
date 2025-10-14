@@ -1,5 +1,6 @@
 mod cli;
 mod memory_measure;
+mod overflow_detection;
 mod reindeer2;
 
 use clap::Parser;
@@ -8,6 +9,7 @@ use std::io::{self};
 use std::time::Instant;
 
 use crate::cli::OutputFormat;
+use crate::overflow_detection::check_number_of_partitions;
 use crate::reindeer2::{build_index_muset, explore_muset_dir, read_fof_file, Reindeer2};
 use cli::Cli;
 
@@ -35,6 +37,8 @@ fn main() -> io::Result<()> {
             // TODO add threads
 
             let bf_size = 1u64 << bloomfilter; // Bloom filter size as a power of 2
+
+            let partitions = check_number_of_partitions(&input, partitions, abundance, bf_size);
 
             // CHECKS
             if dense_option {
