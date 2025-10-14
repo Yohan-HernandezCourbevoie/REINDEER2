@@ -7,12 +7,12 @@ use bio::io::fasta;
 use pelt::pelt;
 use rayon::prelude::*;
 
+use super::OutputFormat;
 use crate::reindeer2::{
     approximate_value, compute_base, compute_base_position, kmer_minimizers_seq_level,
     load_bloom_filter, load_dense_index, process_fasta_in_batches, read_file,
     update_color_abundances,
 };
-use crate::OutputFormat;
 
 // === QUERY ===
 

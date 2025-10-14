@@ -1,17 +1,29 @@
 mod cli;
 mod memory_measure;
 mod overflow_detection;
-mod reindeer2;
 
 use clap::Parser;
 use rand::Rng;
 use std::io::{self};
 use std::time::Instant;
 
-use crate::cli::OutputFormat;
-use crate::overflow_detection::check_number_of_partitions;
-use crate::reindeer2::{build_index_muset, explore_muset_dir, read_fof_file, Reindeer2};
 use cli::Cli;
+use cli::OutputFormatCli;
+use overflow_detection::check_number_of_partitions;
+use reindeer2::reindeer2::{
+    build_index_muset, explore_muset_dir, read_fof_file, OutputFormat, Reindeer2,
+};
+
+impl From<OutputFormatCli> for OutputFormat {
+    fn from(c: OutputFormatCli) -> Self {
+        match c {
+            OutputFormatCli::AbundanceMatrix => OutputFormat::AbundanceMatrix,
+            OutputFormatCli::Colored => OutputFormat::Colored,
+            OutputFormatCli::Median => OutputFormat::Median,
+            OutputFormatCli::NormalizedMedian => OutputFormat::NormalizedMedian,
+        }
+    }
+}
 
 fn main() -> io::Result<()> {
     let args = Cli::parse();
@@ -136,7 +148,7 @@ fn main() -> io::Result<()> {
             let fasta_file = args.fasta;
             let index_dir = args.index;
             let coverage = args.coverage;
-            let output_format = args.output_format;
+            let output_format = OutputFormat::from(args.output_format);
             let query_output = match args.output {
                 Some(output) => output,
                 None => match output_format {

@@ -18,7 +18,13 @@ use std::time::Instant;
 use thousands::Separable;
 use zstd::stream::decode_all;
 
-use crate::OutputFormat;
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub enum OutputFormat {
+    Colored,
+    NormalizedMedian,
+    Median,
+    AbundanceMatrix,
+}
 
 // === INDEX ===
 
