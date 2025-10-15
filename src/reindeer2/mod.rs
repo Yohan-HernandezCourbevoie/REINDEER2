@@ -20,6 +20,7 @@ use std::time::Instant;
 use thousands::Separable;
 use zstd::stream::decode_all;
 
+use crate::reindeer2::dense_index::DenseIndex;
 use crate::reindeer2::filter::Filters;
 
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -132,14 +133,10 @@ impl Reindeer2 {
         write_indexed_file_names(&indexed_files, &file_paths);
 
         // Shared data structures protected by Mutex for safe parallel access
-        let maybe_dense_indexes: Option<Arc<Vec<Mutex<HashMap<u64, Vec<u8>>>>>> = if dense_option {
-            Some(Arc::new(
-                (0..self.partition_number)
-                    .map(|_| {
-                        Mutex::new(HashMap::with_capacity(200_000_000 / self.partition_number))
-                    })
-                    .collect(),
-            ))
+        let maybe_dense_indexes: Option<Arc<DenseIndex>> = if dense_option {
+            Some(Arc::new(DenseIndex::with_partition_number(
+                self.partition_number,
+            )))
         } else {
             None
         };
@@ -235,7 +232,7 @@ impl Reindeer2 {
 
         // After processing all chunks, write the dense indexes to disk
         if let Some(dense_indexes) = maybe_dense_indexes {
-            write_dense_indexes_to_disk(&dir_path, &dense_indexes)?;
+            dense_indexes.write_to_disk(&dir_path)?;
         }
 
         write_kmer_counts_to_disk(&dir_path, &kmer_counts_vector)?;
@@ -423,12 +420,10 @@ pub fn build_index_muset(
     let (_, dir_path) = create_dir_and_files(partition_number, output_dir)?;
 
     // Shared data structures protected by Mutex for safe parallel access
-    let maybe_dense_indexes: Option<Arc<Vec<Mutex<HashMap<u64, Vec<u8>>>>>> = if dense_option {
-        Some(Arc::new(
-            (0..partition_number)
-                .map(|_| Mutex::new(HashMap::with_capacity(200_000_000 / partition_number)))
-                .collect::<Vec<_>>(),
-        ))
+    let maybe_dense_indexes: Option<Arc<DenseIndex>> = if dense_option {
+        Some(Arc::new(DenseIndex::with_partition_number(
+            partition_number,
+        )))
     } else {
         None
     };
@@ -471,7 +466,7 @@ pub fn build_index_muset(
         let mut abundance_iter = abundance_line.trim().split(" ");
         let unitig_id: &str = abundance_iter.next().unwrap();
 
-        let abundance_vector_plusone = abundance_iter
+        let abundances = abundance_iter
             .enumerate()
             .map(|(i, ab_value_str)| {
                 let ab_value = ab_value_str
@@ -487,7 +482,7 @@ pub fn build_index_muset(
             })
             .collect::<Vec<u8>>();
 
-        let tmp_abundance_vector = abundance_vector_plusone.clone();
+        let tmp_abundance_vector = abundances.clone();
         let number_of_zeros: usize = tmp_abundance_vector.into_iter().filter(|x| *x == 0).count();
 
         let unitig_line = unitigs_lines.next().unwrap().unwrap();
@@ -505,29 +500,30 @@ pub fn build_index_muset(
         for (kmer_hash, minimizer) in
             kmer_minimizers_seq_level(seq_str.as_bytes(), kmer_size, minimizer_size, canonical)
         {
-            let partition_index = (minimizer % (partition_number as u64)) as usize;
-            let new_kmers_added = (abundance_vector_plusone.len() - number_of_zeros) as u64;
+            let partition = (minimizer % (partition_number as u64)) as usize;
+            let new_kmers_added = (abundances.len() - number_of_zeros) as u64;
             total_kmers.fetch_add(new_kmers_added, atomic::Ordering::Relaxed);
 
             if dense_option && number_of_zeros <= threshold {
                 match &maybe_dense_indexes {
                     Some(dense_indexes) => {
-                        let mut dense_index = dense_indexes[partition_index]
-                            .lock()
-                            .expect("Failed to lock the dense index");
+                        dense_indexes.insert_abundance_to_partition(
+                            partition,
+                            kmer_hash,
+                            abundances.clone(),
+                        );
                         atomic_dense_kmers_count
                             .fetch_add(new_kmers_added, atomic::Ordering::Relaxed);
-                        dense_index.insert(kmer_hash, abundance_vector_plusone.clone());
                     }
                     None => panic!("Failed to build the dense index."),
                 }
             } else {
                 atomic_sparse_kmers_count.fetch_add(new_kmers_added, atomic::Ordering::Relaxed);
                 let kmers_entry = partition_kmers // separate the kmers per partition
-                    .entry(partition_index)
+                    .entry(partition)
                     .or_default();
 
-                for (path_num, log_plusone) in abundance_vector_plusone.iter().enumerate() {
+                for (path_num, log_plusone) in abundances.iter().enumerate() {
                     let real_log_abundance = (log_plusone - 1) as u16;
                     if real_log_abundance > 0 {
                         kmers_entry.push((
@@ -560,7 +556,7 @@ pub fn build_index_muset(
 
     // After processing all chunks, write the dense indexes to disk
     if let Some(dense_indexes) = maybe_dense_indexes {
-        write_dense_indexes_to_disk(&dir_path, &dense_indexes)?;
+        dense_indexes.write_to_disk(&dir_path)?;
     }
 
     write_kmer_counts_to_disk(&dir_path, &kmer_counts_vector)?;
@@ -1042,24 +1038,6 @@ fn _write_bloom_filters_to_disk_nochunk(
     Ok(())
 }
 
-// TODO never loaded ?
-fn write_dense_indexes_to_disk(
-    dir_path: &str,
-    dense_indexes: &Arc<Vec<Mutex<HashMap<u64, Vec<u8>>>>>,
-) -> io::Result<()> {
-    for (partition, hashmap) in dense_indexes.iter().enumerate() {
-        let file_path =
-            Path::new(dir_path).join(format!("partition_dense_index_p{}.bin", partition));
-        let file = File::create(&file_path)?;
-        let mut writer = BufWriter::new(file);
-        let mut locked_hashmap = hashmap.lock().unwrap();
-        let binary_encoded = bincode::serialize(&locked_hashmap.clone()).unwrap();
-        writer.write_all(&binary_encoded)?;
-        locked_hashmap.clear();
-    }
-    Ok(())
-}
-
 fn write_kmer_counts_to_disk(
     dir_path: &str,
     kmer_counts_vector: &Arc<Mutex<Vec<usize>>>,
@@ -1134,18 +1112,6 @@ fn load_bloom_filter(file_path: &str) -> io::Result<(RoaringBitmap, usize)> {
     let bitmap = RoaringBitmap::deserialize_from(&buffer[..])
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "Failed to deserialize bitmap"))?;
     Ok((bitmap, local_color_nb))
-}
-
-// TODO Box<Vec<u8>> est surprenant
-fn load_dense_index(file_path: &str) -> io::Result<HashMap<u64, Box<Vec<u8>>>> {
-    let mut file = File::open(file_path)?;
-
-    // Read the rest of the file to deserialize the hashmap
-    let mut buffer = Vec::new();
-    file.read_to_end(&mut buffer)?;
-    let hashmap = bincode::deserialize_from(&buffer[..])
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "Failed to deserialize hashmap"))?;
-    Ok(hashmap)
 }
 
 /// Rload index metadata from the CSV.

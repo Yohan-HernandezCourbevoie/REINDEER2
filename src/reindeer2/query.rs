@@ -8,10 +8,10 @@ use pelt::pelt;
 use rayon::prelude::*;
 
 use super::OutputFormat;
+use crate::reindeer2::dense_index::DenseIndexPartition;
 use crate::reindeer2::{
     approximate_value, compute_base, compute_base_position, kmer_minimizers_seq_level,
-    load_bloom_filter, load_dense_index, process_fasta_in_batches, read_file,
-    update_color_abundances,
+    load_bloom_filter, process_fasta_in_batches, read_file, update_color_abundances,
 };
 
 // === QUERY ===
@@ -97,21 +97,22 @@ fn fold_into_hashmap(
     let maybe_bf = load_bloom_filter(&path_bf);
 
     if let Ok((bitmap, _maybe_aux_data)) = maybe_bf {
-        let hashmap: HashMap<u64, Box<Vec<u8>>> = if is_dense {
+        let hashmap: DenseIndexPartition = if is_dense {
             let path_dense_index =
                 format!("{}/partition_dense_index_p{}.bin", bf_dir, partition_index);
-            load_dense_index(&path_dense_index).expect(&format!(
+            DenseIndexPartition::load_from_disk(&path_dense_index).expect(&format!(
                 "Failed to load dense index for partition {}",
                 partition_index
             ))
         } else {
-            HashMap::new()
+            DenseIndexPartition::new()
         };
         //  For each k-mer in this partition
         for (sequence_id, kmer_position, kmer_hash) in kmers {
             let color_abundances = if hashmap.contains_key(&kmer_hash) {
-                let log_abundance_vector =
-                    hashmap.get(&kmer_hash).expect("failed to read the hashmap");
+                let log_abundance_vector = hashmap
+                    .get_abundance(&kmer_hash)
+                    .expect("failed to read the hashmap");
                 let mut color_abundances = vec![Vec::new(); color_number];
                 for (color, log_abundance) in log_abundance_vector.iter().enumerate() {
                     if *log_abundance == 0 {
