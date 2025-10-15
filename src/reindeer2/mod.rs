@@ -1,3 +1,4 @@
+mod dense_index;
 mod filter;
 mod index;
 mod query;
@@ -414,11 +415,8 @@ pub fn build_index_muset(
     let base = compute_base(abundance_number, abundance_max);
     let max_map_size = 1_000_000;
     if debug {
-        println!("Using log base {}", base);
-    }
-    let partitioned_bf_size = (bf_size as usize) / partition_number;
-    if debug {
         println!("In debug mode... the tool may take (much) longer than usual.");
+        println!("Using log base {}", base);
     }
     println!("Initializing Bloom filter slices...");
 
@@ -470,7 +468,7 @@ pub fn build_index_muset(
         .expect("Failed to lock the kmer counter hashmap");
     for _ in 0..len_matrix {
         let abundance_line = matrix_lines.next().unwrap().unwrap();
-        let mut abundance_iter = abundance_line.trim().split(" ").into_iter();
+        let mut abundance_iter = abundance_line.trim().split(" ");
         let unitig_id: &str = abundance_iter.next().unwrap();
 
         let abundance_vector_plusone = abundance_iter
@@ -915,7 +913,7 @@ fn update_color_abundances(
     color_number: usize,
     abundance_number: usize,
     kmer_position: usize,
-    color_abundances: &mut Vec<Vec<(usize, usize)>>,
+    color_abundances: &mut [Vec<(usize, usize)>],
 ) {
     for color in 0..color_number {
         let mut insert = false;
@@ -1044,6 +1042,7 @@ fn _write_bloom_filters_to_disk_nochunk(
     Ok(())
 }
 
+// TODO never loaded ?
 fn write_dense_indexes_to_disk(
     dir_path: &str,
     dense_indexes: &Arc<Vec<Mutex<HashMap<u64, Vec<u8>>>>>,
@@ -1421,7 +1420,7 @@ fn compute_base(abundance_number: usize, abundance_max: u16) -> f64 {
 
 // --- MINIMIZER ---
 
-////  iterator over (k-mer, minimizer) pairs for a given sequence
+///  Iterator over (k-mer, minimizer) pairs for a given sequence
 pub struct KmerMinimizerIterator<'a> {
     seq: &'a [u8],
     minima: Vec<u64>, // minimizers per starting position of kmers
@@ -1700,7 +1699,7 @@ mod tests {
     #[test]
     fn test_compute_log_abundance_with_large_values() {
         let result = compute_log_abundance(65535, 2.0, 65535);
-        let expected_log = (65535 as f64).log2().floor() as u16;
+        let expected_log = 65535_f64.log2().floor() as u16;
         assert_eq!(
             result, expected_log,
             "expected log base 2 of 65535 to be {}, but got {}",
@@ -1711,7 +1710,7 @@ mod tests {
     #[test]
     fn test_compute_log_abundance_above_max() {
         let result = compute_log_abundance(65535, 2.0, 256);
-        let expected_log = (256 as f64).log2().floor() as u16;
+        let expected_log = 256_f64.log2().floor() as u16;
         assert_eq!(
             result, expected_log,
             "expected abundance to be scaled at log base 2 of 256 should have been {}, but got {}",
@@ -2137,7 +2136,7 @@ mod tests {
 
         assert!(!results.is_empty(), "Empty results");
 
-        let mut expected_results = vec![
+        let mut expected_results = [
             (">seq1 ka:f:30".to_string(), 0, 29),
             (">seq2 ka:f:30".to_string(), 0, 29),
             (">seq3 ka:f:2".to_string(), 0, 2), // Values with errors due to log conversion
@@ -2219,7 +2218,7 @@ mod tests {
 
         assert!(!results.is_empty(), "Empty results");
 
-        let mut expected_results = vec![
+        let mut expected_results = [
             (">seq1 ka:f:30".to_string(), 0, 29),
             (">seq2 ka:f:30".to_string(), 0, 29),
             (">seq3 ka:f:2".to_string(), 0, 2), // Values with errors due to log conversion
@@ -2311,7 +2310,7 @@ mod tests {
 
         assert!(!results.is_empty(), "Empty results");
 
-        let mut expected_results = vec![
+        let mut expected_results = [
             (">seq1 ka:f:30".to_string(), 0, 29),
             (">seq2 ka:f:30".to_string(), 0, 29),
             (">seq3 ka:f:2".to_string(), 0, 2),
@@ -2402,7 +2401,7 @@ mod tests {
 
         assert!(!results.is_empty(), "Empty results");
 
-        let mut expected_results = vec![
+        let mut expected_results = [
             (">seq1 ka:f:30".to_string(), 0, 29),
             (">seq2 ka:f:30".to_string(), 0, 29),
             (">seq3 ka:f:2".to_string(), 0, 2),
@@ -2491,7 +2490,7 @@ mod tests {
 
         assert!(!results.is_empty(), "Empty results");
 
-        let mut expected_results = vec![(">seq3 ka:f:1000".to_string(), 1, 997)];
+        let mut expected_results = [(">seq3 ka:f:1000".to_string(), 1, 997)];
         results.sort();
         expected_results.sort();
         for (expected, actual) in expected_results.iter().zip(results.iter()) {
@@ -2575,7 +2574,7 @@ mod tests {
 
         assert!(!results.is_empty(), "Empty results");
 
-        let mut expected_results = vec![(">seq3 ka:f:1000".to_string(), 1, 997)];
+        let mut expected_results = [(">seq3 ka:f:1000".to_string(), 1, 997)];
         results.sort();
         expected_results.sort();
         for (expected, actual) in expected_results.iter().zip(results.iter()) {
@@ -2664,7 +2663,7 @@ mod tests {
 
         assert!(!results.is_empty(), "Empty results");
 
-        let mut expected_results = vec![
+        let mut expected_results = [
             (">seq4 ka:f:1000".to_string(), 1, 979),
             (">seq5 ka:f:1000".to_string(), 1, 979),
         ];
@@ -2755,7 +2754,7 @@ mod tests {
 
         assert!(!results.is_empty(), "Empty results");
 
-        let mut expected_results = vec![
+        let mut expected_results = [
             (">seq4 ka:f:1000".to_string(), 1, 979),
             (">seq5 ka:f:1000".to_string(), 1, 979),
         ];
@@ -2845,7 +2844,7 @@ mod tests {
 
         assert!(!results.is_empty(), "Empty results");
 
-        let mut expected_results = vec![
+        let mut expected_results = [
             (">seq1 ka:f:30".to_string(), 0, 30),
             (">seq2 ka:f:30".to_string(), 0, 30),
             (">seq3 ka:f:1500".to_string(), 0, 255), //because of abundance_max
@@ -2937,7 +2936,7 @@ mod tests {
 
         assert!(!results.is_empty(), "Empty results");
 
-        let mut expected_results = vec![
+        let mut expected_results = [
             (">seq1 ka:f:30".to_string(), 0, 30),
             (">seq2 ka:f:30".to_string(), 0, 30),
             (">seq3 ka:f:1500".to_string(), 0, 255), //because of abundance_max
@@ -3025,7 +3024,7 @@ mod tests {
 
         assert!(!results.is_empty(), "Empty results");
 
-        let mut expected_results = vec![
+        let mut expected_results = [
             (">seq1 ka:f:30".to_string(), 0, 29),
             (">seq2 ka:f:8".to_string(), 0, 8),
         ];
@@ -3111,7 +3110,7 @@ mod tests {
 
         assert!(!results.is_empty(), "Empty results");
 
-        let mut expected_results = vec![
+        let mut expected_results = [
             (">seq1 ka:f:30".to_string(), 0, 29),
             (">seq2 ka:f:8".to_string(), 0, 8),
         ];
@@ -3424,7 +3423,7 @@ mod tests {
         }
 
         assert!(!results.is_empty(), "Empty results");
-        let mut expected_results = vec![(">seq1 ka:f:30".to_string(), 0, 29)];
+        let mut expected_results = [(">seq1 ka:f:30".to_string(), 0, 29)];
         results.sort();
         expected_results.sort();
         for (expected, actual) in expected_results.iter().zip(results.iter()) {
@@ -3584,7 +3583,7 @@ mod tests {
         }
 
         assert!(!results.is_empty(), "Empty results");
-        let mut expected_results = vec![
+        let mut expected_results = [
             (">seq6 ka:f:4".to_string(), 2, 1476),
             (">seq6 ka:f:4".to_string(), 5, 4),
         ];
@@ -3711,7 +3710,7 @@ mod tests {
         }
 
         assert!(!results.is_empty(), "Empty results");
-        let mut expected_results = vec![(">seq5 ka:f:60000".to_string(), 4, 59149)];
+        let mut expected_results = [(">seq5 ka:f:60000".to_string(), 4, 59149)];
         results.sort();
         expected_results.sort();
         for (expected, actual) in expected_results.iter().zip(results.iter()) {
@@ -3825,7 +3824,7 @@ mod tests {
         }
 
         assert!(!results.is_empty(), "Empty results");
-        let mut expected_results = vec![
+        let mut expected_results = [
             (">seq5 ka:f:60000".to_string(), 4, 59149),
             (">seq6 ka:f:4".to_string(), 2, 1476),
             (">seq6 ka:f:4".to_string(), 4, 4),
@@ -4042,7 +4041,7 @@ mod tests {
         }
 
         assert!(!results.is_empty(), "Empty results");
-        let expected_results = vec![
+        let expected_results = [
             //("seq5".to_string(), 4, 57549),
             (">seq2 ka:f:12".to_string(), 1, 12),
         ];
