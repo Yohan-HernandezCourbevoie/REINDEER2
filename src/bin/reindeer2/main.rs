@@ -10,9 +10,7 @@ use std::time::Instant;
 use cli::Cli;
 use cli::OutputFormatCli;
 use overflow_detection::check_number_of_partitions;
-use reindeer2::reindeer2::{
-    build_index_muset, explore_muset_dir, read_fof_file, OutputFormat, Reindeer2,
-};
+use reindeer2::reindeer2::{read_fof_file, OutputFormat, Reindeer2};
 
 impl From<OutputFormatCli> for OutputFormat {
     fn from(c: OutputFormatCli) -> Self {
@@ -82,51 +80,51 @@ fn main() -> io::Result<()> {
 
             let start_time = Instant::now();
 
-            if false {
-                //muset_option {
+            // if false {
+            //     //muset_option {
 
-                let (unitigs_file, matrix_file, color_nb) = explore_muset_dir(&input);
+            //     let (unitigs_file, matrix_file, color_nb) = explore_muset_dir(&input);
 
-                build_index_muset(
-                    unitigs_file,
-                    matrix_file,
-                    kmer,
-                    minimizer,
-                    bf_size,
-                    partitions,
-                    color_nb,
-                    abundance,
-                    abundance_max,
-                    &output_dir,
-                    dense_option,
-                    tolerated_number_of_zeros,
-                    canonical,
-                    debug,
-                )?;
-            } else {
-                // read the file of files  and extract file paths and color count
-                let (file_paths, color_nb) = read_fof_file(&input)?;
+            //     build_index_muset(
+            //         unitigs_file,
+            //         matrix_file,
+            //         kmer,
+            //         minimizer,
+            //         bf_size,
+            //         partitions,
+            //         color_nb,
+            //         abundance,
+            //         abundance_max,
+            //         &output_dir,
+            //         dense_option,
+            //         tolerated_number_of_zeros,
+            //         canonical,
+            //         debug,
+            //     )?;
+            // } else {
+            // read the file of files  and extract file paths and color count
+            let (file_paths, color_nb) = read_fof_file(&input)?;
 
-                // run the index construction process: build and fill BFs per partitions and in chunks, serialize, merge chunks
-                let index = Reindeer2::new(
-                    bf_size,
-                    partitions,
-                    kmer,
-                    minimizer,
-                    color_nb,
-                    abundance,
-                    abundance_max,
-                    dense_option,
-                    canonical,
-                );
-                index.build(
-                    file_paths,
-                    &output_dir,
-                    dense_option,
-                    tolerated_number_of_zeros,
-                    debug,
-                )?;
-            }
+            // run the index construction process: build and fill BFs per partitions and in chunks, serialize, merge chunks
+            let index = Reindeer2::new(
+                bf_size,
+                partitions,
+                kmer,
+                minimizer,
+                color_nb,
+                abundance,
+                abundance_max,
+                dense_option,
+                canonical,
+            );
+            index.build(
+                file_paths,
+                &output_dir,
+                dense_option,
+                tolerated_number_of_zeros,
+                debug,
+            )?;
+            // }
 
             println!("Indexing complete in {:.2?}", start_time.elapsed());
             if cfg!(unix) {

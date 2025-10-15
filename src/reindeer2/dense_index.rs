@@ -50,19 +50,15 @@ impl DenseIndexPartition {
         self.data.get_mut(kmer_hash)
     }
 
-    pub fn clear(&mut self) {
-        self.data.clear()
+    pub fn dump(&mut self, writer: &mut impl Write) -> std::io::Result<()> {
+        let binary_encoded = bincode::serialize(self).unwrap();
+        writer.write_all(&binary_encoded)?;
+        self.data.clear();
+        Ok(())
     }
 
     pub fn get_abundance(&self, kmer: &u64) -> Option<&Vec<u8>> {
         self.data.get(kmer)
-    }
-
-    pub fn remove_keys_and_shrink<'a>(&mut self, keys: impl IntoIterator<Item = &'a u64>) {
-        keys.into_iter().for_each(|key| {
-            self.data.remove(key);
-        });
-        self.data.shrink_to_fit();
     }
 
     pub fn load_from_disk(file_path: &str) -> std::io::Result<Self> {
@@ -119,7 +115,10 @@ impl DenseIndexPartition {
                 }
             }
         }
-        self.remove_keys_and_shrink(&kmers_to_remove);
+        kmers_to_remove.iter().for_each(|kmer| {
+            self.data.remove(kmer);
+        });
+        self.data.shrink_to_fit();
     }
 }
 
@@ -146,26 +145,24 @@ impl DenseIndex {
             let file_path =
                 Path::new(dir_path).join(format!("partition_dense_index_p{}.bin", partition_id));
             let file = File::create(&file_path)?;
-            let mut writer = BufWriter::new(file);
+            let mut writer: BufWriter<File> = BufWriter::new(file);
             let mut partition = partition.lock().unwrap();
-            let binary_encoded = bincode::serialize(&*partition).unwrap();
-            writer.write_all(&binary_encoded)?;
-            partition.clear();
+            partition.dump(&mut writer)?;
         }
         Ok(())
     }
 
-    pub fn insert_abundance_to_partition(
-        &self,
-        partition_index: usize,
-        kmer_hash: u64,
-        abundances: Vec<u8>,
-    ) {
-        self.data[partition_index]
-            .lock()
-            .expect("Failed to lock the dense index")
-            .insert(kmer_hash, abundances);
-    }
+    // pub fn insert_abundance_to_partition(
+    //     &self,
+    //     partition_index: usize,
+    //     kmer_hash: u64,
+    //     abundances: Vec<u8>,
+    // ) {
+    //     self.data[partition_index]
+    //         .lock()
+    //         .expect("Failed to lock the dense index")
+    //         .insert(kmer_hash, abundances);
+    // }
 
     /// Inserts in the index if the k-mer can be dense.
     /// Returns `true` if the k-mer was inserted, `false` otherwise
@@ -178,12 +175,12 @@ impl DenseIndex {
         log_abundance: u16,
         color_number_global: usize,
     ) -> bool {
-        let mut dense_index = self.data[partition_index]
+        let mut partition = self.data[partition_index]
             .lock()
             .expect("Failed to lock the dense index");
-        if dense_index.contains_key(&kmer_hash) {
+        if partition.contains_key(&kmer_hash) {
             // update the vector with the right abundance
-            if let Some(abundance_vector) = dense_index.get_mut(&kmer_hash) {
+            if let Some(abundance_vector) = partition.get_mut(&kmer_hash) {
                 abundance_vector[path_num_global] = (log_abundance + 1) as u8;
             }
             return true;
@@ -192,7 +189,7 @@ impl DenseIndex {
             // create a new abundance vector for the k-mer
             let mut abundance_vector: Vec<u8> = vec![0; color_number_global];
             abundance_vector[path_num_global] = (log_abundance + 1) as u8;
-            dense_index.insert(kmer_hash, abundance_vector);
+            partition.insert(kmer_hash, abundance_vector);
             return true;
         }
         false

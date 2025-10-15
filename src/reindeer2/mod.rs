@@ -10,7 +10,7 @@ use nthash::{NtHashForwardIterator, NtHashIterator};
 use num_format::{Locale, ToFormattedString};
 use rayon::prelude::*;
 use roaring::RoaringBitmap;
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
 use std::panic;
@@ -32,7 +32,7 @@ pub enum OutputFormat {
 }
 
 // === INDEX ===
-
+#[cfg_attr(any(test, debug_assertions), derive(PartialEq, Debug))]
 pub struct Reindeer2 {
     bf_size: u64,
     partition_number: usize,
@@ -72,31 +72,58 @@ impl Reindeer2 {
     }
 
     pub fn from_csv(bf_dir: &str) -> io::Result<Self> {
+        let csv_path = format!("{}/index_info.csv", bf_dir);
         //load index metadata from CSV
         print!("Loading index metadata for query...");
-        let (
-            k,
-            m,
-            bf_size,
-            partition_number,
-            nb_color,
-            abundance_number,
-            abundance_max,
-            dense_option,
-            canonical,
-        ) = read_partition_from_csv(bf_dir, "index_info.csv")?;
+        let mut reader = csv::Reader::from_reader(BufReader::new(File::open(csv_path)?));
+        let values = reader.records().next().expect("Index CSV is empty")?;
+
+        let rd2 = Self {
+            k: values[0].parse().unwrap_or(0),
+            m: values[1].parse().unwrap_or(0),
+            bf_size: values[2].parse().unwrap_or(0),
+            partition_number: values[3].parse().unwrap_or(0),
+            nb_color: values[4].parse().unwrap_or(0),
+            abundance_number: values[5].parse().unwrap_or(0),
+            abundance_max: values[6].parse().unwrap_or(0),
+            dense_option: values[7].parse().unwrap_or(false),
+            canonical: values[8].parse().unwrap_or(true),
+        };
+
         println!(" Done.");
-        Ok(Self {
-            bf_size,
-            partition_number,
-            k,
-            m,
-            nb_color,
-            abundance_number,
-            abundance_max,
-            dense_option,
-            canonical,
-        })
+        Ok(rd2)
+    }
+
+    fn to_csv(&self, bf_dir: &str) -> io::Result<()> {
+        let output_path = format!("{}/index_info.csv", bf_dir);
+
+        let mut csv_writer = Writer::from_writer(BufWriter::new(File::create(&output_path)?));
+
+        csv_writer.write_record([
+            "k",
+            "m",
+            "bf_size",
+            "partition_number",
+            "color_number",
+            "abundance_number",
+            "abundance_max",
+            "dense_option",
+            "canonical",
+        ])?;
+        csv_writer.write_record(&[
+            self.k.to_string(),
+            self.m.to_string(),
+            self.bf_size.to_string(),
+            self.partition_number.to_string(),
+            self.nb_color.to_string(),
+            self.abundance_number.to_string(),
+            self.abundance_max.to_string(),
+            self.dense_option.to_string(),
+            self.canonical.to_string(),
+        ])?;
+
+        println!("Index information written to {}", output_path);
+        Ok(())
     }
 
     pub fn build(
@@ -282,18 +309,7 @@ impl Reindeer2 {
         }
 
         // write partition info to a CSV or your desired format
-        let _ = write_partition_to_csv(
-            &dir_path,
-            self.k,
-            self.m,
-            self.bf_size,
-            self.partition_number,
-            self.nb_color,
-            self.abundance_number,
-            self.abundance_max,
-            dense_option,
-            self.canonical,
-        );
+        self.to_csv(&dir_path)?;
 
         Ok((file_paths, dir_path))
     }
@@ -328,7 +344,6 @@ impl Reindeer2 {
             breakpoints,
         )?;
         println!("Results written to {}", output_file);
-        //write_query_results_to_csv(&query_results, bf_dir)
         Ok(query_results)
     }
 }
@@ -387,230 +402,230 @@ fn process_fasta_in_batches<R: io::BufRead>(
     Ok(())
 }
 
-pub fn build_index_muset(
-    unitigs_file: String,
-    matrix_file: String,
-    kmer_size: usize,
-    minimizer_size: usize,
-    bf_size: u64,
-    partition_number: usize,
-    color_nb: usize,
-    abundance_number: usize,
-    abundance_max: u16,
-    output_dir: &str,
-    dense_option: bool,
-    threshold: usize,
-    canonical: bool,
-    debug: bool,
-) -> io::Result<(Vec<String>, String)> {
-    let mut total_kmers = atomic::AtomicU64::new(0);
-    let mut atomic_dense_kmers_count = atomic::AtomicU64::new(0);
-    let mut atomic_sparse_kmers_count = atomic::AtomicU64::new(0);
-    let mut atomic_sparse_one_seen = atomic::AtomicU64::new(0);
-    let mut atomic_sparse_fp_seen = atomic::AtomicU64::new(0);
-    let kmer_counts_vector: Arc<Mutex<Vec<usize>>> = Arc::new(Mutex::new(vec![color_nb, 0]));
-    let base = compute_base(abundance_number, abundance_max);
-    let max_map_size = 1_000_000;
-    if debug {
-        println!("In debug mode... the tool may take (much) longer than usual.");
-        println!("Using log base {}", base);
-    }
-    println!("Initializing Bloom filter slices...");
+// pub fn build_index_muset(
+//     unitigs_file: String,
+//     matrix_file: String,
+//     kmer_size: usize,
+//     minimizer_size: usize,
+//     bf_size: u64,
+//     partition_number: usize,
+//     color_nb: usize,
+//     abundance_number: usize,
+//     abundance_max: u16,
+//     output_dir: &str,
+//     dense_option: bool,
+//     threshold: usize,
+//     canonical: bool,
+//     debug: bool,
+// ) -> io::Result<(Vec<String>, String)> {
+//     let mut total_kmers = atomic::AtomicU64::new(0);
+//     let mut atomic_dense_kmers_count = atomic::AtomicU64::new(0);
+//     let mut atomic_sparse_kmers_count = atomic::AtomicU64::new(0);
+//     let mut atomic_sparse_one_seen = atomic::AtomicU64::new(0);
+//     let mut atomic_sparse_fp_seen = atomic::AtomicU64::new(0);
+//     let kmer_counts_vector: Arc<Mutex<Vec<usize>>> = Arc::new(Mutex::new(vec![color_nb, 0]));
+//     let base = compute_base(abundance_number, abundance_max);
+//     let max_map_size = 1_000_000;
+//     if debug {
+//         println!("In debug mode... the tool may take (much) longer than usual.");
+//         println!("Using log base {}", base);
+//     }
+//     println!("Initializing Bloom filter slices...");
 
-    let (_, dir_path) = create_dir_and_files(partition_number, output_dir)?;
+//     let (_, dir_path) = create_dir_and_files(partition_number, output_dir)?;
 
-    // Shared data structures protected by Mutex for safe parallel access
-    let maybe_dense_indexes: Option<Arc<DenseIndex>> = if dense_option {
-        Some(Arc::new(DenseIndex::with_partition_number(
-            partition_number,
-        )))
-    } else {
-        None
-    };
+//     // Shared data structures protected by Mutex for safe parallel access
+//     let maybe_dense_indexes: Option<Arc<DenseIndex>> = if dense_option {
+//         Some(Arc::new(DenseIndex::with_partition_number(
+//             partition_number,
+//         )))
+//     } else {
+//         None
+//     };
 
-    let bloom_filters = Arc::new(Filters::with_number_partition(
-        partition_number,
-        color_nb,
-        bf_size as usize, // TODO check unit
-        abundance_number,
-    ));
+//     let bloom_filters = Arc::new(Filters::with_number_partition(
+//         partition_number,
+//         color_nb,
+//         bf_size as usize, // TODO check unit
+//         abundance_number,
+//     ));
 
-    let unitigs_reader = match read_file(&unitigs_file) {
-        Ok(r) => r,
-        Err(e) => {
-            panic!("Failed to open file {}: {}", unitigs_file, e);
-        }
-    };
-    let matrix_reader = match read_file(&matrix_file) {
-        Ok(r) => r,
-        Err(e) => {
-            panic!("Failed to open file {}: {}", matrix_file, e);
-        }
-    };
-    let len_matrix = matrix_reader.lines().count();
-    let len_unitigs = unitigs_reader.lines().count();
-    if len_matrix * 2 != len_unitigs {
-        panic!("The number of unitigs doesn't match the matrix size.");
-    }
+//     let unitigs_reader = match read_file(&unitigs_file) {
+//         Ok(r) => r,
+//         Err(e) => {
+//             panic!("Failed to open file {}: {}", unitigs_file, e);
+//         }
+//     };
+//     let matrix_reader = match read_file(&matrix_file) {
+//         Ok(r) => r,
+//         Err(e) => {
+//             panic!("Failed to open file {}: {}", matrix_file, e);
+//         }
+//     };
+//     let len_matrix = matrix_reader.lines().count();
+//     let len_unitigs = unitigs_reader.lines().count();
+//     if len_matrix * 2 != len_unitigs {
+//         panic!("The number of unitigs doesn't match the matrix size.");
+//     }
 
-    let mut matrix_lines = read_file(&matrix_file)?.lines();
-    let mut unitigs_lines = read_file(&unitigs_file)?.lines();
+//     let mut matrix_lines = read_file(&matrix_file)?.lines();
+//     let mut unitigs_lines = read_file(&unitigs_file)?.lines();
 
-    let mut partition_kmers: HashMap<usize, Vec<(u64, u16, usize, usize)>> = HashMap::new(); // keep kmer info to fill BFs
+//     let mut partition_kmers: HashMap<usize, Vec<(u64, u16, usize, usize)>> = HashMap::new(); // keep kmer info to fill BFs
 
-    let mut kmer_counts_vector_locked = kmer_counts_vector
-        .lock()
-        .expect("Failed to lock the kmer counter hashmap");
-    for _ in 0..len_matrix {
-        let abundance_line = matrix_lines.next().unwrap().unwrap();
-        let mut abundance_iter = abundance_line.trim().split(" ");
-        let unitig_id: &str = abundance_iter.next().unwrap();
+//     let mut kmer_counts_vector_locked = kmer_counts_vector
+//         .lock()
+//         .expect("Failed to lock the kmer counter hashmap");
+//     for _ in 0..len_matrix {
+//         let abundance_line = matrix_lines.next().unwrap().unwrap();
+//         let mut abundance_iter = abundance_line.trim().split(" ");
+//         let unitig_id: &str = abundance_iter.next().unwrap();
 
-        let abundances = abundance_iter
-            .enumerate()
-            .map(|(i, ab_value_str)| {
-                let ab_value = ab_value_str
-                    .parse::<f64>()
-                    .expect("Failed to parse the abundance values in the matrix")
-                    as u16;
-                if ab_value == 0 {
-                    0
-                } else {
-                    kmer_counts_vector_locked[i] += 1; // select the count corresponding to the right color
-                    (compute_log_abundance(ab_value, base, abundance_max) + 1) as u8
-                }
-            })
-            .collect::<Vec<u8>>();
+//         let abundances = abundance_iter
+//             .enumerate()
+//             .map(|(i, ab_value_str)| {
+//                 let ab_value = ab_value_str
+//                     .parse::<f64>()
+//                     .expect("Failed to parse the abundance values in the matrix")
+//                     as u16;
+//                 if ab_value == 0 {
+//                     0
+//                 } else {
+//                     kmer_counts_vector_locked[i] += 1; // select the count corresponding to the right color
+//                     (compute_log_abundance(ab_value, base, abundance_max) + 1) as u8
+//                 }
+//             })
+//             .collect::<Vec<u8>>();
 
-        let tmp_abundance_vector = abundances.clone();
-        let number_of_zeros: usize = tmp_abundance_vector.into_iter().filter(|x| *x == 0).count();
+//         let tmp_abundance_vector = abundances.clone();
+//         let number_of_zeros: usize = tmp_abundance_vector.into_iter().filter(|x| *x == 0).count();
 
-        let unitig_line = unitigs_lines.next().unwrap().unwrap();
-        if &unitig_line.split(" ").next().unwrap()[1..] != unitig_id {
-            println!(
-                "{} vs {}",
-                &unitig_line.split(" ").next().unwrap()[1..],
-                unitig_id
-            );
-            panic!("The unitig id dooesn't match between the unitigs file and the matrix file.")
-        }
+//         let unitig_line = unitigs_lines.next().unwrap().unwrap();
+//         if &unitig_line.split(" ").next().unwrap()[1..] != unitig_id {
+//             println!(
+//                 "{} vs {}",
+//                 &unitig_line.split(" ").next().unwrap()[1..],
+//                 unitig_id
+//             );
+//             panic!("The unitig id dooesn't match between the unitigs file and the matrix file.")
+//         }
 
-        let unitig_line = unitigs_lines.next().unwrap().unwrap();
-        let seq_str = unitig_line.trim();
-        for (kmer_hash, minimizer) in
-            kmer_minimizers_seq_level(seq_str.as_bytes(), kmer_size, minimizer_size, canonical)
-        {
-            let partition = (minimizer % (partition_number as u64)) as usize;
-            let new_kmers_added = (abundances.len() - number_of_zeros) as u64;
-            total_kmers.fetch_add(new_kmers_added, atomic::Ordering::Relaxed);
+//         let unitig_line = unitigs_lines.next().unwrap().unwrap();
+//         let seq_str = unitig_line.trim();
+//         for (kmer_hash, minimizer) in
+//             kmer_minimizers_seq_level(seq_str.as_bytes(), kmer_size, minimizer_size, canonical)
+//         {
+//             let partition = (minimizer % (partition_number as u64)) as usize;
+//             let new_kmers_added = (abundances.len() - number_of_zeros) as u64;
+//             total_kmers.fetch_add(new_kmers_added, atomic::Ordering::Relaxed);
 
-            if dense_option && number_of_zeros <= threshold {
-                match &maybe_dense_indexes {
-                    Some(dense_indexes) => {
-                        dense_indexes.insert_abundance_to_partition(
-                            partition,
-                            kmer_hash,
-                            abundances.clone(),
-                        );
-                        atomic_dense_kmers_count
-                            .fetch_add(new_kmers_added, atomic::Ordering::Relaxed);
-                    }
-                    None => panic!("Failed to build the dense index."),
-                }
-            } else {
-                atomic_sparse_kmers_count.fetch_add(new_kmers_added, atomic::Ordering::Relaxed);
-                let kmers_entry = partition_kmers // separate the kmers per partition
-                    .entry(partition)
-                    .or_default();
+//             if dense_option && number_of_zeros <= threshold {
+//                 match &maybe_dense_indexes {
+//                     Some(dense_indexes) => {
+//                         dense_indexes.insert_abundance_to_partition(
+//                             partition,
+//                             kmer_hash,
+//                             abundances.clone(),
+//                         );
+//                         atomic_dense_kmers_count
+//                             .fetch_add(new_kmers_added, atomic::Ordering::Relaxed);
+//                     }
+//                     None => panic!("Failed to build the dense index."),
+//                 }
+//             } else {
+//                 atomic_sparse_kmers_count.fetch_add(new_kmers_added, atomic::Ordering::Relaxed);
+//                 let kmers_entry = partition_kmers // separate the kmers per partition
+//                     .entry(partition)
+//                     .or_default();
 
-                for (path_num, log_plusone) in abundances.iter().enumerate() {
-                    let real_log_abundance = (log_plusone - 1) as u16;
-                    if real_log_abundance > 0 {
-                        kmers_entry.push((
-                            kmer_hash,
-                            real_log_abundance,
-                            path_num,
-                            0, // chunk index
-                        ))
-                    }
-                }
-            }
-            if partition_kmers.len() >= max_map_size {
-                bloom_filters.extend_by_draining_partitions_map(&mut partition_kmers);
-            }
-        }
-    }
-    // Index remaining kmers
-    bloom_filters.extend_by_draining_partitions_map(&mut partition_kmers);
+//                 for (path_num, log_plusone) in abundances.iter().enumerate() {
+//                     let real_log_abundance = (log_plusone - 1) as u16;
+//                     if real_log_abundance > 0 {
+//                         kmers_entry.push((
+//                             kmer_hash,
+//                             real_log_abundance,
+//                             path_num,
+//                             0, // chunk index
+//                         ))
+//                     }
+//                 }
+//             }
+//             if partition_kmers.len() >= max_map_size {
+//                 bloom_filters.extend_by_draining_partitions_map(&mut partition_kmers);
+//             }
+//         }
+//     }
+//     // Index remaining kmers
+//     bloom_filters.extend_by_draining_partitions_map(&mut partition_kmers);
 
-    #[cfg(any(debug_assertions, test))]
-    bloom_filters.update_sparse_counts(
-        &atomic_sparse_one_seen,
-        &atomic_sparse_fp_seen,
-        abundance_number,
-    )?;
+//     #[cfg(any(debug_assertions, test))]
+//     bloom_filters.update_sparse_counts(
+//         &atomic_sparse_one_seen,
+//         &atomic_sparse_fp_seen,
+//         abundance_number,
+//     )?;
 
-    if let Err(e) = bloom_filters.write_to_disk(&dir_path, &vec![color_nb], partition_number, 0) {
-        eprintln!("Error writing Bloom filters on disk: {}", e);
-    }
+//     if let Err(e) = bloom_filters.write_to_disk(&dir_path, &vec![color_nb], partition_number, 0) {
+//         eprintln!("Error writing Bloom filters on disk: {}", e);
+//     }
 
-    // After processing all chunks, write the dense indexes to disk
-    if let Some(dense_indexes) = maybe_dense_indexes {
-        dense_indexes.write_to_disk(&dir_path)?;
-    }
+//     // After processing all chunks, write the dense indexes to disk
+//     if let Some(dense_indexes) = maybe_dense_indexes {
+//         dense_indexes.write_to_disk(&dir_path)?;
+//     }
 
-    write_kmer_counts_to_disk(&dir_path, &kmer_counts_vector)?;
+//     write_kmer_counts_to_disk(&dir_path, &kmer_counts_vector)?;
 
-    if debug {
-        // k-mers repartition between dense and sparse index
-        println!(
-            "The index contains {:?} 'dense' k-mers and {:?} 'sparse' k-mers (total k-mers: {:?})",
-            atomic_dense_kmers_count.get_mut().separate_with_commas(),
-            atomic_sparse_kmers_count.get_mut().separate_with_commas(),
-            total_kmers.get_mut().separate_with_commas()
-        );
+//     if debug {
+//         // k-mers repartition between dense and sparse index
+//         println!(
+//             "The index contains {:?} 'dense' k-mers and {:?} 'sparse' k-mers (total k-mers: {:?})",
+//             atomic_dense_kmers_count.get_mut().separate_with_commas(),
+//             atomic_sparse_kmers_count.get_mut().separate_with_commas(),
+//             total_kmers.get_mut().separate_with_commas()
+//         );
 
-        let ones = atomic_sparse_one_seen.get_mut();
-        let silent = *atomic_sparse_kmers_count.get_mut() - *ones;
-        let fp = atomic_sparse_fp_seen.get_mut();
-        // k-mers indexed in the sparse index, FP silent and FP seen
-        println!("Among the {:?} k-mers added in the 'sparse' index, {:?} encountered hash collisions ({:?} silent and {:?} misleading).", 
-            atomic_sparse_kmers_count.get_mut().separate_with_commas(),
-            (silent+*fp).separate_with_commas(),
-            silent.separate_with_commas(),
-            fp.separate_with_commas());
-    }
+//         let ones = atomic_sparse_one_seen.get_mut();
+//         let silent = *atomic_sparse_kmers_count.get_mut() - *ones;
+//         let fp = atomic_sparse_fp_seen.get_mut();
+//         // k-mers indexed in the sparse index, FP silent and FP seen
+//         println!("Among the {:?} k-mers added in the 'sparse' index, {:?} encountered hash collisions ({:?} silent and {:?} misleading).",
+//             atomic_sparse_kmers_count.get_mut().separate_with_commas(),
+//             (silent+*fp).separate_with_commas(),
+//             silent.separate_with_commas(),
+//             fp.separate_with_commas());
+//     }
 
-    // Merge the chunk-based bloom filters, if needed
-    // If there was only one chunk, rename files directly
-    for partition_idx in 0..partition_number {
-        let input_path = format!(
-            "{}/partition_bloom_filters_c0_p{}.bin",
-            dir_path, partition_idx
-        );
-        let output_path = format!(
-            "{}/partition_bloom_filters_p{}.bin",
-            dir_path, partition_idx
-        );
-        std::fs::rename(&input_path, &output_path)?;
-    }
+//     // Merge the chunk-based bloom filters, if needed
+//     // If there was only one chunk, rename files directly
+//     for partition_idx in 0..partition_number {
+//         let input_path = format!(
+//             "{}/partition_bloom_filters_c0_p{}.bin",
+//             dir_path, partition_idx
+//         );
+//         let output_path = format!(
+//             "{}/partition_bloom_filters_p{}.bin",
+//             dir_path, partition_idx
+//         );
+//         std::fs::rename(&input_path, &output_path)?;
+//     }
 
-    // write partition info to a CSV or your desired format
-    let _ = write_partition_to_csv(
-        &dir_path,
-        kmer_size,
-        minimizer_size,
-        bf_size,
-        partition_number,
-        color_nb,
-        abundance_number,
-        abundance_max,
-        dense_option,
-        canonical,
-    );
+//     // write partition info to a CSV or your desired format
+//     let _ = write_partition_to_csv(
+//         &dir_path,
+//         kmer_size,
+//         minimizer_size,
+//         bf_size,
+//         partition_number,
+//         color_nb,
+//         abundance_number,
+//         abundance_max,
+//         dense_option,
+//         canonical,
+//     );
 
-    Ok((vec!["".to_string()], dir_path))
-}
+//     Ok((vec!["".to_string()], dir_path))
+// }
 
 // === MERGE ===
 
@@ -1052,49 +1067,6 @@ fn write_kmer_counts_to_disk(
     Ok(())
 }
 
-fn write_partition_to_csv(
-    bf_dir: &str,
-    k: usize,
-    m: usize,
-    bf_size: u64,
-    partition_number: usize,
-    color_number: usize,
-    abundance_number: usize,
-    abundance_max: u16,
-    dense_option: bool,
-    canonical: bool,
-) -> io::Result<()> {
-    let output_path = format!("{}/index_info.csv", bf_dir);
-
-    let mut csv_writer = Writer::from_writer(BufWriter::new(File::create(&output_path)?));
-
-    csv_writer.write_record([
-        "k",
-        "m",
-        "bf_size",
-        "partition_number",
-        "color_number",
-        "abundance_number",
-        "abundance_max",
-        "dense_option",
-        "canonical",
-    ])?;
-    csv_writer.write_record(&[
-        k.to_string(),
-        m.to_string(),
-        bf_size.to_string(),
-        partition_number.to_string(),
-        color_number.to_string(),
-        abundance_number.to_string(),
-        abundance_max.to_string(),
-        dense_option.to_string(),
-        canonical.to_string(),
-    ])?;
-
-    println!("Index information written to {}", output_path);
-    Ok(())
-}
-
 // --- LOAD FROM DISK ---
 
 /// load a Bloom filter from disk
@@ -1114,39 +1086,39 @@ fn load_bloom_filter(file_path: &str) -> io::Result<(RoaringBitmap, usize)> {
     Ok((bitmap, local_color_nb))
 }
 
-/// Rload index metadata from the CSV.
-// TODO why output_csv ?
-// TODO we could return a Reindeer2 directly
-// TODO why is 0 the default ?
-fn read_partition_from_csv(
-    bf_dir: &str,
-    output_csv: &str,
-) -> io::Result<(usize, usize, u64, usize, usize, usize, u16, bool, bool)> {
-    let csv_path = format!("{}/{}", bf_dir, output_csv);
-    let mut reader = csv::Reader::from_reader(BufReader::new(File::open(csv_path)?));
-    let values = reader.records().next().expect("Index CSV is empty")?;
-    let k = values[0].parse().unwrap_or(0);
-    let m = values[1].parse().unwrap_or(0);
-    let bf_size = values[2].parse().unwrap_or(0);
-    let partition_number = values[3].parse().unwrap_or(0);
-    let color_number = values[4].parse().unwrap_or(0);
-    let abundance_number = values[5].parse().unwrap_or(0);
-    let abundance_max = values[6].parse().unwrap_or(0);
-    let dense_option = values[7].parse().unwrap_or(false);
-    let canonical = values[8].parse().unwrap_or(true);
+// /// Rload index metadata from the CSV.
+// // TODO why output_csv ?
+// // TODO we could return a Reindeer2 directly
+// // TODO why is 0 the default ?
+// fn read_partition_from_csv(
+//     bf_dir: &str,
+//     output_csv: &str,
+// ) -> io::Result<(usize, usize, u64, usize, usize, usize, u16, bool, bool)> {
+//     let csv_path = format!("{}/{}", bf_dir, output_csv);
+//     let mut reader = csv::Reader::from_reader(BufReader::new(File::open(csv_path)?));
+//     let values = reader.records().next().expect("Index CSV is empty")?;
+//     let k = values[0].parse().unwrap_or(0);
+//     let m = values[1].parse().unwrap_or(0);
+//     let bf_size = values[2].parse().unwrap_or(0);
+//     let partition_number = values[3].parse().unwrap_or(0);
+//     let color_number = values[4].parse().unwrap_or(0);
+//     let abundance_number = values[5].parse().unwrap_or(0);
+//     let abundance_max = values[6].parse().unwrap_or(0);
+//     let dense_option = values[7].parse().unwrap_or(false);
+//     let canonical = values[8].parse().unwrap_or(true);
 
-    Ok((
-        k,
-        m,
-        bf_size,
-        partition_number,
-        color_number,
-        abundance_number,
-        abundance_max,
-        dense_option,
-        canonical,
-    ))
-}
+//     Ok((
+//         k,
+//         m,
+//         bf_size,
+//         partition_number,
+//         color_number,
+//         abundance_number,
+//         abundance_max,
+//         dense_option,
+//         canonical,
+//     ))
+// }
 
 // --- FOF MANAGEMENT ---
 
@@ -1799,11 +1771,10 @@ mod tests {
         let m = 3;
         let canonical = true;
 
-        let pairs: Vec<(u64, u64)> =
-            kmer_minimizers_seq_level(seq_bytes, k, m, canonical).collect();
+        let actual_count = kmer_minimizers_seq_level(seq_bytes, k, m, canonical).count();
 
         // there should be seq.len() - k + 1 pairs.
-        assert_eq!(pairs.len(), seq_bytes.len() - k + 1);
+        assert_eq!(actual_count, seq_bytes.len() - k + 1);
     }
 
     /*
@@ -1902,72 +1873,23 @@ mod tests {
     #[test]
     fn test_write_and_read_partition_csv() {
         let bf_dir = "test_bf_dir";
-        let output_csv = "index_info.csv";
-        let k = 31;
-        let m = 15;
-        let bf_size = 1024;
-        let partition_number = 4;
-        let color_number = 3;
-        let abundance_number = 2;
-        let abundance_max = 512;
-        let dense_option = false;
-        let canonical = false;
+        let expected = Reindeer2 {
+            k: 31,
+            m: 15,
+            bf_size: 1024,
+            partition_number: 4,
+            nb_color: 3,
+            abundance_number: 2,
+            abundance_max: 512,
+            dense_option: false,
+            canonical: false,
+        };
 
         fs::create_dir_all(bf_dir).expect("Failed to create test directory");
+        expected.to_csv(bf_dir).unwrap();
 
-        let write_result = write_partition_to_csv(
-            bf_dir,
-            k,
-            m,
-            bf_size,
-            partition_number,
-            color_number,
-            abundance_number,
-            abundance_max,
-            dense_option,
-            canonical,
-        );
-        assert!(write_result.is_ok(), "Failed to write CSV");
-
-        let read_result = read_partition_from_csv(bf_dir, output_csv);
-        assert!(read_result.is_ok(), "Failed to read CSV");
-
-        let (
-            read_k,
-            read_m,
-            read_bf_size,
-            read_partition_number,
-            read_color_number,
-            read_abundance_number,
-            read_abundance_max,
-            read_dense_option,
-            read_canonical,
-        ) = read_result.unwrap();
-
-        assert_eq!(read_k, k, "Mismatch in k value");
-        assert_eq!(read_m, m, "Mismatch in m value");
-        assert_eq!(read_bf_size, bf_size, "Mismatch in bf_size value");
-        assert_eq!(
-            read_partition_number, partition_number,
-            "Mismatch in partition_number value"
-        );
-        assert_eq!(
-            read_color_number, color_number,
-            "Mismatch in color_number value"
-        );
-        assert_eq!(
-            read_abundance_number, abundance_number,
-            "Mismatch in abundance_number value"
-        );
-        assert_eq!(
-            read_abundance_max, abundance_max,
-            "Mismatch in abundance_max value"
-        );
-        assert_eq!(
-            read_dense_option, dense_option,
-            "Mismatch in dense_option value"
-        );
-        assert_eq!(read_canonical, canonical, "Mismatch in canonical value");
+        let actual = Reindeer2::from_csv(bf_dir).unwrap();
+        assert_eq!(actual, expected);
 
         fs::remove_dir_all(bf_dir).expect("Failed to remove test directory");
     }
