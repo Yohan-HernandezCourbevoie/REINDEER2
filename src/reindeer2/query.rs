@@ -217,6 +217,23 @@ fn write_header_matrix(
     Ok(())
 }
 
+fn compute_median(values: &[u16]) -> u16 {
+    let mut abund_sorted = values.to_vec();
+    abund_sorted.sort_unstable();
+    if abund_sorted.iter().all(|&x| x == 0) {
+        0
+    } else if abund_sorted.len() == 1 {
+        abund_sorted[0]
+    } else {
+        let mid = abund_sorted.len() / 2;
+        if abund_sorted.len() % 2 == 1 {
+            abund_sorted[mid]
+        } else {
+            (abund_sorted[mid - 1] + abund_sorted[mid]) / 2
+        }
+    }
+}
+
 /// Formats a fasta header by removing the first `>` and taking up to the first space (excluded).
 /// E.g.: `>seq1 ka:f:30` -> `seq1`
 fn strip_header(s: &str) -> &str {
@@ -228,23 +245,48 @@ fn strip_header(s: &str) -> &str {
     stripped.split(' ').next().unwrap()
 }
 
+fn count_to_string(count: u16, normalize: bool, kmer_counts: &[usize], color_id: usize) -> String {
+    if normalize {
+        let normalized_count = count as f64 / kmer_counts[color_id] as f64 * 1_000_000f64;
+        if normalized_count == 0.0 {
+            String::from("*")
+        } else {
+            normalized_count.to_string()
+        }
+    } else if count == 0 {
+        // not normalized and 0
+        String::from("*")
+    } else {
+        // not normalized and not 0
+        count.to_string()
+    }
+}
+
 /// Write abundances per kmer like RD1.
 fn write_abundance_matrix(
     bf_dir: &str,
     sequence_results: &HashMap<String, Vec<Vec<u16>>>,
+    color_number: usize,
     breakpoints: Option<f64>,
+    normalize: bool,
     writer: &mut impl Write,
 ) -> io::Result<()> {
     let indexed_files = Path::new(&bf_dir).join("path.txt");
     let indexed_files: Vec<String> = super::read_indexed_file_names(indexed_files);
     let sep = " ";
+    // we need the count of kmers if we want to normalize them
+    let kmer_counts = if normalize {
+        load_kmer_counts_vector(bf_dir).expect("Failed to load from disk the kmer counts vector")
+    } else {
+        vec![color_number, 0] // TODO bizarre
+    };
 
     write_header_matrix(writer, indexed_files, sep)?;
 
     for (seq_header, color_vectors) in sequence_results {
         let header = strip_header(seq_header);
         write!(writer, "{header}")?;
-        for abund_values in color_vectors.iter() {
+        for (color_idx, abund_values) in color_vectors.iter().enumerate() {
             // new color => a separator
             write!(writer, "{sep}")?;
 
@@ -263,17 +305,17 @@ fn write_abundance_matrix(
 
                 for i in 1..=abund_values.len() {
                     if i == abund_values.len() || abund_values[i] != current {
-                        let val_str = if current == 0 {
-                            "*"
-                        } else {
-                            &current.to_string()
-                        };
+                        // new different value or end of query => we must write
+                        let val_str = count_to_string(current, normalize, &kmer_counts, color_idx);
                         if start + 1 == i {
+                            // only one value
                             write!(writer, "{}:{}", start, val_str)?;
                         } else {
+                            // multiple values
                             write!(writer, "{}-{}:{}", start, i - 1, val_str)?;
                         }
                         if i < abund_values.len() {
+                            // not the end of query
                             write!(writer, ",")?;
                             start = i;
                             current = abund_values[i];
@@ -319,23 +361,10 @@ fn write_median_abundance(
                 if !non_zero_values.is_empty()
                     && (((zeros_count as f32) / (abund_values.len() as f32)) < coverage)
                 {
-                    let mut abund_sorted = non_zero_values.clone();
-                    abund_sorted.sort_unstable();
-                    let median = if abund_sorted.iter().all(|&x| x == 0) {
-                        0
-                    } else if abund_sorted.len() == 1 {
-                        abund_sorted[0]
-                    } else {
-                        let mid = abund_sorted.len() / 2;
-                        if abund_sorted.len() % 2 == 1 {
-                            abund_sorted[mid]
-                        } else {
-                            (abund_sorted[mid - 1] + abund_sorted[mid]) / 2
-                        }
-                    };
+                    let median = compute_median(&non_zero_values);
                     if median > 0 {
                         let median = if normalize {
-                            median as f64 / kmer_counts[color_idx] as f64 * 1_000_000 as f64
+                            median as f64 / kmer_counts[color_idx] as f64 * 1_000_000f64
                         } else {
                             median as f64
                         };
@@ -356,30 +385,42 @@ fn write_kmer_query(
     output_format: OutputFormat,
     coverage: f32,
     sequence_results: HashMap<String, Vec<Vec<u16>>>,
-    breakpoints: Option<f64>,
     mut writer: &mut impl Write,
 ) -> io::Result<()> {
     match output_format {
-        OutputFormat::Colored => {
+        OutputFormat::Colored { normalized } => {
             // TODO lrobidou discuss what this comment means:
             // If your graph coloring wants to read from `sequence_results`:
             // Flush the writer to separate batch outputs if needed
-            graph_coloring(fasta_file, batch_size, writer, &sequence_results)
-        }
-        OutputFormat::AbundanceMatrix => {
-            write_abundance_matrix(bf_dir, &sequence_results, breakpoints, &mut writer)
-        }
-        OutputFormat::Median | OutputFormat::NormalizedMedian => {
-            let normalize = output_format == OutputFormat::NormalizedMedian;
-            write_median_abundance(
+            graph_coloring(
                 bf_dir,
                 &sequence_results,
                 color_number,
-                normalize,
-                coverage,
-                &mut writer,
+                fasta_file,
+                batch_size,
+                normalized,
+                writer,
             )
         }
+        OutputFormat::AbundanceMatrix {
+            normalized,
+            breakpoints,
+        } => write_abundance_matrix(
+            bf_dir,
+            &sequence_results,
+            color_number,
+            breakpoints,
+            normalized,
+            &mut writer,
+        ),
+        OutputFormat::Median { normalized } => write_median_abundance(
+            bf_dir,
+            &sequence_results,
+            color_number,
+            normalized,
+            coverage,
+            &mut writer,
+        ),
     }?;
     writer.flush()?;
     Ok(())
@@ -486,7 +527,6 @@ pub fn query_sequences_in_batches(
     output_format: OutputFormat,
     coverage: f32,
     canonical: bool,
-    breakpoints: Option<f64>,
 ) -> io::Result<()> {
     let reader = read_file(fasta_file)?;
     let mut writer = BufWriter::new(File::create(output_file)?);
@@ -518,7 +558,6 @@ pub fn query_sequences_in_batches(
             output_format,
             coverage,
             sequence_results,
-            breakpoints,
             &mut writer,
         )
         .expect("should have been able to write the query result");
@@ -547,12 +586,20 @@ fn merge_results(
 
 // rewrites a bcalm-like graph so that headers have abund info (one of the possible query operations)
 pub fn graph_coloring(
+    bf_dir: &str,
+    sequence_results: &HashMap<String, Vec<Vec<u16>>>,
+    color_number: usize,
     fasta_file: &str,
     batch_size: usize,
+    normalize: bool,
     writer: &mut impl Write,
-    sequence_results: &HashMap<String, Vec<Vec<u16>>>,
 ) -> std::io::Result<()> {
     let reader = read_file(fasta_file)?; // your existing read_file
+    let kmer_counts = if normalize {
+        load_kmer_counts_vector(bf_dir).expect("Failed to load from disk the kmer counts vector")
+    } else {
+        vec![color_number, 0] // TODO bizarre
+    };
 
     process_fasta_in_batches(reader, batch_size, |batch| {
         for record in batch {
@@ -581,22 +628,12 @@ pub fn graph_coloring(
                         // skip color if it has no data
                         continue;
                     }
-                    // compute median
-                    let mut abund_sorted = vals.clone();
-                    abund_sorted.sort_unstable();
-                    let median = if abund_sorted.iter().all(|&x| x == 0) {
-                        0
-                    } else if abund_sorted.len() == 1 {
-                        abund_sorted[0]
+                    let median = compute_median(vals);
+                    let median = if normalize {
+                        median as f64 / kmer_counts[color_idx] as f64 * 1_000_000f64
                     } else {
-                        let mid = abund_sorted.len() / 2;
-                        if abund_sorted.len() % 2 == 1 {
-                            abund_sorted[mid]
-                        } else {
-                            (abund_sorted[mid - 1] + abund_sorted[mid]) / 2
-                        }
+                        median as f64
                     };
-
                     // push e.g. "col:1:12"
                     header_parts.push(format!("col:{}:{}", color_idx, median));
                 }

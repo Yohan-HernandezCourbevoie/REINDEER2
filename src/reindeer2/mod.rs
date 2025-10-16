@@ -25,10 +25,17 @@ use crate::reindeer2::filter::Filters;
 
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum OutputFormat {
-    Colored,
-    NormalizedMedian,
-    Median,
-    AbundanceMatrix,
+    Colored {
+        normalized: bool,
+    },
+    Median {
+        normalized: bool,
+    },
+    AbundanceMatrix {
+        normalized: bool,
+        // None if not computing breakpoints
+        breakpoints: Option<f64>,
+    },
 }
 
 // === INDEX ===
@@ -323,9 +330,8 @@ impl Reindeer2 {
         output_file: &str,
         output_format: OutputFormat,
         coverage: f32,
-        breakpoints: Option<f64>,
     ) -> io::Result<()> {
-        let query_results = query::query_sequences_in_batches(
+        query::query_sequences_in_batches(
             fasta_file,
             bf_dir,
             self.k,
@@ -341,10 +347,7 @@ impl Reindeer2 {
             output_format,
             coverage,
             self.canonical,
-            breakpoints,
-        )?;
-        println!("Results written to {}", output_file);
-        Ok(query_results)
+        )
     }
 }
 
@@ -791,7 +794,7 @@ fn merge_partition_bloom_filters(
     partition_idx: usize,
     partitioned_bf_size: usize,
     abundance_number: usize,
-    color_counts: &Vec<usize>, // number of colors for each chunk
+    color_counts: &[usize], // number of colors for each chunk
     bloom_filter: &mut RoaringBitmap,
     output_dir: &str,
     total_nb_colors: usize,
@@ -1934,9 +1937,8 @@ mod tests {
                 &file_paths[query_file_id],
                 &index_dir,
                 &query_results_path,
-                OutputFormat::Median,
+                OutputFormat::Median { normalized: false },
                 0.5,
-                None,
             )
             .expect("Failed to query sequences");
         query_results_path
@@ -2004,9 +2006,8 @@ mod tests {
                 &file1_path,
                 &index_dir,
                 &query_results_path,
-                OutputFormat::Median,
+                OutputFormat::Median { normalized: false },
                 0.5,
-                None,
             )
             .expect("Failed to query sequences");
 
@@ -4002,9 +4003,8 @@ mod tests {
                 &fasta_path,
                 test_dir,
                 &output_path,
-                OutputFormat::Colored,
+                OutputFormat::Colored { normalized: false },
                 0.5,
-                None,
             )
             .expect("Failed to color graph");
 
@@ -4089,9 +4089,11 @@ mod tests {
                 &file_paths[1],
                 &index_dir,
                 &query_results_path,
-                OutputFormat::AbundanceMatrix,
+                OutputFormat::AbundanceMatrix {
+                    normalized: false,
+                    breakpoints: None,
+                },
                 0.5,
-                None,
             )
             .expect("Failed to query sequences");
 
@@ -4158,9 +4160,11 @@ shared_revcomp_with_other_test_file 0-19:3 0-19:10",
                 &file_paths[1],
                 &index_dir,
                 &query_results_path,
-                OutputFormat::AbundanceMatrix,
+                OutputFormat::AbundanceMatrix {
+                    normalized: false,
+                    breakpoints: None,
+                },
                 0.5,
-                None,
             )
             .expect("Failed to query sequences");
 

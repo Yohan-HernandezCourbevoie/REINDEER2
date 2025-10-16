@@ -12,13 +12,23 @@ use cli::OutputFormatCli;
 use overflow_detection::check_number_of_partitions;
 use reindeer2::reindeer2::{read_fof_file, OutputFormat, Reindeer2};
 
-impl From<OutputFormatCli> for OutputFormat {
-    fn from(c: OutputFormatCli) -> Self {
-        match c {
-            OutputFormatCli::AbundanceMatrix => OutputFormat::AbundanceMatrix,
-            OutputFormatCli::Colored => OutputFormat::Colored,
-            OutputFormatCli::Median => OutputFormat::Median,
-            OutputFormatCli::NormalizedMedian => OutputFormat::NormalizedMedian,
+impl OutputFormatCli {
+    fn to_output_format(self, normalized: bool, breakpoints: Option<f64>) -> OutputFormat {
+        match (self, normalized, breakpoints) {
+            (OutputFormatCli::AbundanceMatrix, normalized, breakpoints) => {
+                OutputFormat::AbundanceMatrix {
+                    normalized,
+                    breakpoints,
+                }
+            }
+            (OutputFormatCli::Colored, normalized, None) => OutputFormat::Colored { normalized },
+            (OutputFormatCli::Colored, _, Some(_)) => {
+                panic!("Cannot compute breakpoints from colored graph.")
+            }
+            (OutputFormatCli::Median, normalized, None) => OutputFormat::Median { normalized },
+            (OutputFormatCli::Median, _, Some(_)) => {
+                panic!("Cannot compute breakpoints from median output.")
+            }
         }
     }
 }
@@ -146,15 +156,18 @@ fn main() -> io::Result<()> {
             let fasta_file = args.fasta;
             let index_dir = args.index;
             let coverage = args.coverage;
-            let output_format = OutputFormat::from(args.output_format);
+            let output_format = args
+                .output_format
+                .to_output_format(args.normalize, args.breakpoints);
             let query_output = match args.output {
                 Some(output) => output,
                 None => match output_format {
-                    OutputFormat::Colored => format!("{}_colored_graph.fa", index_dir),
+                    OutputFormat::Colored { normalized: _ } => {
+                        format!("{}_colored_graph.fa", index_dir)
+                    }
                     _ => format!("{}_query_results.csv", index_dir),
                 },
             };
-            let breakpoints = args.breakpoints;
 
             println!("Index directory: {}", index_dir);
 
@@ -168,10 +181,9 @@ fn main() -> io::Result<()> {
                     &query_output,
                     output_format,
                     coverage,
-                    breakpoints,
                 )
                 .expect("Failed to query sequences");
-
+            println!("Results written to {}", query_output);
             println!("Query complete in {:.2?}", start_time.elapsed());
         } // "merge" => {
           //     // argument= path to a fof + output file
