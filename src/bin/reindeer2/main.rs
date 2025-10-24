@@ -1,17 +1,37 @@
 mod cli;
 mod memory_measure;
 mod overflow_detection;
-mod reindeer2;
 
 use clap::Parser;
 use rand::Rng;
 use std::io::{self};
 use std::time::Instant;
 
-use crate::cli::OutputFormat;
-use crate::overflow_detection::check_number_of_partitions;
-use crate::reindeer2::{build_index_muset, explore_muset_dir, read_fof_file, Reindeer2};
 use cli::Cli;
+use cli::OutputFormatCli;
+use overflow_detection::check_number_of_partitions;
+use reindeer2::reindeer2::{read_fof_file, OutputFormat, Reindeer2};
+
+impl OutputFormatCli {
+    fn to_output_format(self, normalized: bool, breakpoints: Option<f64>) -> OutputFormat {
+        match (self, normalized, breakpoints) {
+            (OutputFormatCli::AbundanceMatrix, normalized, breakpoints) => {
+                OutputFormat::AbundanceMatrix {
+                    normalized,
+                    breakpoints,
+                }
+            }
+            (OutputFormatCli::Colored, normalized, None) => OutputFormat::Colored { normalized },
+            (OutputFormatCli::Colored, _, Some(_)) => {
+                panic!("Cannot compute breakpoints from colored graph.")
+            }
+            (OutputFormatCli::Median, normalized, None) => OutputFormat::Median { normalized },
+            (OutputFormatCli::Median, _, Some(_)) => {
+                panic!("Cannot compute breakpoints from median output.")
+            }
+        }
+    }
+}
 
 fn main() -> io::Result<()> {
     let args = Cli::parse();
@@ -70,51 +90,51 @@ fn main() -> io::Result<()> {
 
             let start_time = Instant::now();
 
-            if false {
-                //muset_option {
+            // if false {
+            //     //muset_option {
 
-                let (unitigs_file, matrix_file, color_nb) = explore_muset_dir(&input);
+            //     let (unitigs_file, matrix_file, color_nb) = explore_muset_dir(&input);
 
-                build_index_muset(
-                    unitigs_file,
-                    matrix_file,
-                    kmer,
-                    minimizer,
-                    bf_size,
-                    partitions,
-                    color_nb,
-                    abundance,
-                    abundance_max,
-                    &output_dir,
-                    dense_option,
-                    tolerated_number_of_zeros,
-                    canonical,
-                    debug,
-                )?;
-            } else {
-                // read the file of files  and extract file paths and color count
-                let (file_paths, color_nb) = read_fof_file(&input)?;
+            //     build_index_muset(
+            //         unitigs_file,
+            //         matrix_file,
+            //         kmer,
+            //         minimizer,
+            //         bf_size,
+            //         partitions,
+            //         color_nb,
+            //         abundance,
+            //         abundance_max,
+            //         &output_dir,
+            //         dense_option,
+            //         tolerated_number_of_zeros,
+            //         canonical,
+            //         debug,
+            //     )?;
+            // } else {
+            // read the file of files  and extract file paths and color count
+            let (file_paths, color_nb) = read_fof_file(&input)?;
 
-                // run the index construction process: build and fill BFs per partitions and in chunks, serialize, merge chunks
-                let index = Reindeer2::new(
-                    bf_size,
-                    partitions,
-                    kmer,
-                    minimizer,
-                    color_nb,
-                    abundance,
-                    abundance_max,
-                    dense_option,
-                    canonical,
-                );
-                index.build(
-                    file_paths,
-                    &output_dir,
-                    dense_option,
-                    tolerated_number_of_zeros,
-                    debug,
-                )?;
-            }
+            // run the index construction process: build and fill BFs per partitions and in chunks, serialize, merge chunks
+            let index = Reindeer2::new(
+                bf_size,
+                partitions,
+                kmer,
+                minimizer,
+                color_nb,
+                abundance,
+                abundance_max,
+                dense_option,
+                canonical,
+            );
+            index.build(
+                file_paths,
+                &output_dir,
+                dense_option,
+                tolerated_number_of_zeros,
+                debug,
+            )?;
+            // }
 
             println!("Indexing complete in {:.2?}", start_time.elapsed());
             if cfg!(unix) {
@@ -136,15 +156,18 @@ fn main() -> io::Result<()> {
             let fasta_file = args.fasta;
             let index_dir = args.index;
             let coverage = args.coverage;
-            let output_format = args.output_format;
+            let output_format = args
+                .output_format
+                .to_output_format(args.normalize, args.breakpoints);
             let query_output = match args.output {
                 Some(output) => output,
                 None => match output_format {
-                    OutputFormat::Colored => format!("{}_colored_graph.fa", index_dir),
+                    OutputFormat::Colored { normalized: _ } => {
+                        format!("{}_colored_graph.fa", index_dir)
+                    }
                     _ => format!("{}_query_results.csv", index_dir),
                 },
             };
-            let breakpoints = args.breakpoints;
 
             println!("Index directory: {}", index_dir);
 
@@ -158,10 +181,9 @@ fn main() -> io::Result<()> {
                     &query_output,
                     output_format,
                     coverage,
-                    breakpoints,
                 )
                 .expect("Failed to query sequences");
-
+            println!("Results written to {}", query_output);
             println!("Query complete in {:.2?}", start_time.elapsed());
         } // "merge" => {
           //     // argument= path to a fof + output file

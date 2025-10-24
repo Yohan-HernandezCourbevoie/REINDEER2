@@ -84,9 +84,8 @@ pub struct IndexArgs {
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, ValueEnum)]
-pub enum OutputFormat {
+pub enum OutputFormatCli {
     Colored,
-    NormalizedMedian,
     Median,
     AbundanceMatrix,
 }
@@ -102,8 +101,12 @@ pub struct QueryArgs {
     pub index: String,
 
     /// Precision of the format output
-    #[arg(long, value_enum, default_value_t = OutputFormat::Median)]
-    pub output_format: OutputFormat,
+    #[arg(long, value_enum, default_value_t = OutputFormatCli::Median)]
+    pub output_format: OutputFormatCli,
+
+    /// Normalize output (default: false)
+    #[arg(long, default_value_t = false)]
+    pub normalize: bool,
 
     /// Path to the output file
     #[arg(short, long)]
