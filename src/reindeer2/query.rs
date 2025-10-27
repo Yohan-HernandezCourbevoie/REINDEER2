@@ -27,44 +27,11 @@ fn build_partitions_kmers(
     m: usize,
     partition_number: u64,
     canonical: bool,
-) -> (
-    HashMap<usize, Vec<(usize, usize, u64)>>,
-    HashMap<String, usize>,
-) {
+) -> HashMap<usize, Vec<(usize, usize, u64)>> {
     let mut partition_kmers: HashMap<usize, Vec<(usize, usize, u64)>> = HashMap::new();
-    let mut header_to_nb_kmer = HashMap::new();
-    // Build all partition-kmers upfront
     for (record_id, record) in batch.iter().enumerate() {
-        let id = record.id();
-        let desc = record.desc().unwrap_or("");
-        // Build the header string only once per record
-        let full_header = format!(">{} {}", id, desc).trim().to_string();
-        // let full_header = format!(">{}", id).trim().to_string();
-
-        let seq_str = std::str::from_utf8(record.seq())
-            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "Invalid UTF-8 sequence"))
-            .unwrap(); // or handle error gracefully
-
-        let nb_kmer = if seq_str.len() >= k {
-            seq_str.len() - k + 1
-        } else {
-            0
-        };
-        header_to_nb_kmer
-            .entry(full_header.clone())
-            .insert_entry(nb_kmer);
-
-        // k-mer hash + minimizer
-        //let nt_hash_iterator = NtHashIterator::new(seq_str.as_bytes(), k).unwrap();
-        //let min_iter = MinimizerBuilder::<u64>::new()
-        //    .minimizer_size(m)
-        //    .width((k - m + 1).try_into().unwrap())
-        //    .iter(seq_str.as_bytes());
-
-        for (position, (kmer_hash, minimizer)) in
-            kmer_minimizers_seq_level(seq_str.as_bytes(), k, m, canonical).enumerate()
-        {
-            //for (kmer_hash, (minimizer, _position)) in nt_hash_iterator.zip(min_iter) {
+        let kmer_minimizers = kmer_minimizers_seq_level(record.seq(), k, m, canonical);
+        for (position, (kmer_hash, minimizer)) in kmer_minimizers.enumerate() {
             let partition_index = (minimizer % partition_number) as usize;
             partition_kmers
                 .entry(partition_index)
@@ -72,7 +39,7 @@ fn build_partitions_kmers(
                 .push((record_id, position, kmer_hash));
         }
     }
-    (partition_kmers, header_to_nb_kmer)
+    partition_kmers
 }
 
 // TODO rename
@@ -476,8 +443,7 @@ fn query_single_fasta_batch(
     base: f64,
     batch: &[fasta::Record],
 ) -> HashMap<usize, Vec<Vec<u16>>> {
-    let (partition_kmers, _header_to_nb_kmer) =
-        build_partitions_kmers(batch, k, m, partition_number as u64, canonical);
+    let partition_kmers = build_partitions_kmers(batch, k, m, partition_number as u64, canonical);
 
     // --- PARALLEL PHASE: process each partition's k-mers in parallel ---
     // This will store final results for *all* sequences in this batch.
