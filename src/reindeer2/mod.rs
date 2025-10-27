@@ -379,10 +379,11 @@ where
         .collect()
 }
 
+/// Collects the iterator in batches and runs `process_batch` on each batch.
 fn process_fasta_in_batches<R: io::BufRead>(
     reader: R,
     batch_size: usize,
-    mut process_batch: impl FnMut(Vec<fasta::Record>),
+    mut process_batch: impl FnMut(&[fasta::Record]),
 ) -> io::Result<()> {
     let fasta_reader = fasta::Reader::new(reader);
     let mut batch = Vec::with_capacity(batch_size);
@@ -392,14 +393,14 @@ fn process_fasta_in_batches<R: io::BufRead>(
         batch.push(record);
 
         if batch.len() >= batch_size {
-            process_batch(batch);
-            batch = Vec::with_capacity(batch_size); // reset
+            process_batch(&batch);
+            batch.clear();
         }
     }
 
     // final batch
     if !batch.is_empty() {
-        process_batch(batch);
+        process_batch(&batch);
     }
 
     Ok(())

@@ -44,7 +44,7 @@ pub fn process_fasta_file(
 
         // this part reads the batches of sequences and records kmers info until the structure is too large in memory
         for record in batch {
-            let processed = process_fasta_record(Ok(record), base, abundance_max, &header_type); //read fasta
+            let processed = process_fasta_record(record, base, abundance_max, &header_type); //read fasta
             match processed {
                 Ok((seq, log_abundance, count_value)) => {
                     if log_abundance != 666 {
@@ -119,12 +119,11 @@ pub fn process_fasta_file(
 }
 
 pub fn process_fasta_record(
-    result: Result<fasta::Record, io::Error>,
+    record: &fasta::Record,
     base: f64,
     abundance_max: u16,
     header_type: &HeaderType,
 ) -> Result<(Vec<u8>, u16, u16), io::Error> {
-    let record = result.expect("error during fasta parsing");
     let header_option = record.desc();
     let header = header_option.unwrap_or("no header found");
     let count_value = match extract_count(header, header_type) {
@@ -153,9 +152,10 @@ mod tests {
 
         let reader = fasta::Reader::new(std::io::Cursor::new(fasta_input));
         let result = reader.records().next().expect("failed to read record");
+        let result = result.expect("error during fasta parsing");
 
         let base = 2.0;
-        let processed = process_fasta_record(result, base, 65535, &HeaderType::Logan);
+        let processed = process_fasta_record(&result, base, 65535, &HeaderType::Logan);
 
         assert!(processed.is_ok(), "processing failed");
         let (seq, log_abundance, _) = processed.unwrap();
