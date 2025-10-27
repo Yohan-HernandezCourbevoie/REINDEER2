@@ -78,9 +78,9 @@ impl Reindeer2 {
         }
     }
 
+    /// Loads an index from the CSV in the directory of the index
     pub fn from_csv(bf_dir: &str) -> io::Result<Self> {
         let csv_path = format!("{}/index_info.csv", bf_dir);
-        //load index metadata from CSV
         print!("Loading index metadata for query...");
         let mut reader = csv::Reader::from_reader(BufReader::new(File::open(csv_path)?));
         let values = reader.records().next().expect("Index CSV is empty")?;
@@ -1061,6 +1061,7 @@ fn write_kmer_counts_to_disk(
     dir_path: &str,
     kmer_counts_vector: &Arc<Mutex<Vec<usize>>>,
 ) -> io::Result<()> {
+    // OPTIMIZE we may be able to drop the lock before writing to disk
     let file_path = Path::new(dir_path).join("kmer_counts_per_color.bin");
     let file = File::create(&file_path)?;
     let mut writer = BufWriter::new(file);
