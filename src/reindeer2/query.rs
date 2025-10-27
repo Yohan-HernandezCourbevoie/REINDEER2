@@ -167,7 +167,7 @@ fn fold_into_hashmap(
 
             // Accumulate results in local_results
             let entry = local_results
-                .entry(sequence_id.clone())
+                .entry(sequence_id)
                 .or_insert_with(|| vec![Vec::new(); color_number]);
             for (color_idx, approx_values) in approximate_counts.into_iter().enumerate() {
                 entry[color_idx].push(
@@ -554,7 +554,7 @@ pub fn query_sequences_in_batches(
             dense_option,
             canonical,
             base,
-            &batch,
+            batch,
         );
         // Now `sequence_results` has the combined data for this batch.
         // Let's compute the output in the requested format.
@@ -600,6 +600,7 @@ pub fn graph_coloring(
     normalize: bool,
     writer: &mut impl Write,
 ) -> std::io::Result<()> {
+    let msg_write = "should have been able to write the query results";
     let kmer_counts = if normalize {
         load_kmer_counts_vector(bf_dir).expect("Failed to load from disk the kmer counts vector")
     } else {
@@ -612,22 +613,21 @@ pub fn graph_coloring(
         let full_header = format!(">{} {}", id, desc).trim().to_string();
         let seq_str = std::str::from_utf8(record.seq()).expect("Invalid UTF-8 sequence");
 
-        // If the sequence is in sequence_results, we fetch the vec of vec
+        // Let's load the results
+        // color_vectors is a Vec<Vec<u16>>. Each index = a color,
+        // each inner Vec<u16> = all abundance values for that color
         let color_vectors = sequence_results
             .get(&record_id)
             .expect("should have been able to get the result from the record id");
 
-        // color_vectors is a Vec<Vec<u16>>. Each index = a color,
-        // each inner Vec<u16> = all abundance values for that color
         // if no data, just write the original header
-        if color_vectors.iter().all(|vals| vals.is_empty()) {
-            writeln!(writer, "{}", full_header).ok();
-            writeln!(writer, "{}", seq_str).ok();
+        if color_vectors.iter().all(Vec::is_empty) {
+            writeln!(writer, "{}\n{}", full_header, seq_str).expect(msg_write);
             continue;
         }
         // otherwise, build an augmented header
         let mut header_parts = Vec::with_capacity(color_vectors.len() + 1);
-        header_parts.push(full_header.clone());
+        header_parts.push(full_header);
 
         // for each color, we do the median of all values:
         for (color_idx, vals) in color_vectors.iter().enumerate() {
@@ -648,9 +648,7 @@ pub fn graph_coloring(
         // join info like
         // ">seq1 col:0:12 col:1:29"
         let new_header = header_parts.join(" ");
-        // TODO discuss why ok() here ? pretty sure it has no effect)
-        writeln!(writer, "{}", new_header).ok();
-        writeln!(writer, "{}", seq_str).ok();
+        writeln!(writer, "{}\n{}", new_header, seq_str).expect(msg_write);
     }
     Ok(())
 }
