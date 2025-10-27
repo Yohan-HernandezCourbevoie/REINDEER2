@@ -4119,6 +4119,74 @@ shared_revcomp_with_other_test_file 0-19:3 0-19:10",
     }
 
     #[test]
+    fn test_output_duplication() {
+        use itertools::Itertools;
+        let test_dir = "test_output_duplication ";
+        fs::create_dir_all(test_dir).expect("Failed to create test directory");
+
+        let file1_path = String::from("tests/unit_tests_data/random_seq_with_revcomp.fa");
+        let file2_path = String::from("tests/unit_tests_data/duplication.fa");
+        let file_paths = vec![file1_path, file2_path];
+
+        let k = 31;
+        let m = 15;
+        let bf_size = 1024 * 1024;
+        let partition_number = 4;
+        let color_number = 2;
+        let abundance_number = 256;
+        let abundance_max = 65535;
+        let dense_option = false;
+        let threshold = color_number;
+        let canonical = true;
+
+        let index = Reindeer2::new(
+            bf_size,
+            partition_number,
+            k,
+            m,
+            color_number,
+            abundance_number,
+            abundance_max,
+            dense_option,
+            canonical,
+        );
+        let (_, index_dir) = index
+            .build(file_paths.clone(), test_dir, dense_option, threshold, false)
+            .expect("Failed to build index");
+
+        let query_results_path = format!("{}/query_results.csv", index_dir);
+
+        let index_from_csv = Reindeer2::from_csv(&index_dir).unwrap();
+        index_from_csv
+            .query(
+                &file_paths[1],
+                &index_dir,
+                &query_results_path,
+                OutputFormat::AbundanceMatrix {
+                    normalized: false,
+                    breakpoints: None,
+                },
+                0.5,
+            )
+            .expect("Failed to query sequences");
+
+        // Validate the results written to the query result file
+        let actual = fs::read_to_string(&query_results_path).unwrap();
+        let actual = actual.trim();
+
+        let expected = String::from(
+            "query random_seq_with_revcomp duplication
+header_0 0-69:* 0-69:1
+header_0 0-69:* 0-69:1
+header_0 0-69:* 0-69:1",
+        );
+
+        assert_equal_sorted_content_with_equal_header(&expected, actual);
+
+        fs::remove_dir_all(test_dir).expect("Failed to clean up test directory");
+    }
+
+    #[test]
     fn test_output_rd1_non_canonical() {
         use itertools::Itertools;
         let test_dir = "test_output_rd1_canonical";
