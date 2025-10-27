@@ -389,7 +389,6 @@ fn write_median_abundance(
 }
 
 fn write_kmer_query(
-    fasta_file: &str,
     bf_dir: &str,
     color_number: usize,
     batch: &[fasta::Record],
@@ -408,7 +407,6 @@ fn write_kmer_query(
                 &sequence_results,
                 batch,
                 color_number,
-                fasta_file,
                 normalized,
                 writer,
             )
@@ -561,7 +559,6 @@ pub fn query_sequences_in_batches(
         // Now `sequence_results` has the combined data for this batch.
         // Let's compute the output in the requested format.
         write_kmer_query(
-            fasta_file,
             bf_dir,
             color_number,
             batch,
@@ -598,69 +595,62 @@ fn merge_results(
 pub fn graph_coloring(
     bf_dir: &str,
     sequence_results: &HashMap<usize, Vec<Vec<u16>>>,
-    batch2: &[fasta::Record],
+    batch: &[fasta::Record],
     color_number: usize,
-    fasta_file: &str,
     normalize: bool,
     writer: &mut impl Write,
 ) -> std::io::Result<()> {
-    let reader = read_file(fasta_file)?; // your existing read_file
     let kmer_counts = if normalize {
         load_kmer_counts_vector(bf_dir).expect("Failed to load from disk the kmer counts vector")
     } else {
         vec![color_number, 0] // TODO bizarre
     };
-    let batch_size = batch2.len();
 
-    process_fasta_in_batches(reader, batch_size, |batch| {
-        for (record_id, record) in batch.iter().enumerate() {
-            let id = record.id();
-            let desc = record.desc().unwrap_or("");
-            let full_header = format!(">{} {}", id, desc).trim().to_string();
-            let seq_str = std::str::from_utf8(record.seq()).expect("Invalid UTF-8 sequence");
+    for (record_id, record) in batch.iter().enumerate() {
+        let id = record.id();
+        let desc = record.desc().unwrap_or("");
+        let full_header = format!(">{} {}", id, desc).trim().to_string();
+        let seq_str = std::str::from_utf8(record.seq()).expect("Invalid UTF-8 sequence");
 
-            // If the sequence is in sequence_results, we fetch the vec of vec
-            if let Some(color_vectors) = sequence_results.get(&record_id) {
-                // color_vectors is a Vec<Vec<u16>>. Each index = a color,
-                // each inner Vec<u16> = all abundance values for that color
-                // if no data, just write the original header
-                if color_vectors.iter().all(|vals| vals.is_empty()) {
-                    writeln!(writer, "{}", full_header).ok();
-                    writeln!(writer, "{}", seq_str).ok();
-                    continue;
-                }
-                // otherwise, build an augmented header
-                let mut header_parts = Vec::with_capacity(color_vectors.len() + 1);
-                header_parts.push(full_header.clone());
+        // If the sequence is in sequence_results, we fetch the vec of vec
+        let color_vectors = sequence_results
+            .get(&record_id)
+            .expect("should have been able to get the result from the record id");
 
-                // for each color, we do the median of all values:
-                for (color_idx, vals) in color_vectors.iter().enumerate() {
-                    if vals.is_empty() {
-                        // skip color if it has no data
-                        continue;
-                    }
-                    let median = compute_median(vals);
-                    let median = if normalize {
-                        median as f64 / kmer_counts[color_idx] as f64 * 1_000_000f64
-                    } else {
-                        median as f64
-                    };
-                    // push e.g. "col:1:12"
-                    header_parts.push(format!("col:{}:{}", color_idx, median));
-                }
-
-                // join info like
-                // ">seq1 col:0:12 col:1:29"
-                let new_header = header_parts.join(" ");
-                // TODO discuss why ok() here ? pretty sure it has no effect)
-                writeln!(writer, "{}", new_header).ok();
-                writeln!(writer, "{}", seq_str).ok();
-            } else {
-                //if not found in the map, writing the original
-                writeln!(writer, "{}", full_header).ok();
-                writeln!(writer, "{}", seq_str).ok();
-            }
+        // color_vectors is a Vec<Vec<u16>>. Each index = a color,
+        // each inner Vec<u16> = all abundance values for that color
+        // if no data, just write the original header
+        if color_vectors.iter().all(|vals| vals.is_empty()) {
+            writeln!(writer, "{}", full_header).ok();
+            writeln!(writer, "{}", seq_str).ok();
+            continue;
         }
-    })?;
+        // otherwise, build an augmented header
+        let mut header_parts = Vec::with_capacity(color_vectors.len() + 1);
+        header_parts.push(full_header.clone());
+
+        // for each color, we do the median of all values:
+        for (color_idx, vals) in color_vectors.iter().enumerate() {
+            if vals.is_empty() {
+                // skip color if it has no data
+                continue;
+            }
+            let median = compute_median(vals);
+            let median = if normalize {
+                median as f64 / kmer_counts[color_idx] as f64 * 1_000_000f64
+            } else {
+                median as f64
+            };
+            // push e.g. "col:1:12"
+            header_parts.push(format!("col:{}:{}", color_idx, median));
+        }
+
+        // join info like
+        // ">seq1 col:0:12 col:1:29"
+        let new_header = header_parts.join(" ");
+        // TODO discuss why ok() here ? pretty sure it has no effect)
+        writeln!(writer, "{}", new_header).ok();
+        writeln!(writer, "{}", seq_str).ok();
+    }
     Ok(())
 }
