@@ -139,7 +139,6 @@ impl Reindeer2 {
         output_dir: &str,
         dense_option: bool,
         threshold: usize,
-        debug: bool,
     ) -> io::Result<(Vec<String>, String)> {
         let mut total_kmers = atomic::AtomicU64::new(0);
         let mut atomic_dense_kmers_count = atomic::AtomicU64::new(0);
@@ -150,13 +149,15 @@ impl Reindeer2 {
             Arc::new(Mutex::new(vec![0; self.nb_color]));
         let (chunks, color_chunks) = split_fof(&file_paths)?;
         let base = compute_base(self.abundance_number, self.abundance_max);
-        if debug {
-            println!("Using log base {}", base);
-        }
+
+        #[cfg(any(debug_assertions, test))]
+        println!("Using log base {}", base);
+
         let partitioned_bf_size = (self.bf_size as usize) / self.partition_number;
-        if debug {
-            println!("In debug mode... the tool may take (much) longer than usual.");
-        }
+
+        #[cfg(any(debug_assertions, test))]
+        println!("In debug mode... the tool may take (much) longer than usual.");
+
         println!("Initializing Bloom filter slices...");
 
         let (_, dir_path) = create_dir_and_files(self.partition_number, output_dir)?;
@@ -246,7 +247,8 @@ impl Reindeer2 {
                     Err(_) => eprintln!("Path {} does not exist", path),
                 }
             });
-            if debug {
+            #[cfg(any(debug_assertions, test))]
+            {
                 bloom_filters.update_sparse_counts(
                     &atomic_sparse_one_seen,
                     &atomic_sparse_fp_seen,
@@ -271,7 +273,8 @@ impl Reindeer2 {
 
         write_kmer_counts_to_disk(&dir_path, &kmer_counts_vector)?;
 
-        if debug {
+        #[cfg(any(debug_assertions, test))]
+        {
             // k-mers repartition between dense and sparse index
             println!("The index contains {:?} 'dense' k-mers and {:?} 'sparse' k-mers (total k-mers: {:?})", 
             atomic_dense_kmers_count.get_mut().separate_with_commas(),
@@ -1927,7 +1930,7 @@ mod tests {
             true,
         );
         let (_file_paths, index_dir) = index
-            .build(file_paths.clone(), test_dir, dense_option, threshold, false)
+            .build(file_paths.clone(), test_dir, dense_option, threshold)
             .expect("Failed to build index");
 
         let query_results_path = format!("{}/query_results.csv", index_dir);
@@ -1990,13 +1993,7 @@ mod tests {
             false,
         );
         let (_file_paths, index_dir) = index
-            .build(
-                vec![file1_path.clone()],
-                test_dir,
-                dense_option,
-                threshold,
-                false,
-            )
+            .build(vec![file1_path.clone()], test_dir, dense_option, threshold)
             .expect("Failed to build index");
 
         let query_results_path = format!("{}/query_results.csv", index_dir);
@@ -3989,13 +3986,7 @@ mod tests {
         );
 
         let (_file_paths, index_dir) = index
-            .build(
-                vec![fasta_path.clone()],
-                test_dir,
-                dense_option,
-                threshold,
-                false,
-            )
+            .build(vec![fasta_path.clone()], test_dir, dense_option, threshold)
             .expect("Failed to build index");
 
         let index_from_csv =
@@ -4080,7 +4071,7 @@ mod tests {
             canonical,
         );
         let (_, index_dir) = index
-            .build(file_paths.clone(), test_dir, dense_option, threshold, false)
+            .build(file_paths.clone(), test_dir, dense_option, threshold)
             .expect("Failed to build index");
 
         let query_results_path = format!("{}/query_results.csv", index_dir);
@@ -4151,7 +4142,7 @@ shared_revcomp_with_other_test_file 0-19:3 0-19:10",
             canonical,
         );
         let (_, index_dir) = index
-            .build(file_paths.clone(), test_dir, dense_option, threshold, false)
+            .build(file_paths.clone(), test_dir, dense_option, threshold)
             .expect("Failed to build index");
 
         let query_results_path = format!("{}/query_results.csv", index_dir);
@@ -4219,7 +4210,7 @@ header_0 0-69:* 0-69:1",
             canonical,
         );
         let (_, index_dir) = index
-            .build(file_paths.clone(), test_dir, dense_option, threshold, false)
+            .build(file_paths.clone(), test_dir, dense_option, threshold)
             .expect("Failed to build index");
 
         let query_results_path = format!("{}/query_results.csv", index_dir);

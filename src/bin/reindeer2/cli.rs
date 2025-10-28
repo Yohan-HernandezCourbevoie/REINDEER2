@@ -13,10 +13,6 @@ pub struct Cli {
     /// Define a number of threads available
     #[arg(short, long, value_name = "THREADS", default_value_t = 1)]
     pub threads: usize,
-
-    /// Show additional information for debugging purposes
-    #[arg(long = "debug")]
-    pub debug: bool,
     // /// Print version
     // #[arg(short = 'V', long = "version", global = true, action = ArgAction::Version)]
     // pub version: bool,

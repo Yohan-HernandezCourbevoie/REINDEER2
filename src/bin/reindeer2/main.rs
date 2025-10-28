@@ -37,7 +37,6 @@ fn main() -> io::Result<()> {
     let args = Cli::parse();
 
     let max_threads = args.threads;
-    let debug = args.debug;
 
     match args.command {
         cli::Command::Index(args) => {
@@ -132,7 +131,6 @@ fn main() -> io::Result<()> {
                 &output_dir,
                 dense_option,
                 tolerated_number_of_zeros,
-                debug,
             )?;
             // }
 
