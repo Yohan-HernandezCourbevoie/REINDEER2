@@ -27,60 +27,27 @@ fn build_partitions_kmers(
     m: usize,
     partition_number: u64,
     canonical: bool,
-) -> (
-    HashMap<usize, Vec<(String, usize, u64)>>,
-    HashMap<String, usize>,
-) {
-    let mut partition_kmers: HashMap<usize, Vec<(String, usize, u64)>> = HashMap::new();
-    let mut header_to_nb_kmer = HashMap::new();
-    // Build all partition-kmers upfront
-    for record in batch {
-        let id = record.id();
-        let desc = record.desc().unwrap_or("");
-        // Build the header string only once per record
-        let full_header = format!(">{} {}", id, desc).trim().to_string();
-        // let full_header = format!(">{}", id).trim().to_string();
-
-        let seq_str = std::str::from_utf8(record.seq())
-            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "Invalid UTF-8 sequence"))
-            .unwrap(); // or handle error gracefully
-
-        let nb_kmer = if seq_str.len() >= k {
-            seq_str.len() - k + 1
-        } else {
-            0
-        };
-        header_to_nb_kmer
-            .entry(full_header.clone())
-            .insert_entry(nb_kmer);
-
-        // k-mer hash + minimizer
-        //let nt_hash_iterator = NtHashIterator::new(seq_str.as_bytes(), k).unwrap();
-        //let min_iter = MinimizerBuilder::<u64>::new()
-        //    .minimizer_size(m)
-        //    .width((k - m + 1).try_into().unwrap())
-        //    .iter(seq_str.as_bytes());
-
-        for (position, (kmer_hash, minimizer)) in
-            kmer_minimizers_seq_level(seq_str.as_bytes(), k, m, canonical).enumerate()
-        {
-            //for (kmer_hash, (minimizer, _position)) in nt_hash_iterator.zip(min_iter) {
+) -> HashMap<usize, Vec<(usize, usize, u64)>> {
+    let mut partition_kmers: HashMap<usize, Vec<(usize, usize, u64)>> = HashMap::new();
+    for (record_id, record) in batch.iter().enumerate() {
+        let kmer_minimizers = kmer_minimizers_seq_level(record.seq(), k, m, canonical);
+        for (position, (kmer_hash, minimizer)) in kmer_minimizers.enumerate() {
             let partition_index = (minimizer % partition_number) as usize;
-            partition_kmers.entry(partition_index).or_default().push((
-                full_header.clone(),
-                position,
-                kmer_hash,
-            ));
+            partition_kmers
+                .entry(partition_index)
+                .or_default()
+                .push((record_id, position, kmer_hash));
         }
     }
-    (partition_kmers, header_to_nb_kmer)
+    partition_kmers
 }
 
 // TODO rename
+/// parameter `kmers` is Vec<(read_id, pos_in_read, hash)>
 fn fold_into_hashmap(
-    mut local_results: HashMap<String, Vec<Vec<(usize, u16)>>>,
+    mut local_results: HashMap<usize, Vec<Vec<(usize, u16)>>>,
     partition_index: usize,
-    kmers: Vec<(String, usize, u64)>,
+    kmers: Vec<(usize, usize, u64)>,
     base: f64,
     bf_dir: &str,
     bf_size: u64,
@@ -88,7 +55,7 @@ fn fold_into_hashmap(
     color_number: usize,
     abundance_number: usize,
     is_dense: bool,
-) -> HashMap<String, Vec<Vec<(usize, u16)>>> {
+) -> HashMap<usize, Vec<Vec<(usize, u16)>>> {
     // Load the partition's Bloom filter
     let path_bf = format!(
         "{}/partition_bloom_filters_p{}.bin",
@@ -167,7 +134,7 @@ fn fold_into_hashmap(
 
             // Accumulate results in local_results
             let entry = local_results
-                .entry(sequence_id.clone())
+                .entry(sequence_id)
                 .or_insert_with(|| vec![Vec::new(); color_number]);
             for (color_idx, approx_values) in approximate_counts.into_iter().enumerate() {
                 entry[color_idx].push(
@@ -265,7 +232,8 @@ fn count_to_string(count: u16, normalize: bool, kmer_counts: &[usize], color_id:
 /// Write abundances per kmer like RD1.
 fn write_abundance_matrix(
     bf_dir: &str,
-    sequence_results: &HashMap<String, Vec<Vec<u16>>>,
+    sequence_results: &HashMap<usize, Vec<Vec<u16>>>,
+    batch: &[fasta::Record],
     color_number: usize,
     breakpoints: Option<f64>,
     normalize: bool,
@@ -283,8 +251,13 @@ fn write_abundance_matrix(
 
     write_header_matrix(writer, indexed_files, sep)?;
 
-    for (seq_header, color_vectors) in sequence_results {
-        let header = strip_header(seq_header);
+    for (record_id, color_vectors) in sequence_results {
+        let record = &batch[*record_id];
+        let id = record.id();
+        let desc = record.desc().unwrap_or("");
+        // Build the header string only once per record
+        let seq_header = format!(">{} {}", id, desc).trim().to_string();
+        let header = strip_header(&seq_header);
         write!(writer, "{header}")?;
         for (color_idx, abund_values) in color_vectors.iter().enumerate() {
             // new color => a separator
@@ -332,7 +305,8 @@ fn write_abundance_matrix(
 /// Write abundances per kmer like RD1.
 fn write_median_abundance(
     bf_dir: &str,
-    sequence_results: &HashMap<String, Vec<Vec<u16>>>,
+    sequence_results: &HashMap<usize, Vec<Vec<u16>>>,
+    batch: &[fasta::Record],
     color_number: usize,
     normalize: bool,
     coverage: f32,
@@ -346,7 +320,11 @@ fn write_median_abundance(
         vec![color_number, 0] // TODO bizarre
     };
     // Compute medians for each sequence and each color, then write them out
-    for (seq_header, color_vectors) in sequence_results {
+    for (record_id, color_vectors) in sequence_results {
+        let record = &batch[*record_id];
+        let id = record.id();
+        let desc = record.desc().unwrap_or("");
+        let full_header = format!(">{} {}", id, desc).trim().to_string();
         for (color_idx, abund_values) in color_vectors.iter().enumerate() {
             if !abund_values.is_empty() {
                 let mut zeros_count = 0;
@@ -368,7 +346,7 @@ fn write_median_abundance(
                         } else {
                             median as f64
                         };
-                        writeln!(writer, "{},{},{}", seq_header, color_idx, median)?;
+                        writeln!(writer, "{},{},{}", full_header, color_idx, median)?;
                     }
                 }
             }
@@ -378,13 +356,12 @@ fn write_median_abundance(
 }
 
 fn write_kmer_query(
-    fasta_file: &str,
     bf_dir: &str,
     color_number: usize,
-    batch_size: usize,
+    batch: &[fasta::Record],
     output_format: OutputFormat,
     coverage: f32,
-    sequence_results: HashMap<String, Vec<Vec<u16>>>,
+    sequence_results: HashMap<usize, Vec<Vec<u16>>>,
     mut writer: &mut impl Write,
 ) -> io::Result<()> {
     match output_format {
@@ -395,9 +372,8 @@ fn write_kmer_query(
             graph_coloring(
                 bf_dir,
                 &sequence_results,
+                batch,
                 color_number,
-                fasta_file,
-                batch_size,
                 normalized,
                 writer,
             )
@@ -408,6 +384,7 @@ fn write_kmer_query(
         } => write_abundance_matrix(
             bf_dir,
             &sequence_results,
+            batch,
             color_number,
             breakpoints,
             normalized,
@@ -416,6 +393,7 @@ fn write_kmer_query(
         OutputFormat::Median { normalized } => write_median_abundance(
             bf_dir,
             &sequence_results,
+            batch,
             color_number,
             normalized,
             coverage,
@@ -464,22 +442,21 @@ fn query_single_fasta_batch(
     canonical: bool,
     base: f64,
     batch: &[fasta::Record],
-) -> HashMap<String, Vec<Vec<u16>>> {
-    let (partition_kmers, _header_to_nb_kmer) =
-        build_partitions_kmers(batch, k, m, partition_number as u64, canonical);
+) -> HashMap<usize, Vec<Vec<u16>>> {
+    let partition_kmers = build_partitions_kmers(batch, k, m, partition_number as u64, canonical);
 
     // --- PARALLEL PHASE: process each partition's k-mers in parallel ---
     // This will store final results for *all* sequences in this batch.
     // Key: sequence header; Value: vector of vector of abundances
-    let result_with_positions: HashMap<String, Vec<Vec<(usize, u16)>>> = partition_kmers
+    let result_with_positions: HashMap<usize, Vec<Vec<(usize, u16)>>> = partition_kmers
         .into_par_iter()
         // 1) Create a local HashMap in each thread
         .fold(
             // OPTIMIZE use compile time monomorphization to get rid of this (usize, u16)
             // (I expect to go from 128 per element in the vector to 16)
             // (I needed this extra usize to get the correct order of kmer in the output)
-            HashMap::<String, Vec<Vec<(usize, u16)>>>::new,
-            |local_results: HashMap<String, Vec<Vec<(usize, u16)>>>, (partition_index, kmers)| {
+            HashMap::<usize, Vec<Vec<(usize, u16)>>>::new,
+            |local_results: HashMap<usize, Vec<Vec<(usize, u16)>>>, (partition_index, kmers)| {
                 fold_into_hashmap(
                     local_results,
                     partition_index,
@@ -495,10 +472,7 @@ fn query_single_fasta_batch(
             },
         )
         // 2) Reduce all local HashMaps into a single HashMap
-        .reduce(
-            HashMap::<String, Vec<Vec<(usize, u16)>>>::new,
-            merge_results,
-        );
+        .reduce(HashMap::<usize, Vec<Vec<(usize, u16)>>>::new, merge_results);
 
     result_with_positions
         .into_iter()
@@ -546,15 +520,14 @@ pub fn query_sequences_in_batches(
             dense_option,
             canonical,
             base,
-            &batch,
+            batch,
         );
         // Now `sequence_results` has the combined data for this batch.
         // Let's compute the output in the requested format.
         write_kmer_query(
-            fasta_file,
             bf_dir,
             color_number,
-            batch_size,
+            batch,
             output_format,
             coverage,
             sequence_results,
@@ -568,9 +541,9 @@ pub fn query_sequences_in_batches(
 }
 
 fn merge_results(
-    mut acc: HashMap<String, Vec<Vec<(usize, u16)>>>,
-    local: HashMap<String, Vec<Vec<(usize, u16)>>>,
-) -> HashMap<String, Vec<Vec<(usize, u16)>>> {
+    mut acc: HashMap<usize, Vec<Vec<(usize, u16)>>>,
+    local: HashMap<usize, Vec<Vec<(usize, u16)>>>,
+) -> HashMap<usize, Vec<Vec<(usize, u16)>>> {
     for (seq_id, color_vecs) in local {
         let entry = acc
             .entry(seq_id)
@@ -587,69 +560,61 @@ fn merge_results(
 // rewrites a bcalm-like graph so that headers have abund info (one of the possible query operations)
 pub fn graph_coloring(
     bf_dir: &str,
-    sequence_results: &HashMap<String, Vec<Vec<u16>>>,
+    sequence_results: &HashMap<usize, Vec<Vec<u16>>>,
+    batch: &[fasta::Record],
     color_number: usize,
-    fasta_file: &str,
-    batch_size: usize,
     normalize: bool,
     writer: &mut impl Write,
 ) -> std::io::Result<()> {
-    let reader = read_file(fasta_file)?; // your existing read_file
+    let msg_write = "should have been able to write the query results";
     let kmer_counts = if normalize {
         load_kmer_counts_vector(bf_dir).expect("Failed to load from disk the kmer counts vector")
     } else {
         vec![color_number, 0] // TODO bizarre
     };
 
-    process_fasta_in_batches(reader, batch_size, |batch| {
-        for record in batch {
-            let id = record.id();
-            let desc = record.desc().unwrap_or("");
-            let full_header = format!(">{} {}", id, desc).trim().to_string();
-            let seq_str = std::str::from_utf8(record.seq()).expect("Invalid UTF-8 sequence");
+    for (record_id, record) in batch.iter().enumerate() {
+        let id = record.id();
+        let desc = record.desc().unwrap_or("");
+        let full_header = format!(">{} {}", id, desc).trim().to_string();
+        let seq_str = std::str::from_utf8(record.seq()).expect("Invalid UTF-8 sequence");
 
-            // If the sequence is in sequence_results, we fetch the vec of vec
-            if let Some(color_vectors) = sequence_results.get(&full_header) {
-                // color_vectors is a Vec<Vec<u16>>. Each index = a color,
-                // each inner Vec<u16> = all abundance values for that color
-                // if no data, just write the original header
-                if color_vectors.iter().all(|vals| vals.is_empty()) {
-                    writeln!(writer, "{}", full_header).ok();
-                    writeln!(writer, "{}", seq_str).ok();
-                    continue;
-                }
-                // otherwise, build an augmented header
-                let mut header_parts = Vec::with_capacity(color_vectors.len() + 1);
-                header_parts.push(full_header.clone());
+        // Let's load the results
+        // color_vectors is a Vec<Vec<u16>>. Each index = a color,
+        // each inner Vec<u16> = all abundance values for that color
+        let color_vectors = sequence_results
+            .get(&record_id)
+            .expect("should have been able to get the result from the record id");
 
-                // for each color, we do the median of all values:
-                for (color_idx, vals) in color_vectors.iter().enumerate() {
-                    if vals.is_empty() {
-                        // skip color if it has no data
-                        continue;
-                    }
-                    let median = compute_median(vals);
-                    let median = if normalize {
-                        median as f64 / kmer_counts[color_idx] as f64 * 1_000_000f64
-                    } else {
-                        median as f64
-                    };
-                    // push e.g. "col:1:12"
-                    header_parts.push(format!("col:{}:{}", color_idx, median));
-                }
-
-                // join info like
-                // ">seq1 col:0:12 col:1:29"
-                let new_header = header_parts.join(" ");
-                // TODO discuss why ok() here ? pretty sure it has no effect)
-                writeln!(writer, "{}", new_header).ok();
-                writeln!(writer, "{}", seq_str).ok();
-            } else {
-                //if not found in the map, writing the original
-                writeln!(writer, "{}", full_header).ok();
-                writeln!(writer, "{}", seq_str).ok();
-            }
+        // if no data, just write the original header
+        if color_vectors.iter().all(Vec::is_empty) {
+            writeln!(writer, "{}\n{}", full_header, seq_str).expect(msg_write);
+            continue;
         }
-    })?;
+        // otherwise, build an augmented header
+        let mut header_parts = Vec::with_capacity(color_vectors.len() + 1);
+        header_parts.push(full_header);
+
+        // for each color, we do the median of all values:
+        for (color_idx, vals) in color_vectors.iter().enumerate() {
+            if vals.is_empty() {
+                // skip color if it has no data
+                continue;
+            }
+            let median = compute_median(vals);
+            let median = if normalize {
+                median as f64 / kmer_counts[color_idx] as f64 * 1_000_000f64
+            } else {
+                median as f64
+            };
+            // push e.g. "col:1:12"
+            header_parts.push(format!("col:{}:{}", color_idx, median));
+        }
+
+        // join info like
+        // ">seq1 col:0:12 col:1:29"
+        let new_header = header_parts.join(" ");
+        writeln!(writer, "{}\n{}", new_header, seq_str).expect(msg_write);
+    }
     Ok(())
 }

@@ -78,9 +78,9 @@ impl Reindeer2 {
         }
     }
 
+    /// Loads an index from the CSV in the directory of the index
     pub fn from_csv(bf_dir: &str) -> io::Result<Self> {
         let csv_path = format!("{}/index_info.csv", bf_dir);
-        //load index metadata from CSV
         print!("Loading index metadata for query...");
         let mut reader = csv::Reader::from_reader(BufReader::new(File::open(csv_path)?));
         let values = reader.records().next().expect("Index CSV is empty")?;
@@ -139,7 +139,6 @@ impl Reindeer2 {
         output_dir: &str,
         dense_option: bool,
         threshold: usize,
-        debug: bool,
     ) -> io::Result<(Vec<String>, String)> {
         let mut total_kmers = atomic::AtomicU64::new(0);
         let mut atomic_dense_kmers_count = atomic::AtomicU64::new(0);
@@ -150,13 +149,15 @@ impl Reindeer2 {
             Arc::new(Mutex::new(vec![0; self.nb_color]));
         let (chunks, color_chunks) = split_fof(&file_paths)?;
         let base = compute_base(self.abundance_number, self.abundance_max);
-        if debug {
-            println!("Using log base {}", base);
-        }
+
+        #[cfg(any(debug_assertions, test))]
+        println!("Using log base {}", base);
+
         let partitioned_bf_size = (self.bf_size as usize) / self.partition_number;
-        if debug {
-            println!("In debug mode... the tool may take (much) longer than usual.");
-        }
+
+        #[cfg(any(debug_assertions, test))]
+        println!("In debug mode... the tool may take (much) longer than usual.");
+
         println!("Initializing Bloom filter slices...");
 
         let (_, dir_path) = create_dir_and_files(self.partition_number, output_dir)?;
@@ -246,7 +247,8 @@ impl Reindeer2 {
                     Err(_) => eprintln!("Path {} does not exist", path),
                 }
             });
-            if debug {
+            #[cfg(any(debug_assertions, test))]
+            {
                 bloom_filters.update_sparse_counts(
                     &atomic_sparse_one_seen,
                     &atomic_sparse_fp_seen,
@@ -271,7 +273,8 @@ impl Reindeer2 {
 
         write_kmer_counts_to_disk(&dir_path, &kmer_counts_vector)?;
 
-        if debug {
+        #[cfg(any(debug_assertions, test))]
+        {
             // k-mers repartition between dense and sparse index
             println!("The index contains {:?} 'dense' k-mers and {:?} 'sparse' k-mers (total k-mers: {:?})", 
             atomic_dense_kmers_count.get_mut().separate_with_commas(),
@@ -379,10 +382,11 @@ where
         .collect()
 }
 
+/// Collects the iterator in batches and runs `process_batch` on each batch.
 fn process_fasta_in_batches<R: io::BufRead>(
     reader: R,
     batch_size: usize,
-    mut process_batch: impl FnMut(Vec<fasta::Record>),
+    mut process_batch: impl FnMut(&[fasta::Record]),
 ) -> io::Result<()> {
     let fasta_reader = fasta::Reader::new(reader);
     let mut batch = Vec::with_capacity(batch_size);
@@ -392,14 +396,14 @@ fn process_fasta_in_batches<R: io::BufRead>(
         batch.push(record);
 
         if batch.len() >= batch_size {
-            process_batch(batch);
-            batch = Vec::with_capacity(batch_size); // reset
+            process_batch(&batch);
+            batch.clear();
         }
     }
 
     // final batch
     if !batch.is_empty() {
-        process_batch(batch);
+        process_batch(&batch);
     }
 
     Ok(())
@@ -1060,6 +1064,7 @@ fn write_kmer_counts_to_disk(
     dir_path: &str,
     kmer_counts_vector: &Arc<Mutex<Vec<usize>>>,
 ) -> io::Result<()> {
+    // OPTIMIZE we may be able to drop the lock before writing to disk
     let file_path = Path::new(dir_path).join("kmer_counts_per_color.bin");
     let file = File::create(&file_path)?;
     let mut writer = BufWriter::new(file);
@@ -1925,7 +1930,7 @@ mod tests {
             true,
         );
         let (_file_paths, index_dir) = index
-            .build(file_paths.clone(), test_dir, dense_option, threshold, false)
+            .build(file_paths.clone(), test_dir, dense_option, threshold)
             .expect("Failed to build index");
 
         let query_results_path = format!("{}/query_results.csv", index_dir);
@@ -1988,13 +1993,7 @@ mod tests {
             false,
         );
         let (_file_paths, index_dir) = index
-            .build(
-                vec![file1_path.clone()],
-                test_dir,
-                dense_option,
-                threshold,
-                false,
-            )
+            .build(vec![file1_path.clone()], test_dir, dense_option, threshold)
             .expect("Failed to build index");
 
         let query_results_path = format!("{}/query_results.csv", index_dir);
@@ -3987,13 +3986,7 @@ mod tests {
         );
 
         let (_file_paths, index_dir) = index
-            .build(
-                vec![fasta_path.clone()],
-                test_dir,
-                dense_option,
-                threshold,
-                false,
-            )
+            .build(vec![fasta_path.clone()], test_dir, dense_option, threshold)
             .expect("Failed to build index");
 
         let index_from_csv =
@@ -4078,7 +4071,7 @@ mod tests {
             canonical,
         );
         let (_, index_dir) = index
-            .build(file_paths.clone(), test_dir, dense_option, threshold, false)
+            .build(file_paths.clone(), test_dir, dense_option, threshold)
             .expect("Failed to build index");
 
         let query_results_path = format!("{}/query_results.csv", index_dir);
@@ -4109,6 +4102,74 @@ header_2 0-69:* 0-69:1
 header_3 0-69:* 0-69:1
 header_4 0-69:* 0-69:1
 shared_revcomp_with_other_test_file 0-19:3 0-19:10",
+        );
+
+        assert_equal_sorted_content_with_equal_header(&expected, actual);
+
+        fs::remove_dir_all(test_dir).expect("Failed to clean up test directory");
+    }
+
+    #[test]
+    fn test_output_duplication() {
+        use itertools::Itertools;
+        let test_dir = "test_output_duplication ";
+        fs::create_dir_all(test_dir).expect("Failed to create test directory");
+
+        let file1_path = String::from("tests/unit_tests_data/random_seq_with_revcomp.fa");
+        let file2_path = String::from("tests/unit_tests_data/duplication.fa");
+        let file_paths = vec![file1_path, file2_path];
+
+        let k = 31;
+        let m = 15;
+        let bf_size = 1024 * 1024;
+        let partition_number = 4;
+        let color_number = 2;
+        let abundance_number = 256;
+        let abundance_max = 65535;
+        let dense_option = false;
+        let threshold = color_number;
+        let canonical = true;
+
+        let index = Reindeer2::new(
+            bf_size,
+            partition_number,
+            k,
+            m,
+            color_number,
+            abundance_number,
+            abundance_max,
+            dense_option,
+            canonical,
+        );
+        let (_, index_dir) = index
+            .build(file_paths.clone(), test_dir, dense_option, threshold)
+            .expect("Failed to build index");
+
+        let query_results_path = format!("{}/query_results.csv", index_dir);
+
+        let index_from_csv = Reindeer2::from_csv(&index_dir).unwrap();
+        index_from_csv
+            .query(
+                &file_paths[1],
+                &index_dir,
+                &query_results_path,
+                OutputFormat::AbundanceMatrix {
+                    normalized: false,
+                    breakpoints: None,
+                },
+                0.5,
+            )
+            .expect("Failed to query sequences");
+
+        // Validate the results written to the query result file
+        let actual = fs::read_to_string(&query_results_path).unwrap();
+        let actual = actual.trim();
+
+        let expected = String::from(
+            "query random_seq_with_revcomp duplication
+header_0 0-69:* 0-69:1
+header_0 0-69:* 0-69:1
+header_0 0-69:* 0-69:1",
         );
 
         assert_equal_sorted_content_with_equal_header(&expected, actual);
@@ -4149,7 +4210,7 @@ shared_revcomp_with_other_test_file 0-19:3 0-19:10",
             canonical,
         );
         let (_, index_dir) = index
-            .build(file_paths.clone(), test_dir, dense_option, threshold, false)
+            .build(file_paths.clone(), test_dir, dense_option, threshold)
             .expect("Failed to build index");
 
         let query_results_path = format!("{}/query_results.csv", index_dir);
