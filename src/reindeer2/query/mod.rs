@@ -1,10 +1,11 @@
+mod format;
+
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{self, BufWriter, Read, Write};
 use std::path::Path;
 
 use bio::io::fasta;
-use pelt::pelt;
 use rayon::prelude::*;
 
 use super::OutputFormat;
@@ -13,6 +14,7 @@ use crate::reindeer2::{
     approximate_value, compute_base, compute_base_position, kmer_minimizers_seq_level,
     load_bloom_filter, process_fasta_in_batches, read_file, update_color_abundances,
 };
+use format::write_kmer_query;
 
 // === QUERY ===
 
@@ -184,23 +186,6 @@ fn write_header_matrix(
     Ok(())
 }
 
-fn compute_median(values: &[u16]) -> u16 {
-    let mut abund_sorted = values.to_vec();
-    abund_sorted.sort_unstable();
-    if abund_sorted.iter().all(|&x| x == 0) {
-        0
-    } else if abund_sorted.len() == 1 {
-        abund_sorted[0]
-    } else {
-        let mid = abund_sorted.len() / 2;
-        if abund_sorted.len() % 2 == 1 {
-            abund_sorted[mid]
-        } else {
-            (abund_sorted[mid - 1] + abund_sorted[mid]) / 2
-        }
-    }
-}
-
 /// Formats a fasta header by removing the first `>` and taking up to the first space (excluded).
 /// E.g.: `>seq1 ka:f:30` -> `seq1`
 fn strip_header(s: &str) -> &str {
@@ -210,198 +195,6 @@ fn strip_header(s: &str) -> &str {
         s
     };
     stripped.split(' ').next().unwrap()
-}
-
-fn count_to_string(count: u16, normalize: bool, kmer_counts: &[usize], color_id: usize) -> String {
-    if normalize {
-        let normalized_count = count as f64 / kmer_counts[color_id] as f64 * 1_000_000f64;
-        if normalized_count == 0.0 {
-            String::from("*")
-        } else {
-            normalized_count.to_string()
-        }
-    } else if count == 0 {
-        // not normalized and 0
-        String::from("*")
-    } else {
-        // not normalized and not 0
-        count.to_string()
-    }
-}
-
-/// Write abundances per kmer like RD1.
-fn write_abundance_matrix(
-    bf_dir: &str,
-    sequence_results: &HashMap<usize, Vec<Vec<u16>>>,
-    batch: &[fasta::Record],
-    color_number: usize,
-    breakpoints: Option<f64>,
-    normalize: bool,
-    writer: &mut impl Write,
-) -> io::Result<()> {
-    let indexed_files = Path::new(&bf_dir).join("path.txt");
-    let indexed_files: Vec<String> = super::read_indexed_file_names(indexed_files);
-    let sep = " ";
-    // we need the count of kmers if we want to normalize them
-    let kmer_counts = if normalize {
-        load_kmer_counts_vector(bf_dir).expect("Failed to load from disk the kmer counts vector")
-    } else {
-        vec![color_number, 0] // TODO bizarre
-    };
-
-    write_header_matrix(writer, indexed_files, sep)?;
-
-    for (record_id, color_vectors) in sequence_results {
-        let record = &batch[*record_id];
-        let id = record.id();
-        let desc = record.desc().unwrap_or("");
-        // Build the header string only once per record
-        let seq_header = format!(">{} {}", id, desc).trim().to_string();
-        let header = strip_header(&seq_header);
-        write!(writer, "{header}")?;
-        for (color_idx, abund_values) in color_vectors.iter().enumerate() {
-            // new color => a separator
-            write!(writer, "{sep}")?;
-
-            if let Some(penalty) = breakpoints {
-                let abund_values: Vec<u64> = abund_values.iter().copied().map(u64::from).collect();
-                let breakpoints = pelt(&abund_values, pelt::score, penalty);
-                let s = breakpoints
-                    .iter()
-                    .map(usize::to_string)
-                    .collect::<Vec<_>>()
-                    .join(",");
-                write!(writer, "{}", s)?;
-            } else {
-                let mut start = 0;
-                let mut current = abund_values[0];
-
-                for i in 1..=abund_values.len() {
-                    if i == abund_values.len() || abund_values[i] != current {
-                        // new different value or end of query => we must write
-                        let val_str = count_to_string(current, normalize, &kmer_counts, color_idx);
-                        if start + 1 == i {
-                            // only one value
-                            write!(writer, "{}:{}", start, val_str)?;
-                        } else {
-                            // multiple values
-                            write!(writer, "{}-{}:{}", start, i - 1, val_str)?;
-                        }
-                        if i < abund_values.len() {
-                            // not the end of query
-                            write!(writer, ",")?;
-                            start = i;
-                            current = abund_values[i];
-                        }
-                    }
-                }
-            }
-        }
-        writeln!(writer)?;
-    }
-    Ok(())
-}
-
-/// Write abundances per kmer like RD1.
-fn write_median_abundance(
-    bf_dir: &str,
-    sequence_results: &HashMap<usize, Vec<Vec<u16>>>,
-    batch: &[fasta::Record],
-    color_number: usize,
-    normalize: bool,
-    coverage: f32,
-    writer: &mut impl Write,
-) -> io::Result<()> {
-    writeln!(writer, "header,file,abundance")?;
-    // we need the count of kmers if we want to normalize them
-    let kmer_counts = if normalize {
-        load_kmer_counts_vector(bf_dir).expect("Failed to load from disk the kmer counts vector")
-    } else {
-        vec![color_number, 0] // TODO bizarre
-    };
-    // Compute medians for each sequence and each color, then write them out
-    for (record_id, color_vectors) in sequence_results {
-        let record = &batch[*record_id];
-        let id = record.id();
-        let desc = record.desc().unwrap_or("");
-        let full_header = format!(">{} {}", id, desc).trim().to_string();
-        for (color_idx, abund_values) in color_vectors.iter().enumerate() {
-            if !abund_values.is_empty() {
-                let mut zeros_count = 0;
-                let mut non_zero_values: Vec<u16> = Vec::new();
-                abund_values.iter().for_each(|value| {
-                    if *value == 0 {
-                        zeros_count += 1;
-                    } else {
-                        non_zero_values.push(*value);
-                    }
-                });
-                if !non_zero_values.is_empty()
-                    && (((zeros_count as f32) / (abund_values.len() as f32)) < coverage)
-                {
-                    let median = compute_median(&non_zero_values);
-                    if median > 0 {
-                        let median = if normalize {
-                            median as f64 / kmer_counts[color_idx] as f64 * 1_000_000f64
-                        } else {
-                            median as f64
-                        };
-                        writeln!(writer, "{},{},{}", full_header, color_idx, median)?;
-                    }
-                }
-            }
-        }
-    }
-    Ok(())
-}
-
-fn write_kmer_query(
-    bf_dir: &str,
-    color_number: usize,
-    batch: &[fasta::Record],
-    output_format: OutputFormat,
-    coverage: f32,
-    sequence_results: HashMap<usize, Vec<Vec<u16>>>,
-    mut writer: &mut impl Write,
-) -> io::Result<()> {
-    match output_format {
-        OutputFormat::Colored { normalized } => {
-            // TODO lrobidou discuss what this comment means:
-            // If your graph coloring wants to read from `sequence_results`:
-            // Flush the writer to separate batch outputs if needed
-            graph_coloring(
-                bf_dir,
-                &sequence_results,
-                batch,
-                color_number,
-                normalized,
-                writer,
-            )
-        }
-        OutputFormat::AbundanceMatrix {
-            normalized,
-            breakpoints,
-        } => write_abundance_matrix(
-            bf_dir,
-            &sequence_results,
-            batch,
-            color_number,
-            breakpoints,
-            normalized,
-            &mut writer,
-        ),
-        OutputFormat::Median { normalized } => write_median_abundance(
-            bf_dir,
-            &sequence_results,
-            batch,
-            color_number,
-            normalized,
-            coverage,
-            &mut writer,
-        ),
-    }?;
-    writer.flush()?;
-    Ok(())
 }
 
 fn sort_abundance_vec(abund_values: Vec<(usize, u16)>) -> Vec<u16> {
@@ -555,66 +348,4 @@ fn merge_results(
         }
     }
     acc
-}
-
-// rewrites a bcalm-like graph so that headers have abund info (one of the possible query operations)
-pub fn graph_coloring(
-    bf_dir: &str,
-    sequence_results: &HashMap<usize, Vec<Vec<u16>>>,
-    batch: &[fasta::Record],
-    color_number: usize,
-    normalize: bool,
-    writer: &mut impl Write,
-) -> std::io::Result<()> {
-    let msg_write = "should have been able to write the query results";
-    let kmer_counts = if normalize {
-        load_kmer_counts_vector(bf_dir).expect("Failed to load from disk the kmer counts vector")
-    } else {
-        vec![color_number, 0] // TODO bizarre
-    };
-
-    for (record_id, record) in batch.iter().enumerate() {
-        let id = record.id();
-        let desc = record.desc().unwrap_or("");
-        let full_header = format!(">{} {}", id, desc).trim().to_string();
-        let seq_str = std::str::from_utf8(record.seq()).expect("Invalid UTF-8 sequence");
-
-        // Let's load the results
-        // color_vectors is a Vec<Vec<u16>>. Each index = a color,
-        // each inner Vec<u16> = all abundance values for that color
-        let color_vectors = sequence_results
-            .get(&record_id)
-            .expect("should have been able to get the result from the record id");
-
-        // if no data, just write the original header
-        if color_vectors.iter().all(Vec::is_empty) {
-            writeln!(writer, "{}\n{}", full_header, seq_str).expect(msg_write);
-            continue;
-        }
-        // otherwise, build an augmented header
-        let mut header_parts = Vec::with_capacity(color_vectors.len() + 1);
-        header_parts.push(full_header);
-
-        // for each color, we do the median of all values:
-        for (color_idx, vals) in color_vectors.iter().enumerate() {
-            if vals.is_empty() {
-                // skip color if it has no data
-                continue;
-            }
-            let median = compute_median(vals);
-            let median = if normalize {
-                median as f64 / kmer_counts[color_idx] as f64 * 1_000_000f64
-            } else {
-                median as f64
-            };
-            // push e.g. "col:1:12"
-            header_parts.push(format!("col:{}:{}", color_idx, median));
-        }
-
-        // join info like
-        // ">seq1 col:0:12 col:1:29"
-        let new_header = header_parts.join(" ");
-        writeln!(writer, "{}\n{}", new_header, seq_str).expect(msg_write);
-    }
-    Ok(())
 }
