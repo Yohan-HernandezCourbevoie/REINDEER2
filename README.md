@@ -76,7 +76,7 @@ Optional parameters:
     - `colored`: annotate the input file with abundances rather than producing the standard output file (as showed in the examples below)
     - `abundance-matrix`: for each color, for each read, returns the abundance of every k-mer (similar to REINDEER 1).
 - `--breakpoints <penalty>`: Reindeer2 will apply the `PELT` algorithm to detect breakpoints in the abundances of k-mers. Reindeer will then reports the position of such breakpoints in the query. This option is only available if the output format is `abundance-matrix`. **Warning:** using this options significantly slows down the query. 
-- `--normalize`: normalize abundances based on sequencing depth estimates. The calculation is _normalized\_abundance = raw\_abundance / number\_of\_kmers\_in\_the\_dataset * 1\_000\_000_
+- `--normalize <N>`: normalize abundances based on sequencing depth estimates. The calculation is _normalized\_abundance = raw\_abundance / number\_of\_kmers\_in\_the\_dataset * N_. No normalization by default. If `--normalize` is passed without an argument, `N` defaults to 1\_000\_000 . 
 - `-C, --coverage-min` minimum proportion of kmers that must be present in the query sequence in order to propose an abundance value
 
 #### CSV file with --color false (default)

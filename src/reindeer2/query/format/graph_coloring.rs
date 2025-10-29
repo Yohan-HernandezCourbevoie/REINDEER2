@@ -3,29 +3,21 @@ use std::io::Write;
 
 use bio::io::fasta;
 
-use super::super::load_kmer_counts_vector;
-use super::compute_median;
+use super::{
+    compute_median, count_to_string_witout_star, get_full_header, KmerCountsAndNormalizeValue,
+};
 
 // rewrites a bcalm-like graph so that headers have abund info (one of the possible query operations)
 pub fn graph_coloring(
-    bf_dir: &str,
     sequence_results: &HashMap<usize, Vec<Vec<u16>>>,
     batch: &[fasta::Record],
-    color_number: usize,
-    normalize: bool,
+    normalize: &Option<KmerCountsAndNormalizeValue>,
     writer: &mut impl Write,
 ) -> std::io::Result<()> {
     let msg_write = "should have been able to write the query results";
-    let kmer_counts = if normalize {
-        load_kmer_counts_vector(bf_dir).expect("Failed to load from disk the kmer counts vector")
-    } else {
-        vec![color_number, 0] // TODO bizarre
-    };
 
     for (record_id, record) in batch.iter().enumerate() {
-        let id = record.id();
-        let desc = record.desc().unwrap_or("");
-        let full_header = format!(">{} {}", id, desc).trim().to_string();
+        let full_header = get_full_header(record);
         let seq_str = std::str::from_utf8(record.seq()).expect("Invalid UTF-8 sequence");
 
         // Let's load the results
@@ -51,11 +43,7 @@ pub fn graph_coloring(
                 continue;
             }
             let median = compute_median(vals);
-            let median = if normalize {
-                median as f64 / kmer_counts[color_idx] as f64 * 1_000_000f64
-            } else {
-                median as f64
-            };
+            let median = count_to_string_witout_star(median, normalize, color_idx);
             // push e.g. "col:1:12"
             header_parts.push(format!("col:{}:{}", color_idx, median));
         }

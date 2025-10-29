@@ -101,8 +101,8 @@ pub struct QueryArgs {
     pub output_format: OutputFormatCli,
 
     /// Normalize output (default: false)
-    #[arg(long, default_value_t = false)]
-    pub normalize: bool,
+    #[arg(long, num_args(0..=1), value_parser = clap::value_parser!(u64), default_missing_value = "1000000")]
+    pub normalize: Option<u64>,
 
     /// Path to the output file
     #[arg(short, long)]

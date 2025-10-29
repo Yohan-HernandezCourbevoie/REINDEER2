@@ -2,19 +2,18 @@ mod format;
 
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::{self, BufWriter, Read, Write};
+use std::io::{self, BufWriter, Read};
 use std::path::Path;
 
-use bio::io::fasta;
-use rayon::prelude::*;
-
-use super::OutputFormat;
-use crate::reindeer2::dense_index::DenseIndexPartition;
-use crate::reindeer2::{
-    approximate_value, compute_base, compute_base_position, kmer_minimizers_seq_level,
-    load_bloom_filter, process_fasta_in_batches, read_file, update_color_abundances,
+use super::{
+    approximate_value, compute_base, compute_base_position, dense_index::DenseIndexPartition,
+    kmer_minimizers_seq_level, load_bloom_filter, process_fasta_in_batches, read_file,
+    read_indexed_file_names, update_color_abundances,
 };
-use format::write_kmer_query;
+use crate::reindeer2::OutputFormat;
+use bio::io::fasta;
+use format::{write_header, write_kmer_query, EnrichedOutputFormat};
+use rayon::prelude::*;
 
 // === QUERY ===
 
@@ -172,20 +171,6 @@ fn load_kmer_counts_vector(dir_path: &str) -> io::Result<Vec<usize>> {
     Ok(counts_vector)
 }
 
-/// Writes the header of the matrix, including a `\n` at the end
-fn write_header_matrix(
-    writer: &mut impl Write,
-    indexed_files: Vec<String>,
-    sep: &str,
-) -> io::Result<()> {
-    write!(writer, "query")?;
-    for indexed_file in indexed_files {
-        write!(writer, "{sep}{indexed_file}")?;
-    }
-    writeln!(writer)?;
-    Ok(())
-}
-
 /// Formats a fasta header by removing the first `>` and taking up to the first space (excluded).
 /// E.g.: `>seq1 ka:f:30` -> `seq1`
 fn strip_header(s: &str) -> &str {
@@ -297,8 +282,13 @@ pub fn query_sequences_in_batches(
 ) -> io::Result<()> {
     let reader = read_file(fasta_file)?;
     let mut writer = BufWriter::new(File::create(output_file)?);
-    // write the headr of the output csv file
+    let output_format = EnrichedOutputFormat::from_pub_output_format(output_format, bf_dir);
+    // write the header of the result file
+    write_header(bf_dir, &output_format, &mut writer)
+        .expect("should have been able to write the header of the result file");
+
     let base = compute_base(abundance_number, abundance_max);
+    let output_format = &output_format;
 
     // Process FASTA in chunks of `batch_size` records
     process_fasta_in_batches(reader, batch_size, |batch| {
@@ -318,8 +308,6 @@ pub fn query_sequences_in_batches(
         // Now `sequence_results` has the combined data for this batch.
         // Let's compute the output in the requested format.
         write_kmer_query(
-            bf_dir,
-            color_number,
             batch,
             output_format,
             coverage,

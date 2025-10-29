@@ -17,22 +17,25 @@ use std::panic;
 use std::path::Path;
 use std::sync::{atomic, Arc, Mutex};
 use std::time::Instant;
+
+#[cfg(any(debug_assertions, test))]
 use thousands::Separable;
+
 use zstd::stream::decode_all;
 
 use crate::reindeer2::dense_index::DenseIndex;
 use crate::reindeer2::filter::Filters;
 
-#[derive(Copy, Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum OutputFormat {
     Colored {
-        normalized: bool,
+        normalized: Option<u64>,
     },
     Median {
-        normalized: bool,
+        normalized: Option<u64>,
     },
     AbundanceMatrix {
-        normalized: bool,
+        normalized: Option<u64>,
         // None if not computing breakpoints
         breakpoints: Option<f64>,
     },
@@ -50,6 +53,17 @@ pub struct Reindeer2 {
     abundance_max: u16,
     dense_option: bool,
     canonical: bool,
+}
+
+/// Declares a variable. The variable is declared as mut iif `#[cfg(any(debug_assertions, test))]`.
+macro_rules! mut_if_debug {
+    ($name:ident = $val:expr) => {
+        #[cfg(any(debug_assertions, test))]
+        let mut $name = $val;
+
+        #[cfg(not(any(debug_assertions, test)))]
+        let $name = $val;
+    };
 }
 
 impl Reindeer2 {
@@ -140,11 +154,16 @@ impl Reindeer2 {
         dense_option: bool,
         threshold: usize,
     ) -> io::Result<(Vec<String>, String)> {
-        let mut total_kmers = atomic::AtomicU64::new(0);
-        let mut atomic_dense_kmers_count = atomic::AtomicU64::new(0);
-        let mut atomic_sparse_kmers_count = atomic::AtomicU64::new(0);
+        mut_if_debug!(total_kmers = atomic::AtomicU64::new(0));
+        mut_if_debug!(atomic_dense_kmers_count = atomic::AtomicU64::new(0));
+        mut_if_debug!(atomic_sparse_kmers_count = atomic::AtomicU64::new(0));
+
+        #[cfg(any(debug_assertions, test))]
         let mut atomic_sparse_one_seen = atomic::AtomicU64::new(0);
+
+        #[cfg(any(debug_assertions, test))]
         let mut atomic_sparse_fp_seen = atomic::AtomicU64::new(0);
+
         let kmer_counts_vector: Arc<Mutex<Vec<usize>>> =
             Arc::new(Mutex::new(vec![0; self.nb_color]));
         let (chunks, color_chunks) = split_fof(&file_paths)?;
@@ -1942,7 +1961,7 @@ mod tests {
                 &file_paths[query_file_id],
                 &index_dir,
                 &query_results_path,
-                OutputFormat::Median { normalized: false },
+                OutputFormat::Median { normalized: None },
                 0.5,
             )
             .expect("Failed to query sequences");
@@ -2005,7 +2024,7 @@ mod tests {
                 &file1_path,
                 &index_dir,
                 &query_results_path,
-                OutputFormat::Median { normalized: false },
+                OutputFormat::Median { normalized: None },
                 0.5,
             )
             .expect("Failed to query sequences");
@@ -3996,7 +4015,7 @@ mod tests {
                 &fasta_path,
                 test_dir,
                 &output_path,
-                OutputFormat::Colored { normalized: false },
+                OutputFormat::Colored { normalized: None },
                 0.5,
             )
             .expect("Failed to color graph");
@@ -4083,7 +4102,7 @@ mod tests {
                 &index_dir,
                 &query_results_path,
                 OutputFormat::AbundanceMatrix {
-                    normalized: false,
+                    normalized: None,
                     breakpoints: None,
                 },
                 0.5,
@@ -4154,7 +4173,7 @@ shared_revcomp_with_other_test_file 0-19:3 0-19:10",
                 &index_dir,
                 &query_results_path,
                 OutputFormat::AbundanceMatrix {
-                    normalized: false,
+                    normalized: None,
                     breakpoints: None,
                 },
                 0.5,
@@ -4222,7 +4241,7 @@ header_0 0-69:* 0-69:1",
                 &index_dir,
                 &query_results_path,
                 OutputFormat::AbundanceMatrix {
-                    normalized: false,
+                    normalized: None,
                     breakpoints: None,
                 },
                 0.5,
