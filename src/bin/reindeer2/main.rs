@@ -13,7 +13,7 @@ use overflow_detection::check_number_of_partitions;
 use reindeer2::reindeer2::{read_fof_file, OutputFormat, Reindeer2};
 
 impl OutputFormatCli {
-    fn to_output_format(self, normalized: bool, breakpoints: Option<f64>) -> OutputFormat {
+    fn to_output_format(self, normalized: Option<u64>, breakpoints: Option<f64>) -> OutputFormat {
         match (self, normalized, breakpoints) {
             (OutputFormatCli::AbundanceMatrix, normalized, breakpoints) => {
                 OutputFormat::AbundanceMatrix {
