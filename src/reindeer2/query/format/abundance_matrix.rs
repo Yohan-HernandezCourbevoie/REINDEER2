@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::io::{self, Write};
 
 use bio::io::fasta;
@@ -27,7 +26,7 @@ pub fn write_header_matrix(
 
 /// Write abundances per kmer like RD1.
 pub fn write_abundance_matrix(
-    sequence_results: &HashMap<usize, Vec<Vec<u16>>>,
+    sequence_results: &[Vec<Vec<u16>>],
     batch: &[fasta::Record],
     breakpoints: &Option<f64>,
     normalize: &Option<KmerCountsAndNormalizeValue>,
@@ -35,8 +34,7 @@ pub fn write_abundance_matrix(
 ) -> io::Result<()> {
     // we need the count of kmers if we want to normalize them
 
-    for (record_id, color_vectors) in sequence_results {
-        let record = &batch[*record_id];
+    for (color_vectors, record) in sequence_results.iter().zip(batch) {
         // Build the header string only once per record
         let seq_header = get_full_header(record);
         // OPTIMIZE unecessary computation here

@@ -220,7 +220,7 @@ fn query_single_fasta_batch(
     canonical: bool,
     base: f64,
     batch: &[fasta::Record],
-) -> HashMap<usize, Vec<Vec<u16>>> {
+) -> Vec<Vec<Vec<u16>>> {
     let partition_kmers = build_partitions_kmers(batch, k, m, partition_number as u64, canonical);
 
     // --- PARALLEL PHASE: process each partition's k-mers in parallel ---
@@ -252,15 +252,16 @@ fn query_single_fasta_batch(
         // 2) Reduce all local HashMaps into a single HashMap
         .reduce(HashMap::<usize, Vec<Vec<(usize, u16)>>>::new, merge_results);
 
+    let size = result_with_positions.len();
+
+    let mut res = vec![vec![]; size];
+
     result_with_positions
         .into_iter()
-        .map(|(header, color_vectors)| {
-            (
-                header,
-                color_vectors.into_iter().map(sort_abundance_vec).collect(),
-            )
-        })
-        .collect()
+        .for_each(|(header, color_vectors)| {
+            res[header] = color_vectors.into_iter().map(sort_abundance_vec).collect();
+        });
+    res
 }
 
 pub fn query_sequences_in_batches(
@@ -311,7 +312,7 @@ pub fn query_sequences_in_batches(
             batch,
             output_format,
             coverage,
-            sequence_results,
+            &sequence_results,
             &mut writer,
         )
         .expect("should have been able to write the query result");

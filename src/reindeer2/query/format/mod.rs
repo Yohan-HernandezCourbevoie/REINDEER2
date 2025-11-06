@@ -4,7 +4,6 @@ mod graph_coloring;
 mod median_abundance;
 
 use bio::io::fasta;
-use std::collections::HashMap;
 use std::io::{self, Write};
 use std::path::Path;
 
@@ -112,7 +111,7 @@ pub fn write_kmer_query(
     batch: &[fasta::Record],
     output_format: &EnrichedOutputFormat,
     coverage: f32,
-    sequence_results: HashMap<usize, Vec<Vec<u16>>>,
+    sequence_results: &[Vec<Vec<u16>>],
     mut writer: &mut impl Write,
 ) -> io::Result<()> {
     match output_format {
@@ -120,20 +119,20 @@ pub fn write_kmer_query(
             // TODO lrobidou discuss what this comment means:
             // If your graph coloring wants to read from `sequence_results`:
             // Flush the writer to separate batch outputs if needed
-            graph_coloring(&sequence_results, batch, normalized, writer)
+            graph_coloring(sequence_results, batch, normalized, writer)
         }
         EnrichedOutputFormat::AbundanceMatrix {
             normalized,
             breakpoints,
         } => write_abundance_matrix(
-            &sequence_results,
+            sequence_results,
             batch,
             breakpoints,
             normalized,
             &mut writer,
         ),
         EnrichedOutputFormat::Median { normalized } => {
-            write_median_abundance(&sequence_results, batch, normalized, coverage, &mut writer)
+            write_median_abundance(sequence_results, batch, normalized, coverage, &mut writer)
         }
     }?;
     writer.flush()?;

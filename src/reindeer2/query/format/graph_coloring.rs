@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::io::Write;
 
 use bio::io::fasta;
@@ -9,23 +8,19 @@ use super::{
 
 // rewrites a bcalm-like graph so that headers have abund info (one of the possible query operations)
 pub fn graph_coloring(
-    sequence_results: &HashMap<usize, Vec<Vec<u16>>>,
+    sequence_results: &[Vec<Vec<u16>>],
     batch: &[fasta::Record],
     normalize: &Option<KmerCountsAndNormalizeValue>,
     writer: &mut impl Write,
 ) -> std::io::Result<()> {
     let msg_write = "should have been able to write the query results";
 
-    for (record_id, record) in batch.iter().enumerate() {
+    // Let's iterate over the results
+    // color_vectors is a Vec<Vec<u16>>. Each index = a color,
+    // each inner Vec<u16> = all abundance values for that color
+    for (color_vectors, record) in sequence_results.iter().zip(batch) {
         let full_header = get_full_header(record);
         let seq_str = std::str::from_utf8(record.seq()).expect("Invalid UTF-8 sequence");
-
-        // Let's load the results
-        // color_vectors is a Vec<Vec<u16>>. Each index = a color,
-        // each inner Vec<u16> = all abundance values for that color
-        let color_vectors = sequence_results
-            .get(&record_id)
-            .expect("should have been able to get the result from the record id");
 
         // if no data, just write the original header
         if color_vectors.iter().all(Vec::is_empty) {

@@ -1,5 +1,4 @@
 use bio::io::fasta;
-use std::collections::HashMap;
 use std::io::{self, Write};
 
 use super::KmerCountsAndNormalizeValue;
@@ -9,15 +8,14 @@ use super::compute_median;
 
 /// Write abundances per kmer like RD1.
 pub fn write_median_abundance(
-    sequence_results: &HashMap<usize, Vec<Vec<u16>>>,
+    sequence_results: &[Vec<Vec<u16>>],
     batch: &[fasta::Record],
     normalize: &Option<KmerCountsAndNormalizeValue>,
     coverage: f32,
     writer: &mut impl Write,
 ) -> io::Result<()> {
     // Compute medians for each sequence and each color, then write them out
-    for (record_id, color_vectors) in sequence_results {
-        let record: &fasta::Record = &batch[*record_id];
+    for (color_vectors, record) in sequence_results.iter().zip(batch) {
         let full_header = get_full_header(record);
         for (color_idx, abund_values) in color_vectors.iter().enumerate() {
             if !abund_values.is_empty() {
