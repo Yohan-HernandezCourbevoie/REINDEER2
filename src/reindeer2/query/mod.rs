@@ -31,7 +31,9 @@ fn build_partitions_kmers(
 ) -> HashMap<usize, Vec<(usize, usize, u64)>> {
     let mut partition_kmers: HashMap<usize, Vec<(usize, usize, u64)>> = HashMap::new();
     for (record_id, record) in batch.iter().enumerate() {
-        let kmer_minimizers = kmer_minimizers_seq_level(record.seq(), k, m, canonical);
+        let kmer_minimizers = kmer_minimizers_seq_level(record.seq(), k, m, canonical)
+            .expect("should have been able to iterate over kmers");
+
         for (position, (kmer_hash, minimizer)) in kmer_minimizers.enumerate() {
             let partition_index = (minimizer % partition_number) as usize;
             partition_kmers

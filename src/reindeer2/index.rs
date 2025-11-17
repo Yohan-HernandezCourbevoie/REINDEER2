@@ -6,7 +6,7 @@ use std::sync::{atomic, Arc, Mutex};
 
 use crate::reindeer2::{
     compute_log_abundance, extract_count, kmer_minimizers_seq_level, process_fasta_in_batches,
-    read_file, HeaderType,
+    read_file, HeaderType, KmerMinimizerIteratorError,
 };
 use crate::reindeer2::{dense_index::DenseIndex, filter::Filters};
 
@@ -52,9 +52,20 @@ pub fn process_fasta_file(
                         atomic_record_count.fetch_add(1, Ordering::Relaxed);
                         let seq_str = std::str::from_utf8(&seq).expect("Invalid UTF-8 sequence");
 
-                        for (kmer_hash, minimizer) in
-                            kmer_minimizers_seq_level(seq_str.as_bytes(), k, m, canonical)
-                        {
+                        let kmer_minimizers = match kmer_minimizers_seq_level(
+                            seq_str.as_bytes(),
+                            k,
+                            m,
+                            canonical,
+                        ) {
+                            Ok(iterator) => iterator,
+                            Err(KmerMinimizerIteratorError::SequenceTooSmall { k }) => {
+                                eprintln!("Warning: when indexing file {path}, the read {seq_str} will be ignored. To be indexed, its length (={}) must be greater or equal to k (={})", seq_str, k);
+                                continue;
+                            }
+                        };
+
+                        for (kmer_hash, minimizer) in kmer_minimizers {
                             kmer_count += count_value as usize;
                             //for (kmer_hash, (minimizer, _)) in nt_hash_iterator.zip(min_iter) { // iterate on both minimizer and hash for each kmer
                             let partition_index = (minimizer % (partition_number as u64)) as usize;

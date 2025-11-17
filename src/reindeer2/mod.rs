@@ -17,6 +17,7 @@ use std::panic;
 use std::path::Path;
 use std::sync::{atomic, Arc, Mutex};
 use std::time::Instant;
+use thiserror::Error;
 
 #[cfg(any(debug_assertions, test))]
 use thousands::Separable;
@@ -1409,6 +1410,12 @@ impl<'a> Iterator for KmerMinimizerIterator<'a> {
     }
 }
 
+#[derive(Debug, Error)]
+pub enum KmerMinimizerIteratorError {
+    #[error("Sequence must be at least k (= {k}) bases long")]
+    SequenceTooSmall { k: usize },
+}
+
 // minimisers things
 // returns an iterator over (k-mer, minimizer) pairs from sequence input
 fn kmer_minimizers_seq_level<'a>(
@@ -1416,13 +1423,11 @@ fn kmer_minimizers_seq_level<'a>(
     k: usize,
     m: usize,
     canonical: bool,
-) -> impl Iterator<Item = (u64, u64)> + 'a {
-    assert!(
-        seq.len() >= k,
-        "Sequence must be at least k bases long (got {} vs k = {})",
-        seq.len(),
-        k
-    );
+) -> Result<impl Iterator<Item = (u64, u64)> + 'a, KmerMinimizerIteratorError> {
+    if seq.len() < k {
+        return Err(KmerMinimizerIteratorError::SequenceTooSmall { k });
+    }
+
     assert!(k >= m, "k must be greater than or equal to m");
 
     //  collects the hash of every m-mer in the sequence w/ rolling hash
@@ -1534,7 +1539,7 @@ fn kmer_minimizers_seq_level<'a>(
     };
 
     // return an iterator over (hashed k-mers,corresponding minimizers)
-    kmer_hash_iter.zip(minima)
+    Ok(kmer_hash_iter.zip(minima))
 }
 
 // --- MISC ---
@@ -1798,7 +1803,9 @@ mod tests {
         let m = 3;
         let canonical = true;
 
-        let actual_count = kmer_minimizers_seq_level(seq_bytes, k, m, canonical).count();
+        let actual_count = kmer_minimizers_seq_level(seq_bytes, k, m, canonical)
+            .unwrap()
+            .count();
 
         // there should be seq.len() - k + 1 pairs.
         assert_eq!(actual_count, seq_bytes.len() - k + 1);
