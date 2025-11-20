@@ -60,7 +60,7 @@ pub fn process_fasta_file(
                         ) {
                             Ok(iterator) => iterator,
                             Err(KmerMinimizerIteratorError::SequenceTooSmall { k }) => {
-                                eprintln!("Warning: when indexing file {path}, the read {seq_str} will be ignored. To be indexed, its length (={}) must be greater or equal to k (={})", seq_str, k);
+                                eprintln!("Warning: when indexing file {path}, the read {seq_str} will be ignored. To be indexed, its length (={}) must be greater or equal to k (={})", seq_str.len(), k);
                                 continue;
                             }
                         };
