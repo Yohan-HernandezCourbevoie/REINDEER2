@@ -31,6 +31,9 @@ pub enum Command {
     /// Query file
     #[clap(alias = "d")]
     Query(QueryArgs),
+    /// Merge option
+    #[clap(alias = "m")]
+    Merge(MergeArgs),
 }
 
 #[derive(Args, Debug)]
@@ -121,4 +124,16 @@ pub struct QueryArgs {
     /// Allows to detect the (non ordered) set of breakpoints in the output.
     #[arg(short, long)]
     pub breakpoints: Option<f64>,
+}
+
+
+#[derive(Args, Debug)]
+pub struct MergeArgs {
+    /// A file of indexes where each line is the path an index directory.
+    #[arg(short='f', long="file-of-indexes", value_name = "FILE_OF_INDEXES")]
+    pub file_of_indexes: String,
+
+    /// Sets the index output directory (default: random name in the form of PACAS_index_)
+    #[arg(short = 'o', long = "output-dir", value_name = "OUT")]
+    pub output_dir: Option<String>,
 }
