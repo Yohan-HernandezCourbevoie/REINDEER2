@@ -1,11 +1,6 @@
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
 #[derive(Parser, Debug)]
-// #[command(disable_version_flag = true, disable_help_flag = true)]// TODO discuss
-#[command(
-    after_help = "Example:\n  $ Reindeer2 --mode index --input test_files/fof.txt --kmer 31 --output-dir ../index_test\n  $ Reindeer2 --mode query --fasta test_files/file1Q.fa --index ../index_test",
-    about, long_about = None
-)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Command,
@@ -13,13 +8,6 @@ pub struct Cli {
     /// Define a number of threads available
     #[arg(short, long, value_name = "THREADS", default_value_t = 1)]
     pub threads: usize,
-    // /// Print version
-    // #[arg(short = 'V', long = "version", global = true, action = ArgAction::Version)]
-    // pub version: bool,
-
-    // /// Print help
-    // #[arg(short = 'h', long = "help", global = true, action = ArgAction::Help)]
-    // pub help: bool,
 }
 
 // TODO name the modes
@@ -38,8 +26,7 @@ pub enum Command {
 
 #[derive(Args, Debug)]
 pub struct IndexArgs {
-    /// By default, a file of files where each line is the path to a FASTA file (Logan format).
-    /// With (-u, --muset) set, a path to a muset output directory.
+    /// A file of files where each line is the path to a multi-FASTA file of unitigs (Logan format).
     #[arg(short = 'I', long = "input", value_name = "INPUT")]
     pub input: String,
 
