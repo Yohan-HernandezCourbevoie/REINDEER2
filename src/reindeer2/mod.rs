@@ -661,101 +661,106 @@ fn process_fasta_in_batches<R: io::BufRead>(
 // merge an arbitrary number of indexes  listed in a fof
 // each line of the fof is expected to he path to one index dir
 // in the end, alsos write a  new metadata CSV file in the output dir
-// pub fn merge_multiple_indexes(indexes_fof: &str, output_dir: Option<&str>) -> io::Result<()> {
-//     // read the list of index directories.
-//     let index_dirs: Vec<String> = {
-//         let file = File::open(indexes_fof)?;
-//         io::BufReader::new(file)
-//             .lines()
-//             .filter_map(Result::ok)
-//             .map(|line| line.trim().to_string())
-//             .filter(|line| !line.is_empty())
-//             .collect()
-//     };
+pub fn merge_multiple_indexes(indexes_fof: &str, output_dir: &str) -> io::Result<()> {
+    // read the list of index directories.
+    let index_dirs: Vec<String> = {
+        let file = File::open(indexes_fof)?;
+        io::BufReader::new(file)
+            .lines()
+            .filter_map(Result::ok)
+            .map(|line| line.trim().to_string())
+            .filter(|line| !line.is_empty())
+            .collect()
+    };
 
-//     if index_dirs.is_empty() {
-//         return Err(io::Error::new(
-//             io::ErrorKind::InvalidInput,
-//             "No index directories provided in the file-of-indexes",
-//         ));
-//     }
+    if index_dirs.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "No index directories provided in the file-of-indexes",
+        ));
+    }
+    if index_dirs.len() == 1 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Only one index directory provided, nothing to do",
+        ));
+    }
 
-//     // read metadata from the first index as base parameter
-//     let (k, m, bf_size, partition_number, first_color, abundance_number, abundance_max, dense_option) =
-//     read_partition_from_csv(&index_dirs[0], "index_info.csv")?;
+    // read metadata from the first index as base parameter
+    // let (k, m, bf_size, partition_number, first_color, abundance_number, abundance_max, dense_option) =
+    // read_partition_from_csv(&index_dirs[0], "index_info.csv")?;
+    let index_ref = Reindeer2::from_csv(&index_dirs[0])
+            .expect(&format!("should have been able to load index infos from disk {}", &index_dirs[0]));
 
-//     //  vector to store (index_dir, color_count) for every index.
-//     let mut indexes_metadata = vec![(index_dirs[0].clone(), first_color)];
-//     let mut new_color_number = first_color;
+    //  vector to store (index_dir, color_count) for every index.
+    let mut indexes_metadata = vec![(index_dirs[0].clone(), index_ref.nb_color)];
+    let mut new_color_number = index_ref.nb_color;
 
-//     // for all other indexes, check that the parameters match and add its color count
-//     for index_dir in index_dirs.iter().skip(1) {
-//         let (k2, m2, bf_size2, partition_number2, color_count, abundance_number2, abundance_max2, dense_option) =
-//         read_partition_from_csv(index_dir, "index_info.csv")?;
-//         if k != k2 || m != m2 || bf_size != bf_size2 || partition_number != partition_number2 ||
-//            abundance_number != abundance_number2 || abundance_max != abundance_max2 {
-//             return Err(io::Error::new(
-//                 io::ErrorKind::InvalidInput,
-//                 format!("Index {} does not match parameters of the first index", index_dir),
-//             ));
-//         }
-//         new_color_number += color_count;
-//         indexes_metadata.push((index_dir.clone(), color_count));
-//     }
+    // for all other indexes, check that the parameters match and add its color count
+    for index_dir in index_dirs.iter().skip(1) {
+        // let (k2, m2, bf_size2, partition_number2, color_count, abundance_number2, abundance_max2, dense_option) =
+        // read_partition_from_csv(index_dir, "index_info.csv")?;
+        let index_to_merge = Reindeer2::from_csv(index_dir)
+            .expect(&format!("should have been able to load index infos from disk {}", index_dir));
+        if index_ref.k != index_to_merge.k || index_ref.m != index_to_merge.m || 
+            index_ref.bf_size != index_to_merge.bf_size || 
+            index_ref.partition_number != index_to_merge.partition_number ||
+            index_ref.abundance_number != index_to_merge.abundance_number || 
+            index_ref.abundance_max != index_to_merge.abundance_max ||
+            index_ref.dense_option != index_to_merge.dense_option ||
+            index_ref.canonical != index_to_merge.canonical {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("Index {} does not match parameters of the first index", index_dir),
+            ));
+        }
+        new_color_number += index_to_merge.nb_color;
+        indexes_metadata.push((index_dir.clone(), index_to_merge.nb_color));
+    }
 
-//     let out_dir = output_dir.unwrap_or("merged_index");
-//     fs::create_dir_all(out_dir)?;
+    fs::create_dir_all(output_dir)?;
 
-//     let partitioned_bf_size = (bf_size as usize) / partition_number;
+    let partitioned_bf_size = (index_ref.bf_size as usize) / index_ref.partition_number;
 
-//     // for each partition, merge the corresponding bfs for every index
-//     for partition_idx in 0..partition_number {
-//         // for each index, build the file name for the given partition
-//         let chunk_files: Vec<String> = indexes_metadata
-//             .iter()
-//             .map(|(index_dir, _)| {
-//                 format!("{}/partition_bloom_filters_p{}.bin", index_dir, partition_idx)
-//             })
-//             .collect();
+    // for each partition, merge the corresponding bfs for every index
+    let mut total_nb_colors = 0;
+    for partition_idx in 0..index_ref.partition_number {
+        // for each index, build the file name for the given partition
+        let chunk_files: Vec<String> = indexes_metadata
+            .iter()
+            .enumerate()
+            .map(|(index_dir, _)| {
+                format!("{}/partition_bloom_filters_p{}.bin", index_dir, partition_idx)
+            })
+            .collect();
 
-//         // collect the color counts from each index
-//         let color_counts: Vec<usize> = indexes_metadata.iter().map(|(_, count)| *count).collect();
-//         let total_nb_colors = new_color_number;
+        // collect the color counts from each index
+        let color_counts: Vec<usize> = indexes_metadata.iter().map(|(_, count)| *count).collect();
+        total_nb_colors = new_color_number;
 
-//         //merge
-//         let mut merged_bf = RoaringBitmap::new();
-//         merge_partition_bloom_filters(
-//             chunk_files,
-//             partition_idx,
-//             partitioned_bf_size,
-//             abundance_number,
-//             &color_counts,
-//             &mut merged_bf,
-//             out_dir,
-//             total_nb_colors,
-//         )?;
-//     }
+        //merge
+        let mut merged_bf = RoaringBitmap::new();
+        merge_partition_bloom_filters(
+            chunk_files,
+            partition_idx,
+            partitioned_bf_size,
+            index_ref.abundance_number,
+            &color_counts,
+            &mut merged_bf,
+            output_dir,
+            total_nb_colors,
+        )?;
+    }
 
-//     // write the new merged metadata
-//     let csv_path = format!("{}/index_info.csv", out_dir);
-//     let mut csv_writer = Writer::from_writer(BufWriter::new(File::create(&csv_path)?));
-//     csv_writer.write_record(&[
-//         "k", "m", "bf_size", "partition_number", "color_number", "abundance_number", "abundance_max"
-//     ])?;
-//     csv_writer.write_record(&[
-//         k.to_string(),
-//         m.to_string(),
-//         bf_size.to_string(),
-//         partition_number.to_string(),
-//         new_color_number.to_string(),
-//         abundance_number.to_string(),
-//         abundance_max.to_string(),
-//     ])?;
-//     csv_writer.flush()?;
+    let index_merged = Reindeer2 {
+        nb_color: total_nb_colors,
+        ..index_ref
+    };
+    index_merged.to_csv(output_dir)?;
 
-//     println!("Successfully merged {} indexes into directory: {}", indexes_metadata.len(), out_dir);
-//     Ok(())
-// }
+    println!("Successfully merged {} indexes into directory: {}", indexes_metadata.len(), output_dir);
+    Ok(())
+}
 
 // // --- MERGE FUNCTIONS ---
 
@@ -3184,21 +3189,24 @@ mod tests {
     }
 
     /*
+        // The function "merge_bloom_filters" is no longer used
         #[test]
         fn test_merge_bloom_filters() {
             use roaring::RoaringBitmap;
 
             // initialize bf1: represents 2 datasets, abundance_number = 3, partitioned_bf_size = 2
-            let mut bf1 = RoaringBitmap::new();  //110001,000000
+            let mut bf1 = RoaringBitmap::new();  //110001,000100
             bf1.insert(0); // 1st dataset, 1st abundance level
             bf1.insert(1); // 1st dataset, 2nd abundance level
-            bf1.insert(5); // 2nd dataset, 1st abundance level
+            bf1.insert(5); // 2nd dataset, 3rd abundance level
+            bf1.insert(9); // 2nd dataset, 1rd abundance level, 2nd column
 
             // initialize bf2: represents 1 dataset, abundance_number = 3
-            let mut bf2 = RoaringBitmap::new(); // 111,000
+            let mut bf2 = RoaringBitmap::new(); // 111,001
             bf2.insert(0); // 1st dataset, 1st abundance level
             bf2.insert(1); // 1st dataset, 2nd abundance level
             bf2.insert(2); // 1st dataset, 3rd abundance level
+            bf2.insert(5); // 1st dataset, 3rd abundance level, 2nd column
 
             let partitioned_bf_size = 2;
             let merged_color_number = 2; // bf1 has 2 colors (datasets)
@@ -3216,7 +3224,9 @@ mod tests {
             expected_bf.insert(6);
             expected_bf.insert(7);
             expected_bf.insert(8);
-            // second column: 000000 + 000 -> 000000000
+            // second column: 000100 + 001 -> 000100001
+            expected_bf.insert(12);
+            expected_bf.insert();
 
 
             let expected_color_nb_merge_final = 3; // 2 (from bf1) + 1 (from bf2)
@@ -4273,107 +4283,114 @@ shared_revcomp_with_other_test_file 0-19:* 0-19:10",
         fs::remove_dir_all(test_dir).expect("Failed to clean up test directory");
     }
 
-    // use csv::Reader;
-    // #[test]
-    // fn test_merge_multiple_indexes_from_fof() -> io::Result<()> {
-    //     let base_dir = "test_merge_indexes";
-    //     let index1_files_dir = format!("{}/index1_files", base_dir);
-    //     let index2_files_dir = format!("{}/index2_files", base_dir);
-    //     let index1_index_dir = format!("{}/index1_index", base_dir);
-    //     let index2_index_dir = format!("{}/index2_index", base_dir);
-    //     let merged_index_dir = format!("{}/merged_index", base_dir);
-    //     let indexes_fof = format!("{}/indexes.txt", base_dir);
+    use csv::Reader;
+    #[test]
+    fn test_merge_multiple_indexes() -> io::Result<()> {
+        let base_dir = "test_merge_indexes";
+        let index1_files_dir = format!("{}/index1_files", base_dir);
+        let index2_files_dir = format!("{}/index2_files", base_dir);
+        let index1_index_dir = format!("{}/index1_index", base_dir);
+        let index2_index_dir = format!("{}/index2_index", base_dir);
+        let merged_index_dir = format!("{}/merged_index", base_dir);
+        let indexes_fof = format!("{}/indexes.txt", base_dir);
 
-    //     fs::create_dir_all(&index1_files_dir)?;
-    //     fs::create_dir_all(&index2_files_dir)?;
-    //     fs::create_dir_all(&index1_index_dir)?;
-    //     fs::create_dir_all(&index2_index_dir)?;
+        fs::create_dir_all(&index1_files_dir)?;
+        fs::create_dir_all(&index2_files_dir)?;
+        fs::create_dir_all(&index1_index_dir)?;
+        fs::create_dir_all(&index2_index_dir)?;
 
-    //     let file1_path = format!("{}/file1.fa", index1_files_dir);
-    //     {
-    //         let mut file = File::create(&file1_path)?;
-    //         writeln!(file, ">seq1 ka:f:30")?;
-    //         writeln!(file, "ACGTACG")?;
-    //     }
+        let file1_path = format!("{}/file1.fa", index1_files_dir);
+        {
+            let mut file = File::create(&file1_path)?;
+            writeln!(file, ">seq1 ka:f:30")?;
+            writeln!(file, "ACGTACG")?;
+        }
 
-    //     let file2_path = format!("{}/file2.fa", index2_files_dir);
-    //     let file3_path = format!("{}/file3.fa", index2_files_dir);
-    //     {
-    //         let mut file = File::create(&file2_path)?;
-    //         writeln!(file, ">seq2 ka:f:30")?;
-    //         writeln!(file, "ACGTACG")?;
-    //     }
-    //     {
-    //         let mut file = File::create(&file3_path)?;
-    //         writeln!(file, ">seq3 ka:f:30")?;
-    //         writeln!(file, "ACGTACG")?;
-    //     }
+        let file2_path = format!("{}/file2.fa", index2_files_dir);
+        let file3_path = format!("{}/file3.fa", index2_files_dir);
+        {
+            let mut file = File::create(&file2_path)?;
+            writeln!(file, ">seq2 ka:f:30")?;
+            writeln!(file, "ACGTACG")?;
+        }
+        {
+            let mut file = File::create(&file3_path)?;
+            writeln!(file, ">seq3 ka:f:30")?;
+            writeln!(file, "ACGTACG")?;
+        }
 
-    //     let k = 7;
-    //     let m = 3;
-    //     let bf_size = 1024;
-    //     let partitions = 2;
-    //     let abundance = 255;
-    //     let abundance_max = 65535;
-    //     let dense_option = false;
+        let k = 7;
+        let m = 3;
+        let bf_size = 1024;
+        let partitions = 2;
+        let abundance = 255;
+        let abundance_max = 65535;
+        let dense_option = false;
+        let canonical = true;
+        let tolerated_number_of_zeros = 0;
 
-    //     // for index1, color count = 1
-    //     let index1_file_paths = vec![file1_path.clone()];
-    //     let (_dummy, index_dir1) = build_index(
-    //         index1_file_paths,
-    //         k,
-    //         m,
-    //         bf_size,
-    //         partitions,
-    //         1, // color_number = 1
-    //         abundance,
-    //         abundance_max,
-    //         &String::from(index1_index_dir),
-    //         dense_option,
-    //         1
-    //     )?;
-    //     //index2
-    //     let index2_file_paths = vec![file2_path.clone(), file3_path.clone()];
-    //     let (_dummy, index_dir2) = build_index(
-    //         index2_file_paths,
-    //         k,
-    //         m,
-    //         bf_size,
-    //         partitions,
-    //         2, // color_number = 2
-    //         abundance,
-    //         abundance_max,
-    //         &String::from(index2_index_dir),
-    //         dense_option,
-    //         2
-    //     )?;
+        // for index1, color count = 1
+        let index1_file_paths = vec![file1_path.clone()];
+        let color_nb_1 = 1;
+        let index = Reindeer2::new(
+                bf_size,
+                partitions,
+                k,
+                m,
+                color_nb_1,
+                abundance,
+                abundance_max,
+                dense_option,
+                canonical,
+        );
+        index.build(
+            index1_file_paths,
+            &index1_index_dir,
+            dense_option,
+            tolerated_number_of_zeros,
+        )?;
 
-    //     {
-    //         let mut fof = File::create(&indexes_fof)?;
-    //         writeln!(fof, "{}", index_dir1)?;
-    //         writeln!(fof, "{}", index_dir2)?;
-    //     }
+        //index2, color count = 2
+        let index2_file_paths = vec![file2_path.clone(), file3_path.clone()];
+        let color_nb_2 = 2;
+        let index = Reindeer2::new(
+            bf_size,
+            partitions,
+            k,
+            m,
+            color_nb_2,
+            abundance,
+            abundance_max,
+            dense_option,
+            canonical,
+        );
+        index.build(
+            index2_file_paths,
+            &index2_index_dir,
+            dense_option,
+            tolerated_number_of_zeros,
+        )?;
 
-    //     merge_all_partitions(&indexes_fof, Some(&merged_index_dir))?;
+        {
+            let mut fof = File::create(&indexes_fof)?;
+            writeln!(fof, "{}", index1_index_dir)?;
+            writeln!(fof, "{}", index2_index_dir)?;
+        }
 
-    //     let merged_csv_path: String = format!("{}/index_info.csv", merged_index_dir);
-    //     let mut rdr = Reader::from_reader(File::open(&merged_csv_path)?);
-    //     let record = rdr
-    //         .records()
-    //         .next()
-    //         .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "Merged index metadata CSV is empty"))??;
-    //     // in order: k, m, bf_size, partition_number, color_number, abundance_number, abundance_max
-    //     let merged_color: usize = record.get(4).unwrap().parse().unwrap();
-    //     assert_eq!(merged_color, 3, "Expected merged color count to be 3, got {}", merged_color);
+        merge_multiple_indexes(&indexes_fof, &merged_index_dir).expect("Failed to merge the test indexes");
 
-    //     // check that each partition file in the merged index exists
-    //     for partition in 0..partitions {
-    //         let part_path = format!("{}/partition_bloom_filters_p{}.bin", merged_index_dir, partition);
-    //         assert!(Path::new(&part_path).exists(), "Merged partition file {} does not exist", part_path);
-    //     }
+        let merged_index = Reindeer2::from_csv(&merged_index_dir).expect("Failed to read the merged index metadata (csv)");
 
-    //     fs::remove_dir_all(base_dir)?;
+        assert_eq!(merged_index.nb_color, 3, "Expected merged color count to be 3, got {}", merged_index.nb_color);
 
-    //     Ok(())
-    // }
+        // check that each partition file in the merged index exists
+        for partition in 0..partitions {
+            let part_path = format!("{}/partition_bloom_filters_p{}.bin", merged_index_dir, partition);
+            assert!(Path::new(&part_path).exists(), "Merged partition file {} does not exist", part_path);
+        }
+
+        fs::remove_dir_all(base_dir)?;
+
+        Ok(())
+    }
 }

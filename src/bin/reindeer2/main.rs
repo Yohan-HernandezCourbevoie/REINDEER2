@@ -10,7 +10,7 @@ use std::time::Instant;
 use cli::Cli;
 use cli::OutputFormatCli;
 use overflow_detection::check_number_of_partitions;
-use reindeer2::reindeer2::{read_fof_file, OutputFormat, Reindeer2};
+use reindeer2::reindeer2::{read_fof_file, OutputFormat, Reindeer2, merge_multiple_indexes};
 
 impl OutputFormatCli {
     fn to_output_format(self, normalized: Option<u64>, breakpoints: Option<f64>) -> OutputFormat {
@@ -183,18 +183,26 @@ fn main() -> io::Result<()> {
                 .expect("Failed to query sequences");
             println!("Results written to {}", query_output);
             println!("Query complete in {:.2?}", start_time.elapsed());
-        } // "merge" => {
-          //     // argument= path to a fof + output file
-          //     // let indexes_fof = matches
-          //     //     .get_one::<String>("indexes")
-          //     //     .expect("Required argument: indexes (file-of-index directories)");
-          //     // let output_dir = matches.get_one::<String>("output");
-          //     // merge_multiple_indexes(indexes_fof, output_dir.as_deref().map(|x| x.as_str()))?;
-          // }
-          // _ => {
-          //     eprintln!("Invalid mode: {}. Use 'index' or 'query'.", mode);
-          //     // eprintln!("Invalid mode: {}. Use 'index', 'query', or 'merge'.", mode);
-          // }
+        } 
+
+        cli::Command::Merge(args) => {
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(max_threads)
+                .build_global()
+                .unwrap();
+                
+            let file_of_indexes = args.file_of_indexes;
+            let output_dir = args.output_dir.unwrap_or_else(|| {
+                format!("PACAS_index_{}", rand::rng().random::<u64>()) // Generate a unique directory name
+            });
+
+            let start_time = Instant::now();
+            merge_multiple_indexes(&file_of_indexes, &output_dir)
+                .expect("Failed to merge the given indexes.");
+            
+            
+            println!("Query complete in {:.2?}", start_time.elapsed());
+        } 
     }
 
     Ok(())
