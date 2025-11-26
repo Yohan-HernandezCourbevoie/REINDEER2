@@ -64,7 +64,7 @@ The number of abundance levels determine directly the average approximation rati
 You will find in the following figure the average approximation ratio associated with a range of numbers of abundance levels.
 
 
-![Abundance levels and approximation ratio](https://github.com/Yohan-HernandezCourbevoie/REINDEER2/doc/levels_and_approximation.pdf)
+![Abundance levels and approximation ratio](https://github.com/Yohan-HernandezCourbevoie/REINDEER2/tree/dev/doc/levels_and_approximation.pdf)
 
 
 
