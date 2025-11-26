@@ -60,8 +60,9 @@ General parameters:
 Advanced parameters: 
 - `-b, --bloomfilter` the Bloom filter size in log2 scale
 - `-m, --minimizer` the minimizer size
-- `-p, --partitions` the number of partitions
+- `-p, --partitions` the number of partitions * 
 
+\* The value of the number of partitions is important when building large indexes. More informations on how to choose the right value [here](https://github.com/Yohan-HernandezCourbevoie/REINDEER2/doc/partitions.md).
 
 
 ### Query
