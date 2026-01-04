@@ -39,7 +39,7 @@ pub struct IndexArgs {
     pub minimizer: usize,
 
     /// Sets the number of partitions
-    #[arg(short, long, value_name = "MINSIZE", default_value_t = 512)]
+    #[arg(short, long, value_name = "PARTS", default_value_t = 512)]
     pub partitions: usize,
 
     /// Sets the Bloom filter size in log2 scale
@@ -53,6 +53,10 @@ pub struct IndexArgs {
     /// Sets the maximal abundance to take into account
     #[arg(short = 'A', long, value_name = "ABUND_MAX", default_value_t = 65024)]
     pub abundance_max: u16,
+
+    /// Sets the number of datasets treated at a time, affecting RAM consumption
+    #[arg(short, long, value_name = "chunksize", default_value_t = 128)]
+    pub chunks_size: usize,
 
     /// If set, allows to index dense k-mers - i.e. shared k-mers among datasets - more efficiently,
     /// at the cost of higher RAM consumption, limited parameters (k-mer size <= 32, number of abundance levels <= 255)

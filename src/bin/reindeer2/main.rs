@@ -47,6 +47,7 @@ fn main() -> io::Result<()> {
             let bloomfilter = args.bloomfilter;
             let abundance = args.abundance;
             let abundance_max = args.abundance_max;
+            let chunks_size = args.chunks_size;
             let dense_option = args.dense;
             let canonical = !args.stranded;
             let output_dir = args.output_dir.unwrap_or_else(|| {
@@ -129,7 +130,7 @@ fn main() -> io::Result<()> {
             index.build(
                 file_paths,
                 &output_dir,
-                dense_option,
+                chunks_size,
                 tolerated_number_of_zeros,
             )?;
             // }

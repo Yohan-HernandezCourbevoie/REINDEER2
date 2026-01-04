@@ -152,7 +152,7 @@ impl Reindeer2 {
         &self,
         file_paths: Vec<String>,
         output_dir: &str,
-        dense_option: bool,
+        chunks_size: usize,
         threshold: usize,
     ) -> io::Result<(Vec<String>, String)> {
         mut_if_debug!(total_kmers = atomic::AtomicU64::new(0));
@@ -167,7 +167,7 @@ impl Reindeer2 {
 
         let kmer_counts_vector: Arc<Mutex<Vec<usize>>> =
             Arc::new(Mutex::new(vec![0; self.nb_color]));
-        let (chunks, color_chunks) = split_fof(&file_paths)?;
+        let (chunks, color_chunks) = split_fof(&file_paths, chunks_size)?;
         let base = compute_base(self.abundance_number, self.abundance_max);
 
         #[cfg(any(debug_assertions, test))]
@@ -188,7 +188,7 @@ impl Reindeer2 {
         write_indexed_file_names(&indexed_files, &file_paths);
 
         // Shared data structures protected by Mutex for safe parallel access
-        let maybe_dense_indexes: Option<Arc<DenseIndex>> = if dense_option {
+        let maybe_dense_indexes: Option<Arc<DenseIndex>> = if self.dense_option {
             Some(Arc::new(DenseIndex::with_partition_number(
                 self.partition_number,
             )))
@@ -1168,11 +1168,11 @@ pub fn read_fof_file(file_path: &str) -> io::Result<(Vec<String>, usize)> {
     Ok((file_paths, color_number))
 }
 
-fn split_fof(lines: &[String]) -> io::Result<(Vec<Vec<String>>, Vec<usize>)> {
+fn split_fof(lines: &[String], chunks_size: usize) -> io::Result<(Vec<Vec<String>>, Vec<usize>)> {
     let total_colors = lines.len();
 
     // chunk max size
-    let magic_nb_split = 128;
+    let magic_nb_split = chunks_size;
     // Determine split_factor
     let split_factor = if total_colors < magic_nb_split {
         1
@@ -1943,6 +1943,7 @@ mod tests {
         color_number: usize,
         abundance_number: usize,
         abundance_max: u16,
+        chunks_size: usize,
         dense_option: bool,
         threshold: usize,
         file_paths: Vec<String>,
@@ -1961,7 +1962,7 @@ mod tests {
             true,
         );
         let (_file_paths, index_dir) = index
-            .build(file_paths.clone(), test_dir, dense_option, threshold)
+            .build(file_paths.clone(), test_dir, chunks_size, threshold)
             .expect("Failed to build index");
 
         let query_results_path = format!("{}/query_results.csv", index_dir);
@@ -2009,6 +2010,7 @@ mod tests {
         let color_number = 1;
         let abundance_number = 256;
         let abundance_max = 65535;
+        let chunks_size = 128;
         let dense_option = false;
         let threshold = color_number;
 
@@ -2024,7 +2026,7 @@ mod tests {
             false,
         );
         let (_file_paths, index_dir) = index
-            .build(vec![file1_path.clone()], test_dir, dense_option, threshold)
+            .build(vec![file1_path.clone()], test_dir, chunks_size, threshold)
             .expect("Failed to build index");
 
         let query_results_path = format!("{}/query_results.csv", index_dir);
@@ -2105,6 +2107,7 @@ mod tests {
         let color_number = 1;
         let abundance_number = 255;
         let abundance_max = 65535;
+        let chunks_size = 128;
         let dense_option = true;
         let threshold = color_number;
 
@@ -2116,6 +2119,7 @@ mod tests {
             color_number,
             abundance_number,
             abundance_max,
+            chunks_size,
             dense_option,
             threshold,
             vec![file1_path],
@@ -2197,6 +2201,7 @@ mod tests {
         let color_number = 2;
         let abundance_number = 256;
         let abundance_max = 65535;
+        let chunks_size = 128;
         let dense_option = false;
         let threshold = color_number;
 
@@ -2208,6 +2213,7 @@ mod tests {
             color_number,
             abundance_number,
             abundance_max,
+            chunks_size,
             dense_option,
             threshold,
             vec![file1_path, file2_path],
@@ -2288,6 +2294,7 @@ mod tests {
         let color_number = 2;
         let abundance_number = 256;
         let abundance_max = 65535;
+        let chunks_size = 128;
         let dense_option = true;
         let threshold = color_number;
 
@@ -2299,6 +2306,7 @@ mod tests {
             color_number,
             abundance_number,
             abundance_max,
+            chunks_size,
             dense_option,
             threshold,
             vec![file1_path, file2_path],
@@ -2376,6 +2384,7 @@ mod tests {
         let color_number = 2;
         let abundance_number = 256;
         let abundance_max = 65535;
+        let chunks_size = 128;
         let dense_option = false;
         let threshold = color_number;
 
@@ -2387,6 +2396,7 @@ mod tests {
             color_number,
             abundance_number,
             abundance_max,
+            chunks_size,
             dense_option,
             threshold,
             vec![file1_path, file2_path],
@@ -2460,6 +2470,7 @@ mod tests {
         let color_number = 2;
         let abundance_number = 256;
         let abundance_max = 65535;
+        let chunks_size = 128;
         let dense_option = true;
         let threshold = color_number;
 
@@ -2471,6 +2482,7 @@ mod tests {
             color_number,
             abundance_number,
             abundance_max,
+            chunks_size,
             dense_option,
             threshold,
             vec![file1_path, file2_path],
@@ -2549,6 +2561,7 @@ mod tests {
         let color_number = 2;
         let abundance_number = 255;
         let abundance_max = 65535;
+        let chunks_size = 128;
         let dense_option = false;
         let threshold = 1;
 
@@ -2560,6 +2573,7 @@ mod tests {
             color_number,
             abundance_number,
             abundance_max,
+            chunks_size,
             dense_option,
             threshold,
             vec![file1_path, file2_path],
@@ -2640,6 +2654,7 @@ mod tests {
         let color_number = 2;
         let abundance_number = 255;
         let abundance_max = 65535;
+        let chunks_size = 128;
         let dense_option = true;
         let threshold = 1;
 
@@ -2651,6 +2666,7 @@ mod tests {
             color_number,
             abundance_number,
             abundance_max,
+            chunks_size,
             dense_option,
             threshold,
             vec![file1_path, file2_path],
@@ -2730,6 +2746,7 @@ mod tests {
         let color_number = 2;
         let abundance_number = 255;
         let abundance_max = 255;
+        let chunks_size = 128;
         let dense_option = false;
         let threshold = color_number;
 
@@ -2741,6 +2758,7 @@ mod tests {
             color_number,
             abundance_number,
             abundance_max,
+            chunks_size,
             dense_option,
             threshold,
             vec![file1_path, file2_path],
@@ -2822,6 +2840,7 @@ mod tests {
         let color_number = 2;
         let abundance_number = 255;
         let abundance_max = 255;
+        let chunks_size = 128;
         let dense_option = true;
         let threshold = color_number;
 
@@ -2833,6 +2852,7 @@ mod tests {
             color_number,
             abundance_number,
             abundance_max,
+            chunks_size, 
             dense_option,
             threshold,
             vec![file1_path, file2_path],
@@ -2910,6 +2930,7 @@ mod tests {
         let color_number = 2;
         let abundance_number = 255;
         let abundance_max = 65535;
+        let chunks_size = 128;
         let dense_option = false;
         let threshold = color_number;
 
@@ -2921,6 +2942,7 @@ mod tests {
             color_number,
             abundance_number,
             abundance_max,
+            chunks_size,
             dense_option,
             threshold,
             vec![file1_path, file2_path],
@@ -2996,6 +3018,7 @@ mod tests {
         let color_number = 2;
         let abundance_number = 255;
         let abundance_max = 65535;
+        let chunks_size = 128;
         let dense_option = true;
         let threshold = color_number;
 
@@ -3007,6 +3030,7 @@ mod tests {
             color_number,
             abundance_number,
             abundance_max,
+            chunks_size,
             dense_option,
             threshold,
             vec![file1_path, file2_path],
@@ -3135,9 +3159,8 @@ mod tests {
         );
     }
 
-    #[ignore]
     #[test]
-    fn test_split_fof_1() -> std::io::Result<()> {
+    fn test_split_fof() -> std::io::Result<()> {
         use std::fs::{self, File};
         use std::io::{BufRead, BufReader, Write};
 
@@ -3159,7 +3182,9 @@ mod tests {
         let reader = BufReader::new(file);
         let lines: Vec<String> = reader.lines().collect::<Result<_, _>>()?;
 
-        let result = split_fof(&lines);
+        // Test with chunks_size = 2
+        let chunks_size = 2;
+        let result = split_fof(&lines, chunks_size);
 
         assert!(result.is_ok(), "split_fof returned an error");
 
@@ -3175,6 +3200,31 @@ mod tests {
                 "/path/to/file4.fasta".to_string(),
             ],
             vec!["/path/to/file5.fasta".to_string()],
+        ];
+
+        assert_eq!(
+            fof_chunks, expected_chunks,
+            "Mismatch in chunk distribution: expected {:?}, got {:?}",
+            expected_chunks, fof_chunks
+        );
+
+
+        // Test with chunks_size = 5
+        let chunks_size = 5;
+        let result = split_fof(&lines, chunks_size);
+
+        assert!(result.is_ok(), "split_fof returned an error");
+
+        let (fof_chunks, _) = result.unwrap();
+
+        let expected_chunks = vec![
+            vec![
+                "/path/to/file1.fasta".to_string(),
+                "/path/to/file2.fasta".to_string(),
+                "/path/to/file3.fasta".to_string(),
+                "/path/to/file4.fasta".to_string(),
+                "/path/to/file5.fasta".to_string()
+            ],
         ];
 
         assert_eq!(
@@ -3305,6 +3355,7 @@ mod tests {
         let color_number = 8;
         let abundance_number = 255;
         let abundance_max = 65535;
+        let chunks_size = 128;
         let dense_option = false;
         let threshold = color_number;
 
@@ -3326,6 +3377,7 @@ mod tests {
             color_number,
             abundance_number,
             abundance_max,
+            chunks_size,
             dense_option,
             threshold,
             file_paths,
@@ -3467,6 +3519,7 @@ mod tests {
         let color_number = 6;
         let abundance_number = 255;
         let abundance_max = 65535;
+        let chunks_size = 128;
         let dense_option = false;
         let threshold = color_number;
 
@@ -3486,6 +3539,7 @@ mod tests {
             color_number,
             abundance_number,
             abundance_max,
+            chunks_size,
             dense_option,
             threshold,
             file_paths,
@@ -3591,6 +3645,7 @@ mod tests {
         let color_number = 9;
         let abundance_number = 255;
         let abundance_max = 65535;
+        let chunks_size = 128;
         let dense_option = false;
         let threshold = color_number;
 
@@ -3613,6 +3668,7 @@ mod tests {
             color_number,
             abundance_number,
             abundance_max,
+            chunks_size,
             dense_option,
             threshold,
             file_paths,
@@ -3709,6 +3765,7 @@ mod tests {
         let color_number = 5;
         let abundance_number = 255;
         let abundance_max = 65535;
+        let chunks_size = 128;
         let dense_option = false;
         let threshold = color_number;
 
@@ -3727,6 +3784,7 @@ mod tests {
             color_number,
             abundance_number,
             abundance_max,
+            chunks_size,
             dense_option,
             threshold,
             file_paths,
@@ -3922,6 +3980,7 @@ mod tests {
         let color_number = 9;
         let abundance_number = 255;
         let abundance_max = 65535;
+        let chunks_size = 128;
         let dense_option = false;
         let threshold = color_number;
 
@@ -3944,6 +4003,7 @@ mod tests {
             color_number,
             abundance_number,
             abundance_max,
+            chunks_size,
             dense_option,
             threshold,
             file_paths,
@@ -4005,6 +4065,7 @@ mod tests {
         let color_number = 1;
         let abundance_number = 255;
         let abundance_max = 65535;
+        let chunks_size = 128;
         let _batch_size = 2;
         let dense_option = false;
         let threshold = color_number;
@@ -4022,7 +4083,7 @@ mod tests {
         );
 
         let (_file_paths, index_dir) = index
-            .build(vec![fasta_path.clone()], test_dir, dense_option, threshold)
+            .build(vec![fasta_path.clone()], test_dir, chunks_size, threshold)
             .expect("Failed to build index");
 
         let index_from_csv =
@@ -4091,6 +4152,7 @@ mod tests {
         let color_number = 2;
         let abundance_number = 256;
         let abundance_max = 65535;
+        let chunks_size = 128;
         let dense_option = false;
         let threshold = color_number;
         let canonical = true;
@@ -4107,7 +4169,7 @@ mod tests {
             canonical,
         );
         let (_, index_dir) = index
-            .build(file_paths.clone(), test_dir, dense_option, threshold)
+            .build(file_paths.clone(), test_dir, chunks_size, threshold)
             .expect("Failed to build index");
 
         let query_results_path = format!("{}/query_results.csv", index_dir);
@@ -4162,6 +4224,7 @@ shared_revcomp_with_other_test_file 0-19:3 0-19:10",
         let color_number = 2;
         let abundance_number = 256;
         let abundance_max = 65535;
+        let chunks_size = 128;
         let dense_option = false;
         let threshold = color_number;
         let canonical = true;
@@ -4178,7 +4241,7 @@ shared_revcomp_with_other_test_file 0-19:3 0-19:10",
             canonical,
         );
         let (_, index_dir) = index
-            .build(file_paths.clone(), test_dir, dense_option, threshold)
+            .build(file_paths.clone(), test_dir, chunks_size, threshold)
             .expect("Failed to build index");
 
         let query_results_path = format!("{}/query_results.csv", index_dir);
@@ -4230,6 +4293,7 @@ header_0 0-69:* 0-69:1",
         let color_number = 2;
         let abundance_number = 256;
         let abundance_max = 65535;
+        let chunks_size = 128;
         let dense_option = false;
         let threshold = color_number;
         let canonical = false;
@@ -4246,7 +4310,7 @@ header_0 0-69:* 0-69:1",
             canonical,
         );
         let (_, index_dir) = index
-            .build(file_paths.clone(), test_dir, dense_option, threshold)
+            .build(file_paths.clone(), test_dir, chunks_size, threshold)
             .expect("Failed to build index");
 
         let query_results_path = format!("{}/query_results.csv", index_dir);
@@ -4325,6 +4389,7 @@ shared_revcomp_with_other_test_file 0-19:* 0-19:10",
         let partitions = 2;
         let abundance = 255;
         let abundance_max = 65535;
+        let chunks_size = 128;
         let dense_option = false;
         let canonical = true;
         let tolerated_number_of_zeros = 0;
@@ -4346,7 +4411,7 @@ shared_revcomp_with_other_test_file 0-19:* 0-19:10",
         index.build(
             index1_file_paths,
             &index1_index_dir,
-            dense_option,
+            chunks_size,
             tolerated_number_of_zeros,
         )?;
 
@@ -4367,7 +4432,7 @@ shared_revcomp_with_other_test_file 0-19:* 0-19:10",
         index.build(
             index2_file_paths,
             &index2_index_dir,
-            dense_option,
+            chunks_size,
             tolerated_number_of_zeros,
         )?;
 
