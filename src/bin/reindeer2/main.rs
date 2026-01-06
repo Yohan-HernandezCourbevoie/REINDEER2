@@ -59,7 +59,6 @@ fn main() -> io::Result<()> {
             let bf_size = 1u64 << bloomfilter; // Bloom filter size as a power of 2
 
             let partitions = check_number_of_partitions(&input, partitions, abundance, bf_size);
-
             // CHECKS
             if dense_option {
                 rayon::ThreadPoolBuilder::new()
@@ -69,15 +68,23 @@ fn main() -> io::Result<()> {
                 if kmer > 32 {
                     panic!("ERROR : With the '--dense' option set to 'true', the k-mer size must be <= 32.")
                 }
-                if abundance > 255 {
-                    println!("WARNING : the abundance granularity exceeds the requirements of the '--dense' (<256). The abundance granularity is now set to 255.");
-                }
             } else {
                 rayon::ThreadPoolBuilder::new()
                     .num_threads(max_threads)
                     .build_global()
                     .unwrap();
             }
+            let abundance = if abundance > 255 && dense_option {
+                println!("WARNING : the abundance granularity exceeds the requirements of the '--dense' (<256). The abundance granularity is now set to 255.");
+                255
+            } else if abundance >= 666 {
+                // TODO remove once 666s will be removed from the build step and query step
+                println!("WARNING : the abundance granularity exceeds internal limitations (666). The abundance granularity is now set to 665.");
+                665
+            } else {
+                abundance
+            };
+            
             let minimizer = if kmer < minimizer {
                 println!("WARNING : the minimizer size '{}' exceeds the k-mer size '{}'. The minimiser size is now set to '{}'", minimizer, kmer, kmer);
                 kmer

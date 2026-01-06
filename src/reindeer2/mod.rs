@@ -243,8 +243,8 @@ impl Reindeer2 {
                                     self.nb_color,
                                     threshold,
                                     self.abundance_max,
-                                    path_num % color_chunks[0],
                                     path_num,
+                                    path_num + chunk_i * color_chunks[0],
                                     base,
                                     chunk_i,
                                     h_type,
@@ -314,6 +314,7 @@ impl Reindeer2 {
 
         // Merge the chunk-based bloom filters, if needed
         if chunks.len() > 1 {
+            println!("***DEBUG Start merging the chunks");
             merge_all_partitions(
                 &dir_path,
                 &dir_path, // output
@@ -1980,6 +1981,7 @@ mod tests {
             .expect("Failed to query sequences");
         query_results_path
     }
+
     #[test]
     fn test_build_and_query_index_single_sparse() {
         let test_dir = "test_files_bq0";
@@ -2841,6 +2843,194 @@ mod tests {
         let abundance_number = 255;
         let abundance_max = 255;
         let chunks_size = 128;
+        let dense_option = true;
+        let threshold = color_number;
+
+        let query_results_path = create_build_query(
+            bf_size,
+            partition_number,
+            k,
+            m,
+            color_number,
+            abundance_number,
+            abundance_max,
+            chunks_size, 
+            dense_option,
+            threshold,
+            vec![file1_path, file2_path],
+            0,
+            test_dir,
+        );
+
+        let mut reader = csv::Reader::from_reader(
+            File::open(&query_results_path).expect("Failed to open query results"),
+        );
+
+        let mut results: Vec<(String, usize, usize)> = Vec::new();
+        for record in reader.records() {
+            let record = record.expect("Failed to read record");
+            let seq_id = record[0].to_string();
+            let color: usize = record[1].parse().expect("Failed to parse color");
+            let abundance: usize = record[2].parse().expect("Failed to parse abundance");
+            results.push((seq_id, color, abundance));
+        }
+
+        assert!(!results.is_empty(), "Empty results");
+
+        let mut expected_results = [
+            (">seq1 ka:f:30".to_string(), 0, 30),
+            (">seq2 ka:f:30".to_string(), 0, 30),
+            (">seq3 ka:f:1500".to_string(), 0, 255), //because of abundance_max
+            (">seq3 ka:f:1500".to_string(), 1, 4),
+        ];
+        results.sort();
+        expected_results.sort();
+        for (expected, actual) in expected_results.iter().zip(results.iter()) {
+            assert_eq!(
+                expected, actual,
+                "Mismatch: expected {:?}, got {:?}",
+                expected, actual
+            );
+        }
+        fs::remove_dir_all(test_dir).expect("Failed to clean up test directory");
+    }
+
+    #[test]
+    fn test_build_and_query_index_sharedk_sparse_smallchunks() {
+        let test_dir = "test_files_bq3_smallchunks";
+        fs::create_dir_all(test_dir).expect("Failed to create test directory");
+
+        let fof_path = format!("{}/fof.txt", test_dir);
+        let file1_path = format!("{}/file1Q.fa", test_dir);
+        let file2_path = format!("{}/file2Q.fa", test_dir);
+        {
+            let mut fof_file = File::create(&fof_path).expect("Failed to create fof.txt");
+            writeln!(fof_file, "{}", file1_path).expect("Failed to write to fof.txt");
+            writeln!(fof_file, "{}", file2_path).expect("Failed to write to fof.txt");
+        }
+
+        {
+            let mut file1 = File::create(&file1_path).expect("Failed to create file1.fasta");
+            writeln!(file1, ">seq1 ka:f:30").expect("Failed to write header");
+            writeln!(file1, "AAAAAAAAAAAAAAAAAAAAAACACAGATCA").expect("Failed to write sequence");
+            writeln!(file1, ">seq2 ka:f:30").expect("Failed to write header");
+            writeln!(file1, "AAAAAAAAAAAAAAAAAAAAACACAGATCAT").expect("Failed to write sequence");
+            writeln!(file1, ">seq3 ka:f:1500").expect("Failed to write header");
+            writeln!(file1, "AAAAAAAAAAAAAAAAAAAAAACAAAAAGAA").expect("Failed to write sequence");
+        }
+
+        {
+            let mut file2 = File::create(&file2_path).expect("Failed to create file2.fasta");
+            writeln!(file2, ">seq4 ka:f:1000").expect("Failed to write header");
+            writeln!(file2, "AAAAAAAAAAAAAAAAAAAAAACACCCCTGG").expect("Failed to write sequence");
+            writeln!(file2, ">seq5 ka:f:1000").expect("Failed to write header");
+            writeln!(file2, "AAAAAAAAAAAAAAAAAAAAACACCCCTGGG").expect("Failed to write sequence");
+            writeln!(file2, ">seq6 ka:f:4").expect("Failed to write header");
+            writeln!(file2, "AAAAAAAAAAAAAAAAAAAAAACAAAAAGAA").expect("Failed to write sequence");
+        }
+
+        let k = 31;
+        let m = 15;
+        let bf_size = 1024 * 1024;
+        let partition_number = 4;
+        let color_number = 2;
+        let abundance_number = 255;
+        let abundance_max = 255;
+        let chunks_size = 1;
+        let dense_option = false;
+        let threshold = color_number;
+
+        let query_results_path = create_build_query(
+            bf_size,
+            partition_number,
+            k,
+            m,
+            color_number,
+            abundance_number,
+            abundance_max,
+            chunks_size,
+            dense_option,
+            threshold,
+            vec![file1_path, file2_path],
+            0,
+            test_dir,
+        );
+
+        let mut reader = csv::Reader::from_reader(
+            File::open(&query_results_path).expect("Failed to open query results"),
+        );
+
+        let mut results: Vec<(String, usize, usize)> = Vec::new();
+        for record in reader.records() {
+            let record = record.expect("Failed to read record");
+            let seq_id = record[0].to_string();
+            let color: usize = record[1].parse().expect("Failed to parse color");
+            let abundance: usize = record[2].parse().expect("Failed to parse abundance");
+            results.push((seq_id, color, abundance));
+        }
+
+        assert!(!results.is_empty(), "Empty results");
+
+        let mut expected_results = [
+            (">seq1 ka:f:30".to_string(), 0, 30),
+            (">seq2 ka:f:30".to_string(), 0, 30),
+            (">seq3 ka:f:1500".to_string(), 0, 255), //because of abundance_max
+            (">seq3 ka:f:1500".to_string(), 1, 4),
+        ];
+        results.sort();
+        expected_results.sort();
+        for (expected, actual) in expected_results.iter().zip(results.iter()) {
+            assert_eq!(
+                expected, actual,
+                "Mismatch: expected {:?}, got {:?}",
+                expected, actual
+            );
+        }
+        fs::remove_dir_all(test_dir).expect("Failed to clean up test directory");
+    }
+
+    #[test]
+    fn test_build_and_query_index_sharedk_dense_smallchunks() {
+        let test_dir = "test_files_bq3d_smallchunks";
+        fs::create_dir_all(test_dir).expect("Failed to create test directory");
+
+        let fof_path = format!("{}/fof.txt", test_dir);
+        let file1_path = format!("{}/file1Q.fa", test_dir);
+        let file2_path = format!("{}/file2Q.fa", test_dir);
+        {
+            let mut fof_file = File::create(&fof_path).expect("Failed to create fof.txt");
+            writeln!(fof_file, "{}", file1_path).expect("Failed to write to fof.txt");
+            writeln!(fof_file, "{}", file2_path).expect("Failed to write to fof.txt");
+        }
+
+        {
+            let mut file1 = File::create(&file1_path).expect("Failed to create file1.fasta");
+            writeln!(file1, ">seq1 ka:f:30").expect("Failed to write header");
+            writeln!(file1, "AAAAAAAAAAAAAAAAAAAAAACACAGATCA").expect("Failed to write sequence");
+            writeln!(file1, ">seq2 ka:f:30").expect("Failed to write header");
+            writeln!(file1, "AAAAAAAAAAAAAAAAAAAAACACAGATCAT").expect("Failed to write sequence");
+            writeln!(file1, ">seq3 ka:f:1500").expect("Failed to write header");
+            writeln!(file1, "AAAAAAAAAAAAAAAAAAAAAACAAAAAGAA").expect("Failed to write sequence");
+        }
+
+        {
+            let mut file2 = File::create(&file2_path).expect("Failed to create file2.fasta");
+            writeln!(file2, ">seq4 ka:f:1000").expect("Failed to write header");
+            writeln!(file2, "AAAAAAAAAAAAAAAAAAAAAACACCCCTGG").expect("Failed to write sequence");
+            writeln!(file2, ">seq5 ka:f:1000").expect("Failed to write header");
+            writeln!(file2, "AAAAAAAAAAAAAAAAAAAAACACCCCTGGG").expect("Failed to write sequence");
+            writeln!(file2, ">seq6 ka:f:4").expect("Failed to write header");
+            writeln!(file2, "AAAAAAAAAAAAAAAAAAAAAACAAAAAGAA").expect("Failed to write sequence");
+        }
+
+        let k = 31;
+        let m = 15;
+        let bf_size = 1024 * 1024;
+        let partition_number = 4;
+        let color_number = 2;
+        let abundance_number = 255;
+        let abundance_max = 255;
+        let chunks_size = 1;
         let dense_option = true;
         let threshold = color_number;
 
