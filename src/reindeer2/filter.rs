@@ -78,11 +78,14 @@ impl Filters {
         log_abundance: u16,
     ) -> u64 {
         // compute the position to write
-        (hash_kmer % (partitioned_bf_size as u64))
+        let a = (hash_kmer % (partitioned_bf_size as u64))
             * (color_number as u64)
             * (abundance_number as u64)
             + (path_color_number as u64) * (abundance_number as u64)
-            + (log_abundance as u64)
+            + (log_abundance as u64);
+        
+        println!("hash/position {}/{}", hash_kmer, a);
+        a
         /* example
                             c0  c1  c2  c3
             color 0   abund 0   0   1   1
@@ -125,8 +128,8 @@ impl Filters {
         chunk_id: usize,
     ) -> std::io::Result<()> {
         for (i, bitmap) in self.data.iter().enumerate() {
-            // let c = get_current_chunk_index(i, chunks, partition_nb); // chunk idx
-            let p = i % partition_nb; // TOUN
+            let p = i % partition_nb;
+            assert_eq!(p, i);
             let file_path = Path::new(dir_path)
                 .join(format!("partition_bloom_filters_c{}_p{}.bin", chunk_id, p));
             let file = File::create(&file_path)?;
@@ -138,8 +141,6 @@ impl Filters {
             let mut locked_bitmap = bitmap.lock().unwrap();
             locked_bitmap.serialize_into(&mut writer)?;
             locked_bitmap.clear();
-            // bitmap.serialize_into(&mut writer)?;
-            // bitmap.clear();
         }
 
         Ok(())

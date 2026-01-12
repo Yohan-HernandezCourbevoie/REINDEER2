@@ -312,6 +312,11 @@ impl Reindeer2 {
             fp.separate_with_commas());
         }
 
+        println!("***files before merge");
+        for entry in fs::read_dir(output_dir).unwrap() {
+            println!("{}", entry.unwrap().path().display());
+        }
+
         // Merge the chunk-based bloom filters, if needed
         if chunks.len() > 1 {
             println!("***DEBUG Start merging the chunks");
@@ -337,6 +342,10 @@ impl Reindeer2 {
                 );
                 std::fs::rename(&input_path, &output_path)?;
             }
+        }
+        println!("***files after merge");
+        for entry in fs::read_dir(output_dir).unwrap() {
+            println!("{}", entry.unwrap().path().display());
         }
 
         // write partition info to a CSV or your desired format
@@ -775,11 +784,13 @@ fn merge_all_partitions(
     total_nb_colors: usize,
 ) -> io::Result<()> {
     let start_time = Instant::now();
-
+    println!("**Enters the merge");
     // for each partition in parallel
+    eprintln!("Number of partitions: {}", num_partitions);
     (0..num_partitions)
-        .into_par_iter()
+        .into_iter()  // TODO put multithread again (removed for debug purposes)
         .try_for_each(|partition_idx| {
+            eprintln!("**execute foreach");
             // collect chunk files for the current partition
             let chunk_files_for_partition: Vec<String> = color_counts_per_chunk
                 .iter()
@@ -796,6 +807,7 @@ fn merge_all_partitions(
             let mut partition_bf = RoaringBitmap::new();
 
             // merge all chunks for the current partition + serialize
+            println!("**iterate over partitions");
             merge_partition_bloom_filters(
                 chunk_files_for_partition,
                 partition_idx,
@@ -806,6 +818,7 @@ fn merge_all_partitions(
                 output_dir,
                 total_nb_colors,
             )?;
+            println!("*bloomfilter {:#?} after merge", partition_bf);
 
             Ok::<(), io::Error>(())
         })?;
@@ -835,6 +848,7 @@ fn merge_partition_bloom_filters(
             "Mismatch between chunk files and color counts, or no chunks provided.",
         ));
     }
+    println!("*bloomfilter {:#?} before", bloom_filter);
 
     // write all slices in the right order in a  larger filter
     let final_bf = merge_partition_slices_interleaved(
@@ -853,7 +867,8 @@ fn merge_partition_bloom_filters(
     final_bf.serialize_into(&mut writer)?;
     // update the bloom filter for the partition
     *bloom_filter = final_bf;
-    // Write the partition's Bloom filter to disk
+    // delete the following line
+    // chunk_files.iter().for_each(|file_path| fs::remove_file(file_path).expect("Failed to remove a chunk bloom filter file."));
 
     Ok(())
 }
@@ -895,6 +910,7 @@ fn merge_partition_slices_interleaved(
             }
         })
         .collect();
+    println!("*bfs all {:?}", loaded_bfs);
 
     // vector to collect all positions for the final bf
     let mut final_positions = Vec::new();
@@ -907,18 +923,24 @@ fn merge_partition_slices_interleaved(
                 let slice_start = slice_idx * abundance_number * chunk_color_number;
                 let slice_end = slice_start + abundance_number * chunk_color_number;
 
-                // collect positions in the slice and adjust by offset
-                // final_positions.extend(
-                //     chunk_bf.clone()
-                //         .into_range(slice_start as u32..slice_end as u32)
-                //         .map(|pos| pos - slice_start as u32 + current_offset as u32),
-                // );
                 let slice_start_u32 = slice_start as u32;
                 let current_offset_u32 = current_offset as u32;
+                let slice_end_u32 = slice_end as u32;
+                assert_eq!(slice_start, slice_start_u32 as usize);
+                assert_eq!(current_offset, current_offset_u32 as usize);
+                assert_eq!(slice_end, slice_end_u32 as usize);
+                if slice_start <= 89389259 && 89389259 < slice_end {
+                    println!("*working on {:?}", chunk_bf);
+                }
+                // collect positions in the slice and adjust by offset
                 final_positions.extend(
                     chunk_bf
-                        .range(slice_start_u32..slice_end as u32)
-                        .map(|pos| pos - slice_start_u32 + current_offset_u32),
+                        .range(slice_start_u32..slice_end_u32)
+                        .map(|pos| {
+                            let afterpos = pos - slice_start_u32 + current_offset_u32;
+                            println!("pos {} {}", pos, afterpos);
+                            pos - slice_start_u32 + current_offset_u32
+                        }),
                 );
 
                 // update the offset for the next chunk in this slice
@@ -928,7 +950,7 @@ fn merge_partition_slices_interleaved(
             }
         }
     }
-
+    println!("*positions {:?}", final_positions);
     RoaringBitmap::from_sorted_iter(final_positions)
         .expect("Attempt to merge with unsorted positions")
 }
@@ -2936,7 +2958,7 @@ mod tests {
         let color_number = 2;
         let abundance_number = 255;
         let abundance_max = 255;
-        let chunks_size = 1;
+        let chunks_size = 2;
         let dense_option = false;
         let threshold = color_number;
 
@@ -2987,6 +3009,7 @@ mod tests {
             );
         }
         fs::remove_dir_all(test_dir).expect("Failed to clean up test directory");
+        panic!();
     }
 
     #[test]
