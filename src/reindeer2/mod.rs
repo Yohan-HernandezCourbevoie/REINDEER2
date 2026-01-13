@@ -197,14 +197,14 @@ impl Reindeer2 {
         };
 
         for (chunk_i, chunk) in chunks.iter().enumerate() {
-            let bloom_filters = Arc::new(Filters::with_number_partition(
+            let bloom_filters = Filters::with_number_partition(
                 self.partition_number,
                 chunk.len(),
                 // TODO unit: is it in buts ?
                 // TODO can I use usize here ?
                 self.bf_size as usize,
                 self.abundance_number,
-            ));
+            );
 
             // For each file in this chunk, process in *parallel* (soon)
             // TODO build the appropriate iterator to parallelize (or not) if dense is set

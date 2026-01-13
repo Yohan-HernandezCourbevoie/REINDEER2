@@ -15,7 +15,7 @@ use crate::reindeer2::{dense_index::DenseIndex, filter::Filters};
 pub fn process_fasta_file(
     path: &str,
     maybe_dense_indexes: &Option<Arc<DenseIndex>>,
-    bloom_filters: &Arc<Filters>,
+    bloom_filters: &Filters,
     k: usize,
     m: usize,
     partition_number: usize,
