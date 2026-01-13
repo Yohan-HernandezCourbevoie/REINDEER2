@@ -6,6 +6,7 @@ mod query;
 use bio::io::fasta;
 use csv::Writer;
 use flate2::read::GzDecoder;
+use itertools::Itertools;
 use nthash::{NtHashForwardIterator, NtHashIterator};
 use num_format::{Locale, ToFormattedString};
 use rayon::prelude::*;
@@ -167,7 +168,9 @@ impl Reindeer2 {
 
         let kmer_counts_vector: Arc<Mutex<Vec<usize>>> =
             Arc::new(Mutex::new(vec![0; self.nb_color]));
-        let (chunks, color_chunks) = split_fof(&file_paths, chunks_size)?;
+        let chunks = split_fof(&file_paths, chunks_size)?;
+        // the number of color in each chunck
+        let color_chunks = chunks.iter().map(Vec::len).collect_vec();
         let base = compute_base(self.abundance_number, self.abundance_max);
 
         #[cfg(any(debug_assertions, test))]
@@ -1183,28 +1186,24 @@ pub fn read_fof_file(file_path: &str) -> io::Result<(Vec<String>, usize)> {
     Ok((file_paths, color_number))
 }
 
-fn split_fof(lines: &[String], chunks_size: usize) -> io::Result<(Vec<Vec<String>>, Vec<usize>)> {
-    let total_colors = lines.len();
+fn split_fof(lines: &[String], number_of_chunks: usize) -> io::Result<Vec<Vec<String>>> {
+    let number_colors = lines.len();
 
-    // chunk max size
-    let magic_nb_split = chunks_size;
     // Determine split_factor
-    let split_factor = if total_colors < magic_nb_split {
+    let split_factor = if number_colors < number_of_chunks {
         1
     } else {
-        total_colors.div_ceil(magic_nb_split)
+        number_colors.div_ceil(number_of_chunks)
     };
 
     let mut fof_chunks = vec![vec![]; split_factor];
-    let mut chunk_sizes = vec![0; split_factor]; // store the number of colors in each chunk
 
     for (i, line) in lines.iter().enumerate() {
-        let chunk_index = i / magic_nb_split;
+        let chunk_index = i / number_of_chunks;
         fof_chunks[chunk_index].push(line.clone());
-        chunk_sizes[chunk_index] += 1; // increment of file paths
     }
 
-    Ok((fof_chunks, chunk_sizes))
+    Ok(fof_chunks)
 }
 
 // TODO discuss: used to return a Result, but only the OK variant was returnd
@@ -3392,7 +3391,7 @@ mod tests {
 
         assert!(result.is_ok(), "split_fof returned an error");
 
-        let (fof_chunks, _) = result.unwrap();
+        let fof_chunks = result.unwrap();
 
         let expected_chunks = vec![
             vec![
@@ -3418,7 +3417,7 @@ mod tests {
 
         assert!(result.is_ok(), "split_fof returned an error");
 
-        let (fof_chunks, _) = result.unwrap();
+        let fof_chunks = result.unwrap();
 
         let expected_chunks = vec![vec![
             "/path/to/file1.fasta".to_string(),
