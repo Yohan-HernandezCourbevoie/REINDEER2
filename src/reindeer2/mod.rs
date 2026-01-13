@@ -196,18 +196,15 @@ impl Reindeer2 {
             None
         };
 
-        
-
         for (chunk_i, chunk) in chunks.iter().enumerate() {
-
             let bloom_filters = Arc::new(Filters::with_number_partition(
-            self.partition_number,
-            chunk.len(),
-            // TODO unit: is it in buts ?
-            // TODO can I use usize here ?
-            self.bf_size as usize,
-            self.abundance_number,
-        ));
+                self.partition_number,
+                chunk.len(),
+                // TODO unit: is it in buts ?
+                // TODO can I use usize here ?
+                self.bf_size as usize,
+                self.abundance_number,
+            ));
 
             // For each file in this chunk, process in *parallel* (soon)
             // TODO build the appropriate iterator to parallelize (or not) if dense is set
@@ -692,8 +689,10 @@ pub fn merge_multiple_indexes(indexes_fof: &str, output_dir: &str) -> io::Result
     // read metadata from the first index as base parameter
     // let (k, m, bf_size, partition_number, first_color, abundance_number, abundance_max, dense_option) =
     // read_partition_from_csv(&index_dirs[0], "index_info.csv")?;
-    let index_ref = Reindeer2::from_csv(&index_dirs[0])
-            .expect(&format!("should have been able to load index infos from disk {}", &index_dirs[0]));
+    let index_ref = Reindeer2::from_csv(&index_dirs[0]).expect(&format!(
+        "should have been able to load index infos from disk {}",
+        &index_dirs[0]
+    ));
 
     //  vector to store (index_dir, color_count) for every index.
     let mut indexes_metadata = vec![(index_dirs[0].clone(), index_ref.nb_color)];
@@ -703,18 +702,25 @@ pub fn merge_multiple_indexes(indexes_fof: &str, output_dir: &str) -> io::Result
     for index_dir in index_dirs.iter().skip(1) {
         // let (k2, m2, bf_size2, partition_number2, color_count, abundance_number2, abundance_max2, dense_option) =
         // read_partition_from_csv(index_dir, "index_info.csv")?;
-        let index_to_merge = Reindeer2::from_csv(index_dir)
-            .expect(&format!("should have been able to load index infos from disk {}", index_dir));
-        if index_ref.k != index_to_merge.k || index_ref.m != index_to_merge.m || 
-            index_ref.bf_size != index_to_merge.bf_size || 
-            index_ref.partition_number != index_to_merge.partition_number ||
-            index_ref.abundance_number != index_to_merge.abundance_number || 
-            index_ref.abundance_max != index_to_merge.abundance_max ||
-            index_ref.dense_option != index_to_merge.dense_option ||
-            index_ref.canonical != index_to_merge.canonical {
+        let index_to_merge = Reindeer2::from_csv(index_dir).expect(&format!(
+            "should have been able to load index infos from disk {}",
+            index_dir
+        ));
+        if index_ref.k != index_to_merge.k
+            || index_ref.m != index_to_merge.m
+            || index_ref.bf_size != index_to_merge.bf_size
+            || index_ref.partition_number != index_to_merge.partition_number
+            || index_ref.abundance_number != index_to_merge.abundance_number
+            || index_ref.abundance_max != index_to_merge.abundance_max
+            || index_ref.dense_option != index_to_merge.dense_option
+            || index_ref.canonical != index_to_merge.canonical
+        {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                format!("Index {} does not match parameters of the first index", index_dir),
+                format!(
+                    "Index {} does not match parameters of the first index",
+                    index_dir
+                ),
             ));
         }
         new_color_number += index_to_merge.nb_color;
@@ -733,7 +739,10 @@ pub fn merge_multiple_indexes(indexes_fof: &str, output_dir: &str) -> io::Result
             .iter()
             .enumerate()
             .map(|(index_dir, _)| {
-                format!("{}/partition_bloom_filters_p{}.bin", index_dir, partition_idx)
+                format!(
+                    "{}/partition_bloom_filters_p{}.bin",
+                    index_dir, partition_idx
+                )
             })
             .collect();
 
@@ -761,7 +770,11 @@ pub fn merge_multiple_indexes(indexes_fof: &str, output_dir: &str) -> io::Result
     };
     index_merged.to_csv(output_dir)?;
 
-    println!("Successfully merged {} indexes into directory: {}", indexes_metadata.len(), output_dir);
+    println!(
+        "Successfully merged {} indexes into directory: {}",
+        indexes_metadata.len(),
+        output_dir
+    );
     Ok(())
 }
 
@@ -779,7 +792,7 @@ fn merge_all_partitions(
     let start_time = Instant::now();
     // for each partition in parallel
     (0..num_partitions)
-        .into_iter()  // TODO put multithread again (removed for debug purposes)
+        .into_iter() // TODO put multithread again (removed for debug purposes)
         .try_for_each(|partition_idx| {
             // collect chunk files for the current partition
             let chunk_files_for_partition: Vec<String> = color_counts_per_chunk
@@ -920,9 +933,7 @@ fn merge_partition_slices_interleaved(
                 final_positions.extend(
                     chunk_bf
                         .range(slice_start_u32..slice_end_u32)
-                        .map(|pos| {
-                            pos - slice_start_u32 + current_offset_u32
-                        }),
+                        .map(|pos| pos - slice_start_u32 + current_offset_u32),
                 );
 
                 // update the offset for the next chunk in this slice
@@ -2857,7 +2868,7 @@ mod tests {
             color_number,
             abundance_number,
             abundance_max,
-            chunks_size, 
+            chunks_size,
             dense_option,
             threshold,
             vec![file1_path, file2_path],
@@ -3045,7 +3056,7 @@ mod tests {
             color_number,
             abundance_number,
             abundance_max,
-            chunks_size, 
+            chunks_size,
             dense_option,
             threshold,
             vec![file1_path, file2_path],
@@ -3401,7 +3412,6 @@ mod tests {
             expected_chunks, fof_chunks
         );
 
-
         // Test with chunks_size = 5
         let chunks_size = 5;
         let result = split_fof(&lines, chunks_size);
@@ -3410,15 +3420,13 @@ mod tests {
 
         let (fof_chunks, _) = result.unwrap();
 
-        let expected_chunks = vec![
-            vec![
-                "/path/to/file1.fasta".to_string(),
-                "/path/to/file2.fasta".to_string(),
-                "/path/to/file3.fasta".to_string(),
-                "/path/to/file4.fasta".to_string(),
-                "/path/to/file5.fasta".to_string()
-            ],
-        ];
+        let expected_chunks = vec![vec![
+            "/path/to/file1.fasta".to_string(),
+            "/path/to/file2.fasta".to_string(),
+            "/path/to/file3.fasta".to_string(),
+            "/path/to/file4.fasta".to_string(),
+            "/path/to/file5.fasta".to_string(),
+        ]];
 
         assert_eq!(
             fof_chunks, expected_chunks,
@@ -4591,15 +4599,15 @@ shared_revcomp_with_other_test_file 0-19:* 0-19:10",
         let index1_file_paths = vec![file1_path.clone()];
         let color_nb_1 = 1;
         let index = Reindeer2::new(
-                bf_size,
-                partitions,
-                k,
-                m,
-                color_nb_1,
-                abundance,
-                abundance_max,
-                dense_option,
-                canonical,
+            bf_size,
+            partitions,
+            k,
+            m,
+            color_nb_1,
+            abundance,
+            abundance_max,
+            dense_option,
+            canonical,
         );
         index.build(
             index1_file_paths,
@@ -4635,16 +4643,29 @@ shared_revcomp_with_other_test_file 0-19:* 0-19:10",
             writeln!(fof, "{}", index2_index_dir)?;
         }
 
-        merge_multiple_indexes(&indexes_fof, &merged_index_dir).expect("Failed to merge the test indexes");
+        merge_multiple_indexes(&indexes_fof, &merged_index_dir)
+            .expect("Failed to merge the test indexes");
 
-        let merged_index = Reindeer2::from_csv(&merged_index_dir).expect("Failed to read the merged index metadata (csv)");
+        let merged_index = Reindeer2::from_csv(&merged_index_dir)
+            .expect("Failed to read the merged index metadata (csv)");
 
-        assert_eq!(merged_index.nb_color, 3, "Expected merged color count to be 3, got {}", merged_index.nb_color);
+        assert_eq!(
+            merged_index.nb_color, 3,
+            "Expected merged color count to be 3, got {}",
+            merged_index.nb_color
+        );
 
         // check that each partition file in the merged index exists
         for partition in 0..partitions {
-            let part_path = format!("{}/partition_bloom_filters_p{}.bin", merged_index_dir, partition);
-            assert!(Path::new(&part_path).exists(), "Merged partition file {} does not exist", part_path);
+            let part_path = format!(
+                "{}/partition_bloom_filters_p{}.bin",
+                merged_index_dir, partition
+            );
+            assert!(
+                Path::new(&part_path).exists(),
+                "Merged partition file {} does not exist",
+                part_path
+            );
         }
 
         fs::remove_dir_all(base_dir)?;

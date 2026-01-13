@@ -10,7 +10,7 @@ use std::time::Instant;
 use cli::Cli;
 use cli::OutputFormatCli;
 use overflow_detection::check_number_of_partitions;
-use reindeer2::reindeer2::{read_fof_file, OutputFormat, Reindeer2, merge_multiple_indexes};
+use reindeer2::reindeer2::{merge_multiple_indexes, read_fof_file, OutputFormat, Reindeer2};
 
 impl OutputFormatCli {
     fn to_output_format(self, normalized: Option<u64>, breakpoints: Option<f64>) -> OutputFormat {
@@ -84,7 +84,7 @@ fn main() -> io::Result<()> {
             } else {
                 abundance
             };
-            
+
             let minimizer = if kmer < minimizer {
                 println!("WARNING : the minimizer size '{}' exceeds the k-mer size '{}'. The minimiser size is now set to '{}'", minimizer, kmer, kmer);
                 kmer
@@ -191,14 +191,14 @@ fn main() -> io::Result<()> {
                 .expect("Failed to query sequences");
             println!("Results written to {}", query_output);
             println!("Query complete in {:.2?}", start_time.elapsed());
-        } 
+        }
 
         cli::Command::Merge(args) => {
             rayon::ThreadPoolBuilder::new()
                 .num_threads(max_threads)
                 .build_global()
                 .unwrap();
-                
+
             let file_of_indexes = args.file_of_indexes;
             let output_dir = args.output_dir.unwrap_or_else(|| {
                 format!("PACAS_index_{}", rand::rng().random::<u64>()) // Generate a unique directory name
@@ -207,10 +207,9 @@ fn main() -> io::Result<()> {
             let start_time = Instant::now();
             merge_multiple_indexes(&file_of_indexes, &output_dir)
                 .expect("Failed to merge the given indexes.");
-            
-            
+
             println!("Query complete in {:.2?}", start_time.elapsed());
-        } 
+        }
     }
 
     Ok(())

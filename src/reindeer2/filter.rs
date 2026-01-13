@@ -83,7 +83,7 @@ impl Filters {
             * (abundance_number as u64)
             + (path_color_number as u64) * (abundance_number as u64)
             + (log_abundance as u64)
-            
+
         /* example
                             c0  c1  c2  c3
             color 0   abund 0   0   1   1
