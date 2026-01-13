@@ -263,7 +263,6 @@ fn query_single_fasta_batch(
         .for_each(|(header, color_vectors)| {
             res[header] = color_vectors.into_iter().map(sort_abundance_vec).collect();
         });
-    println!("{:?}", res);
     res
 }
 

@@ -78,14 +78,12 @@ impl Filters {
         log_abundance: u16,
     ) -> u64 {
         // compute the position to write
-        let a = (hash_kmer % (partitioned_bf_size as u64))
+        (hash_kmer % (partitioned_bf_size as u64))
             * (color_number as u64)
             * (abundance_number as u64)
             + (path_color_number as u64) * (abundance_number as u64)
-            + (log_abundance as u64);
-        
-        println!("hash/position {}/{}", hash_kmer, a);
-        a
+            + (log_abundance as u64)
+            
         /* example
                             c0  c1  c2  c3
             color 0   abund 0   0   1   1
