@@ -954,7 +954,7 @@ fn merge_partition_slices_interleaved(
 
 // --- BF MANAGEMENT ---
 
-fn compute_base_position(
+const fn compute_base_position(
     kmer_hash: u64,
     partitioned_bf_size: usize,
     color_number: usize,

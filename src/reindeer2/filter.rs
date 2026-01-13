@@ -69,7 +69,7 @@ impl Filters {
     }
 
     // TODO should be private
-    pub fn compute_location(
+    pub const fn compute_location(
         hash_kmer: u64,
         partitioned_bf_size: usize,
         color_number: usize,      // the total nb of indexed fastas (in a chunk)
