@@ -1982,7 +1982,7 @@ mod tests {
         let query_results_path = format!("{}/query_results.csv", index_dir);
 
         let index_from_csv =
-            Reindeer2::from_csv(&index_dir).expect("Failed to laod index infos from disk");
+            Reindeer2::from_csv(&index_dir).expect("Failed to load index infos from disk");
         index_from_csv
             .query(
                 &file_paths[query_file_id],
@@ -2047,7 +2047,7 @@ mod tests {
         let query_results_path = format!("{}/query_results.csv", index_dir);
 
         let index_from_csv =
-            Reindeer2::from_csv(&index_dir).expect("Failed to laod index infos from disk");
+            Reindeer2::from_csv(&index_dir).expect("Failed to load index infos from disk");
         index_from_csv
             .query(
                 &file1_path,
@@ -4287,7 +4287,7 @@ mod tests {
             .expect("Failed to build index");
 
         let index_from_csv =
-            Reindeer2::from_csv(&index_dir).expect("Failed to laod index infos from disk");
+            Reindeer2::from_csv(&index_dir).expect("Failed to load index infos from disk");
         index_from_csv
             .query(
                 &fasta_path,
