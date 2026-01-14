@@ -6,8 +6,8 @@ authors = ["Camille Marchet", "Yohan Hernandez--Courbevoie"]
 description = "REINDEER2: k-mer quantification in large collections of samples"
 
 [dependencies]
-# serde = { version = "1.0", features = ["derive"] }
-# serde_json = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 # thiserror = "1.0"
 # bitstream-io = "0.9"
 # minimizer-iter = { git = "https://github.com/rust-seq/minimizer-iter.git" }
@@ -26,7 +26,6 @@ bincode = "1.3.3"
 thousands = "0.2.0"
 libc = "0.2.176"
 pelt = { git = "https://github.com/lrobidou/pelt.git", rev = "db7f8f85dac8bbc7da3f41b3c9e97d6befb17d9f" }
-serde = { version = "1.0", features = ["derive"] }
 
 # [dev-dependencies]
 itertools = "0.14.0"

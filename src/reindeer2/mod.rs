@@ -4,13 +4,13 @@ mod index;
 mod query;
 
 use bio::io::fasta;
-use csv::Writer;
 use flate2::read::GzDecoder;
 use itertools::Itertools;
 use nthash::{NtHashForwardIterator, NtHashIterator};
 use num_format::{Locale, ToFormattedString};
 use rayon::prelude::*;
 use roaring::RoaringBitmap;
+use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
@@ -43,7 +43,7 @@ pub enum OutputFormat {
     },
 }
 
-// === INDEX ===
+#[derive(Serialize, Deserialize)]
 #[cfg_attr(any(test, debug_assertions), derive(PartialEq, Debug))]
 pub struct Reindeer2 {
     bf_size: u64,
@@ -69,7 +69,7 @@ macro_rules! mut_if_debug {
 }
 
 impl Reindeer2 {
-    pub fn new(
+    pub const fn new(
         bf_size: u64,
         partition_number: usize,
         k: usize,
@@ -94,57 +94,27 @@ impl Reindeer2 {
         }
     }
 
-    /// Loads an index from the CSV in the directory of the index
-    pub fn from_csv(bf_dir: &str) -> io::Result<Self> {
-        let csv_path = format!("{}/index_info.csv", bf_dir);
-        print!("Loading index metadata for query...");
-        let mut reader = csv::Reader::from_reader(BufReader::new(File::open(csv_path)?));
-        let values = reader.records().next().expect("Index CSV is empty")?;
+    fn index_infos_file(bf_dir: &str) -> String {
+        format!("{}/index_info.json", bf_dir)
+    }
 
-        let rd2 = Self {
-            k: values[0].parse().unwrap_or(0),
-            m: values[1].parse().unwrap_or(0),
-            bf_size: values[2].parse().unwrap_or(0),
-            partition_number: values[3].parse().unwrap_or(0),
-            nb_color: values[4].parse().unwrap_or(0),
-            abundance_number: values[5].parse().unwrap_or(0),
-            abundance_max: values[6].parse().unwrap_or(0),
-            dense_option: values[7].parse().unwrap_or(false),
-            canonical: values[8].parse().unwrap_or(true),
-        };
-
+    /// Loads an index from the JSON file in the directory of the index
+    pub fn load_metadata(bf_dir: &str) -> io::Result<Self> {
+        print!("Loading index metadata...");
+        let input_path = Self::index_infos_file(bf_dir);
+        let file = File::open(input_path)?;
+        let reader = BufReader::new(file);
+        let rd2 = serde_json::from_reader(reader)?;
         println!(" Done.");
         Ok(rd2)
     }
 
-    fn to_csv(&self, bf_dir: &str) -> io::Result<()> {
-        let output_path = format!("{}/index_info.csv", bf_dir);
-
-        let mut csv_writer = Writer::from_writer(BufWriter::new(File::create(&output_path)?));
-
-        csv_writer.write_record([
-            "k",
-            "m",
-            "bf_size",
-            "partition_number",
-            "color_number",
-            "abundance_number",
-            "abundance_max",
-            "dense_option",
-            "canonical",
-        ])?;
-        csv_writer.write_record(&[
-            self.k.to_string(),
-            self.m.to_string(),
-            self.bf_size.to_string(),
-            self.partition_number.to_string(),
-            self.nb_color.to_string(),
-            self.abundance_number.to_string(),
-            self.abundance_max.to_string(),
-            self.dense_option.to_string(),
-            self.canonical.to_string(),
-        ])?;
-
+    /// Save an index metadata into a JSON file in the directory of the index
+    fn save_metadata(&self, bf_dir: &str) -> io::Result<()> {
+        let output_path = Self::index_infos_file(bf_dir);
+        let file = File::create(&output_path)?;
+        let writer = BufWriter::new(file);
+        serde_json::to_writer(writer, self)?;
         println!("Index information written to {}", output_path);
         Ok(())
     }
@@ -344,8 +314,8 @@ impl Reindeer2 {
             }
         }
 
-        // write partition info to a CSV or your desired format
-        self.to_csv(&dir_path)?;
+        // write metadata info to disk
+        self.save_metadata(&dir_path)?;
 
         Ok((file_paths, dir_path))
     }
@@ -695,7 +665,7 @@ pub fn merge_multiple_indexes(indexes_fof: &str, output_dir: &str) -> io::Result
     // read metadata from the first index as base parameter
     // let (k, m, bf_size, partition_number, first_color, abundance_number, abundance_max, dense_option) =
     // read_partition_from_csv(&index_dirs[0], "index_info.csv")?;
-    let index_ref = Reindeer2::from_csv(&index_dirs[0]).expect(&format!(
+    let index_ref = Reindeer2::load_metadata(&index_dirs[0]).expect(&format!(
         "should have been able to load index infos from disk {}",
         &index_dirs[0]
     ));
@@ -708,7 +678,7 @@ pub fn merge_multiple_indexes(indexes_fof: &str, output_dir: &str) -> io::Result
     for index_dir in index_dirs.iter().skip(1) {
         // let (k2, m2, bf_size2, partition_number2, color_count, abundance_number2, abundance_max2, dense_option) =
         // read_partition_from_csv(index_dir, "index_info.csv")?;
-        let index_to_merge = Reindeer2::from_csv(index_dir).expect(&format!(
+        let index_to_merge = Reindeer2::load_metadata(index_dir).expect(&format!(
             "should have been able to load index infos from disk {}",
             index_dir
         ));
@@ -774,7 +744,7 @@ pub fn merge_multiple_indexes(indexes_fof: &str, output_dir: &str) -> io::Result
         nb_color: total_nb_colors,
         ..index_ref
     };
-    index_merged.to_csv(output_dir)?;
+    index_merged.save_metadata(output_dir)?;
 
     println!(
         "Successfully merged {} indexes into directory: {}",
@@ -1942,9 +1912,9 @@ mod tests {
         };
 
         fs::create_dir_all(bf_dir).expect("Failed to create test directory");
-        expected.to_csv(bf_dir).unwrap();
+        expected.save_metadata(bf_dir).unwrap();
 
-        let actual = Reindeer2::from_csv(bf_dir).unwrap();
+        let actual = Reindeer2::load_metadata(bf_dir).unwrap();
         assert_eq!(actual, expected);
 
         fs::remove_dir_all(bf_dir).expect("Failed to remove test directory");
@@ -1984,9 +1954,9 @@ mod tests {
 
         let query_results_path = format!("{}/query_results.csv", index_dir);
 
-        let index_from_csv =
-            Reindeer2::from_csv(&index_dir).expect("Failed to load index infos from disk");
-        index_from_csv
+        let index_from_disk =
+            Reindeer2::load_metadata(&index_dir).expect("Failed to load index infos from disk");
+        index_from_disk
             .query(
                 &file_paths[query_file_id],
                 &index_dir,
@@ -2049,9 +2019,9 @@ mod tests {
 
         let query_results_path = format!("{}/query_results.csv", index_dir);
 
-        let index_from_csv =
-            Reindeer2::from_csv(&index_dir).expect("Failed to load index infos from disk");
-        index_from_csv
+        let index_from_disk =
+            Reindeer2::load_metadata(&index_dir).expect("Failed to load index infos from disk");
+        index_from_disk
             .query(
                 &file1_path,
                 &index_dir,
@@ -4289,9 +4259,9 @@ mod tests {
             .build(vec![fasta_path.clone()], test_dir, chunks_size, threshold)
             .expect("Failed to build index");
 
-        let index_from_csv =
-            Reindeer2::from_csv(&index_dir).expect("Failed to load index infos from disk");
-        index_from_csv
+        let index_from_disk =
+            Reindeer2::load_metadata(&index_dir).expect("Failed to load index infos from disk");
+        index_from_disk
             .query(
                 &fasta_path,
                 test_dir,
@@ -4377,8 +4347,8 @@ mod tests {
 
         let query_results_path = format!("{}/query_results.csv", index_dir);
 
-        let index_from_csv = Reindeer2::from_csv(&index_dir).unwrap();
-        index_from_csv
+        let index_from_disk = Reindeer2::load_metadata(&index_dir).unwrap();
+        index_from_disk
             .query(
                 &file_paths[1],
                 &index_dir,
@@ -4449,8 +4419,8 @@ shared_revcomp_with_other_test_file 0-19:3 0-19:10",
 
         let query_results_path = format!("{}/query_results.csv", index_dir);
 
-        let index_from_csv = Reindeer2::from_csv(&index_dir).unwrap();
-        index_from_csv
+        let index_from_disk = Reindeer2::load_metadata(&index_dir).unwrap();
+        index_from_disk
             .query(
                 &file_paths[1],
                 &index_dir,
@@ -4518,8 +4488,8 @@ header_0 0-69:* 0-69:1",
 
         let query_results_path = format!("{}/query_results.csv", index_dir);
 
-        let index_from_csv = Reindeer2::from_csv(&index_dir).unwrap();
-        index_from_csv
+        let index_from_disk = Reindeer2::load_metadata(&index_dir).unwrap();
+        index_from_disk
             .query(
                 &file_paths[1],
                 &index_dir,
@@ -4648,8 +4618,8 @@ shared_revcomp_with_other_test_file 0-19:* 0-19:10",
         merge_multiple_indexes(&indexes_fof, &merged_index_dir)
             .expect("Failed to merge the test indexes");
 
-        let merged_index = Reindeer2::from_csv(&merged_index_dir)
-            .expect("Failed to read the merged index metadata (csv)");
+        let merged_index = Reindeer2::load_metadata(&merged_index_dir)
+            .expect("Failed to read the merged index metadata)");
 
         assert_eq!(
             merged_index.nb_color, 3,

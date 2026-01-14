@@ -178,7 +178,7 @@ fn main() -> io::Result<()> {
             println!("Index directory: {}", index_dir);
 
             let start_time = Instant::now();
-            let index = Reindeer2::from_csv(&index_dir)
+            let index = Reindeer2::load_metadata(&index_dir)
                 .expect("should have been able to load index infos from disk");
             index
                 .query(
