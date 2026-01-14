@@ -3327,7 +3327,7 @@ mod tests {
 
             // I add + log_abund because base_position does not have this info and just finds approximately the value
             assert_eq!(
-                position_to_write,
+                position_to_write as u64,
                 base_position + (log_abundance as u64),
                 "Position mismatch: insert = {}, query = {}",
                 position_to_write,

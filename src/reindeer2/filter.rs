@@ -56,7 +56,7 @@ impl Filters {
                             *path_num,
                             self.number_abundance,
                             *log_abundance,
-                        ) as u32
+                        )
                     });
 
             // select the correct BF for the given partition
@@ -76,13 +76,15 @@ impl Filters {
         path_color_number: usize, // the index of the current indexed fasta
         abundance_number: usize,
         log_abundance: u16,
-    ) -> u64 {
+    ) -> u32 {
         // compute the position to write
-        (hash_kmer % (partitioned_bf_size as u64))
+        let location = (hash_kmer % (partitioned_bf_size as u64))
             * (color_number as u64)
             * (abundance_number as u64)
             + (path_color_number as u64) * (abundance_number as u64)
-            + (log_abundance as u64)
+            + (log_abundance as u64);
+        debug_assert!(location == (location as u32) as u64);
+        location as u32
 
         /* example
                             c0  c1  c2  c3
