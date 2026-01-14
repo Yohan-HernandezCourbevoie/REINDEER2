@@ -74,8 +74,7 @@ impl DenseIndexPartition {
         })
     }
 
-    // TODO name
-    pub fn muche(
+    pub fn transfer_sparse_kmers_to_bfs(
         &mut self,
         bloom_filters: &Filters,
         path_num: usize,
@@ -194,9 +193,7 @@ impl DenseIndex {
         }
         false
     }
-
-    // TODO name
-    pub fn truc(
+    pub fn remove_sparse_entries(
         &self,
         bloom_filters: &Filters,
         path_num: usize,
@@ -211,7 +208,7 @@ impl DenseIndex {
             let mut dense_index = hashmap // select the correct BF for the given partition
                 .lock()
                 .expect("Failed to lock bloom filter");
-            dense_index.muche(
+            dense_index.transfer_sparse_kmers_to_bfs(
                 bloom_filters,
                 path_num,
                 threshold,

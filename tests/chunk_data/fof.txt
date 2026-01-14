@@ -1,0 +1,4 @@
+tests/chunk_data/file1.fa
+tests/chunk_data/file2.fa
+tests/chunk_data/file3.fa
+tests/chunk_data/file4.fa

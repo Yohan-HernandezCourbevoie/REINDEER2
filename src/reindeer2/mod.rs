@@ -6,6 +6,7 @@ mod query;
 use bio::io::fasta;
 use csv::Writer;
 use flate2::read::GzDecoder;
+use itertools::Itertools;
 use nthash::{NtHashForwardIterator, NtHashIterator};
 use num_format::{Locale, ToFormattedString};
 use rayon::prelude::*;
@@ -152,7 +153,7 @@ impl Reindeer2 {
         &self,
         file_paths: Vec<String>,
         output_dir: &str,
-        dense_option: bool,
+        chunks_size: usize,
         threshold: usize,
     ) -> io::Result<(Vec<String>, String)> {
         mut_if_debug!(total_kmers = atomic::AtomicU64::new(0));
@@ -167,7 +168,9 @@ impl Reindeer2 {
 
         let kmer_counts_vector: Arc<Mutex<Vec<usize>>> =
             Arc::new(Mutex::new(vec![0; self.nb_color]));
-        let (chunks, color_chunks) = split_fof(&file_paths)?;
+        let chunks = split_fof(&file_paths, chunks_size)?;
+        // the number of color in each chunck
+        let color_chunks = chunks.iter().map(Vec::len).collect_vec();
         let base = compute_base(self.abundance_number, self.abundance_max);
 
         #[cfg(any(debug_assertions, test))]
@@ -188,7 +191,7 @@ impl Reindeer2 {
         write_indexed_file_names(&indexed_files, &file_paths);
 
         // Shared data structures protected by Mutex for safe parallel access
-        let maybe_dense_indexes: Option<Arc<DenseIndex>> = if dense_option {
+        let maybe_dense_indexes: Option<Arc<DenseIndex>> = if self.dense_option {
             Some(Arc::new(DenseIndex::with_partition_number(
                 self.partition_number,
             )))
@@ -196,16 +199,19 @@ impl Reindeer2 {
             None
         };
 
-        let bloom_filters = Arc::new(Filters::with_number_partition(
-            self.partition_number,
-            self.nb_color,
-            // TODO unit: is it in buts ?
-            // TODO can I use usize here ?
-            self.bf_size as usize,
-            self.abundance_number,
-        ));
-
         for (chunk_i, chunk) in chunks.iter().enumerate() {
+            // OPTIMIZE we are losing the underlying allocation of the Filters here
+            // but currently each chunk could have a different size, so we have to recreate them
+            // if this is a bottleneck, we should find a way to reuse the Filters
+            let bloom_filters = Filters::with_number_partition(
+                self.partition_number,
+                chunk.len(),
+                // TODO unit: is it in buts ?
+                // TODO can I use usize here ?
+                self.bf_size as usize,
+                self.abundance_number,
+            );
+
             // For each file in this chunk, process in *parallel* (soon)
             // TODO build the appropriate iterator to parallelize (or not) if dense is set
             chunk.par_iter().enumerate().for_each(|(path_num, path)| {
@@ -243,8 +249,8 @@ impl Reindeer2 {
                                     self.nb_color,
                                     threshold,
                                     self.abundance_max,
-                                    path_num % color_chunks[0],
                                     path_num,
+                                    path_num + chunk_i * color_chunks[0],
                                     base,
                                     chunk_i,
                                     h_type,
@@ -689,8 +695,10 @@ pub fn merge_multiple_indexes(indexes_fof: &str, output_dir: &str) -> io::Result
     // read metadata from the first index as base parameter
     // let (k, m, bf_size, partition_number, first_color, abundance_number, abundance_max, dense_option) =
     // read_partition_from_csv(&index_dirs[0], "index_info.csv")?;
-    let index_ref = Reindeer2::from_csv(&index_dirs[0])
-            .expect(&format!("should have been able to load index infos from disk {}", &index_dirs[0]));
+    let index_ref = Reindeer2::from_csv(&index_dirs[0]).expect(&format!(
+        "should have been able to load index infos from disk {}",
+        &index_dirs[0]
+    ));
 
     //  vector to store (index_dir, color_count) for every index.
     let mut indexes_metadata = vec![(index_dirs[0].clone(), index_ref.nb_color)];
@@ -700,18 +708,25 @@ pub fn merge_multiple_indexes(indexes_fof: &str, output_dir: &str) -> io::Result
     for index_dir in index_dirs.iter().skip(1) {
         // let (k2, m2, bf_size2, partition_number2, color_count, abundance_number2, abundance_max2, dense_option) =
         // read_partition_from_csv(index_dir, "index_info.csv")?;
-        let index_to_merge = Reindeer2::from_csv(index_dir)
-            .expect(&format!("should have been able to load index infos from disk {}", index_dir));
-        if index_ref.k != index_to_merge.k || index_ref.m != index_to_merge.m || 
-            index_ref.bf_size != index_to_merge.bf_size || 
-            index_ref.partition_number != index_to_merge.partition_number ||
-            index_ref.abundance_number != index_to_merge.abundance_number || 
-            index_ref.abundance_max != index_to_merge.abundance_max ||
-            index_ref.dense_option != index_to_merge.dense_option ||
-            index_ref.canonical != index_to_merge.canonical {
+        let index_to_merge = Reindeer2::from_csv(index_dir).expect(&format!(
+            "should have been able to load index infos from disk {}",
+            index_dir
+        ));
+        if index_ref.k != index_to_merge.k
+            || index_ref.m != index_to_merge.m
+            || index_ref.bf_size != index_to_merge.bf_size
+            || index_ref.partition_number != index_to_merge.partition_number
+            || index_ref.abundance_number != index_to_merge.abundance_number
+            || index_ref.abundance_max != index_to_merge.abundance_max
+            || index_ref.dense_option != index_to_merge.dense_option
+            || index_ref.canonical != index_to_merge.canonical
+        {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                format!("Index {} does not match parameters of the first index", index_dir),
+                format!(
+                    "Index {} does not match parameters of the first index",
+                    index_dir
+                ),
             ));
         }
         new_color_number += index_to_merge.nb_color;
@@ -730,7 +745,10 @@ pub fn merge_multiple_indexes(indexes_fof: &str, output_dir: &str) -> io::Result
             .iter()
             .enumerate()
             .map(|(index_dir, _)| {
-                format!("{}/partition_bloom_filters_p{}.bin", index_dir, partition_idx)
+                format!(
+                    "{}/partition_bloom_filters_p{}.bin",
+                    index_dir, partition_idx
+                )
             })
             .collect();
 
@@ -758,7 +776,11 @@ pub fn merge_multiple_indexes(indexes_fof: &str, output_dir: &str) -> io::Result
     };
     index_merged.to_csv(output_dir)?;
 
-    println!("Successfully merged {} indexes into directory: {}", indexes_metadata.len(), output_dir);
+    println!(
+        "Successfully merged {} indexes into directory: {}",
+        indexes_metadata.len(),
+        output_dir
+    );
     Ok(())
 }
 
@@ -774,7 +796,6 @@ fn merge_all_partitions(
     total_nb_colors: usize,
 ) -> io::Result<()> {
     let start_time = Instant::now();
-
     // for each partition in parallel
     (0..num_partitions)
         .into_par_iter()
@@ -852,7 +873,6 @@ fn merge_partition_bloom_filters(
     final_bf.serialize_into(&mut writer)?;
     // update the bloom filter for the partition
     *bloom_filter = final_bf;
-    // Write the partition's Bloom filter to disk
 
     Ok(())
 }
@@ -906,17 +926,19 @@ fn merge_partition_slices_interleaved(
                 let slice_start = slice_idx * abundance_number * chunk_color_number;
                 let slice_end = slice_start + abundance_number * chunk_color_number;
 
-                // collect positions in the slice and adjust by offset
-                // final_positions.extend(
-                //     chunk_bf.clone()
-                //         .into_range(slice_start as u32..slice_end as u32)
-                //         .map(|pos| pos - slice_start as u32 + current_offset as u32),
-                // );
                 let slice_start_u32 = slice_start as u32;
                 let current_offset_u32 = current_offset as u32;
+                let slice_end_u32 = slice_end as u32;
+                #[cfg(any(debug_assertions, test))]
+                {
+                    assert_eq!(slice_start, slice_start_u32 as usize);
+                    assert_eq!(current_offset, current_offset_u32 as usize);
+                    assert_eq!(slice_end, slice_end_u32 as usize);
+                }
+                // collect positions in the slice and adjust by offset
                 final_positions.extend(
                     chunk_bf
-                        .range(slice_start_u32..slice_end as u32)
+                        .range(slice_start_u32..slice_end_u32)
                         .map(|pos| pos - slice_start_u32 + current_offset_u32),
                 );
 
@@ -927,7 +949,6 @@ fn merge_partition_slices_interleaved(
             }
         }
     }
-
     RoaringBitmap::from_sorted_iter(final_positions)
         .expect("Attempt to merge with unsorted positions")
 }
@@ -936,7 +957,7 @@ fn merge_partition_slices_interleaved(
 
 // --- BF MANAGEMENT ---
 
-fn compute_base_position(
+const fn compute_base_position(
     kmer_hash: u64,
     partitioned_bf_size: usize,
     color_number: usize,
@@ -1168,28 +1189,24 @@ pub fn read_fof_file(file_path: &str) -> io::Result<(Vec<String>, usize)> {
     Ok((file_paths, color_number))
 }
 
-fn split_fof(lines: &[String]) -> io::Result<(Vec<Vec<String>>, Vec<usize>)> {
-    let total_colors = lines.len();
+fn split_fof(lines: &[String], number_of_chunks: usize) -> io::Result<Vec<Vec<String>>> {
+    let number_colors = lines.len();
 
-    // chunk max size
-    let magic_nb_split = 128;
     // Determine split_factor
-    let split_factor = if total_colors < magic_nb_split {
+    let split_factor = if number_colors < number_of_chunks {
         1
     } else {
-        total_colors.div_ceil(magic_nb_split)
+        number_colors.div_ceil(number_of_chunks)
     };
 
     let mut fof_chunks = vec![vec![]; split_factor];
-    let mut chunk_sizes = vec![0; split_factor]; // store the number of colors in each chunk
 
     for (i, line) in lines.iter().enumerate() {
-        let chunk_index = i / magic_nb_split;
+        let chunk_index = i / number_of_chunks;
         fof_chunks[chunk_index].push(line.clone());
-        chunk_sizes[chunk_index] += 1; // increment of file paths
     }
 
-    Ok((fof_chunks, chunk_sizes))
+    Ok(fof_chunks)
 }
 
 // TODO discuss: used to return a Result, but only the OK variant was returnd
@@ -1943,6 +1960,7 @@ mod tests {
         color_number: usize,
         abundance_number: usize,
         abundance_max: u16,
+        chunks_size: usize,
         dense_option: bool,
         threshold: usize,
         file_paths: Vec<String>,
@@ -1961,13 +1979,13 @@ mod tests {
             true,
         );
         let (_file_paths, index_dir) = index
-            .build(file_paths.clone(), test_dir, dense_option, threshold)
+            .build(file_paths.clone(), test_dir, chunks_size, threshold)
             .expect("Failed to build index");
 
         let query_results_path = format!("{}/query_results.csv", index_dir);
 
         let index_from_csv =
-            Reindeer2::from_csv(&index_dir).expect("Failed to laod index infos from disk");
+            Reindeer2::from_csv(&index_dir).expect("Failed to load index infos from disk");
         index_from_csv
             .query(
                 &file_paths[query_file_id],
@@ -1979,6 +1997,7 @@ mod tests {
             .expect("Failed to query sequences");
         query_results_path
     }
+
     #[test]
     fn test_build_and_query_index_single_sparse() {
         let test_dir = "test_files_bq0";
@@ -2009,6 +2028,7 @@ mod tests {
         let color_number = 1;
         let abundance_number = 256;
         let abundance_max = 65535;
+        let chunks_size = 128;
         let dense_option = false;
         let threshold = color_number;
 
@@ -2024,13 +2044,13 @@ mod tests {
             false,
         );
         let (_file_paths, index_dir) = index
-            .build(vec![file1_path.clone()], test_dir, dense_option, threshold)
+            .build(vec![file1_path.clone()], test_dir, chunks_size, threshold)
             .expect("Failed to build index");
 
         let query_results_path = format!("{}/query_results.csv", index_dir);
 
         let index_from_csv =
-            Reindeer2::from_csv(&index_dir).expect("Failed to laod index infos from disk");
+            Reindeer2::from_csv(&index_dir).expect("Failed to load index infos from disk");
         index_from_csv
             .query(
                 &file1_path,
@@ -2105,6 +2125,7 @@ mod tests {
         let color_number = 1;
         let abundance_number = 255;
         let abundance_max = 65535;
+        let chunks_size = 128;
         let dense_option = true;
         let threshold = color_number;
 
@@ -2116,6 +2137,7 @@ mod tests {
             color_number,
             abundance_number,
             abundance_max,
+            chunks_size,
             dense_option,
             threshold,
             vec![file1_path],
@@ -2197,6 +2219,7 @@ mod tests {
         let color_number = 2;
         let abundance_number = 256;
         let abundance_max = 65535;
+        let chunks_size = 128;
         let dense_option = false;
         let threshold = color_number;
 
@@ -2208,6 +2231,7 @@ mod tests {
             color_number,
             abundance_number,
             abundance_max,
+            chunks_size,
             dense_option,
             threshold,
             vec![file1_path, file2_path],
@@ -2288,6 +2312,7 @@ mod tests {
         let color_number = 2;
         let abundance_number = 256;
         let abundance_max = 65535;
+        let chunks_size = 128;
         let dense_option = true;
         let threshold = color_number;
 
@@ -2299,6 +2324,7 @@ mod tests {
             color_number,
             abundance_number,
             abundance_max,
+            chunks_size,
             dense_option,
             threshold,
             vec![file1_path, file2_path],
@@ -2376,6 +2402,7 @@ mod tests {
         let color_number = 2;
         let abundance_number = 256;
         let abundance_max = 65535;
+        let chunks_size = 128;
         let dense_option = false;
         let threshold = color_number;
 
@@ -2387,6 +2414,7 @@ mod tests {
             color_number,
             abundance_number,
             abundance_max,
+            chunks_size,
             dense_option,
             threshold,
             vec![file1_path, file2_path],
@@ -2460,6 +2488,7 @@ mod tests {
         let color_number = 2;
         let abundance_number = 256;
         let abundance_max = 65535;
+        let chunks_size = 128;
         let dense_option = true;
         let threshold = color_number;
 
@@ -2471,6 +2500,7 @@ mod tests {
             color_number,
             abundance_number,
             abundance_max,
+            chunks_size,
             dense_option,
             threshold,
             vec![file1_path, file2_path],
@@ -2549,6 +2579,7 @@ mod tests {
         let color_number = 2;
         let abundance_number = 255;
         let abundance_max = 65535;
+        let chunks_size = 128;
         let dense_option = false;
         let threshold = 1;
 
@@ -2560,6 +2591,7 @@ mod tests {
             color_number,
             abundance_number,
             abundance_max,
+            chunks_size,
             dense_option,
             threshold,
             vec![file1_path, file2_path],
@@ -2640,6 +2672,7 @@ mod tests {
         let color_number = 2;
         let abundance_number = 255;
         let abundance_max = 65535;
+        let chunks_size = 128;
         let dense_option = true;
         let threshold = 1;
 
@@ -2651,6 +2684,7 @@ mod tests {
             color_number,
             abundance_number,
             abundance_max,
+            chunks_size,
             dense_option,
             threshold,
             vec![file1_path, file2_path],
@@ -2730,6 +2764,7 @@ mod tests {
         let color_number = 2;
         let abundance_number = 255;
         let abundance_max = 255;
+        let chunks_size = 128;
         let dense_option = false;
         let threshold = color_number;
 
@@ -2741,6 +2776,7 @@ mod tests {
             color_number,
             abundance_number,
             abundance_max,
+            chunks_size,
             dense_option,
             threshold,
             vec![file1_path, file2_path],
@@ -2822,6 +2858,7 @@ mod tests {
         let color_number = 2;
         let abundance_number = 255;
         let abundance_max = 255;
+        let chunks_size = 128;
         let dense_option = true;
         let threshold = color_number;
 
@@ -2833,6 +2870,195 @@ mod tests {
             color_number,
             abundance_number,
             abundance_max,
+            chunks_size,
+            dense_option,
+            threshold,
+            vec![file1_path, file2_path],
+            0,
+            test_dir,
+        );
+
+        let mut reader = csv::Reader::from_reader(
+            File::open(&query_results_path).expect("Failed to open query results"),
+        );
+
+        let mut results: Vec<(String, usize, usize)> = Vec::new();
+        for record in reader.records() {
+            let record = record.expect("Failed to read record");
+            let seq_id = record[0].to_string();
+            let color: usize = record[1].parse().expect("Failed to parse color");
+            let abundance: usize = record[2].parse().expect("Failed to parse abundance");
+            results.push((seq_id, color, abundance));
+        }
+
+        assert!(!results.is_empty(), "Empty results");
+
+        let mut expected_results = [
+            (">seq1 ka:f:30".to_string(), 0, 30),
+            (">seq2 ka:f:30".to_string(), 0, 30),
+            (">seq3 ka:f:1500".to_string(), 0, 255), //because of abundance_max
+            (">seq3 ka:f:1500".to_string(), 1, 4),
+        ];
+        results.sort();
+        expected_results.sort();
+        for (expected, actual) in expected_results.iter().zip(results.iter()) {
+            assert_eq!(
+                expected, actual,
+                "Mismatch: expected {:?}, got {:?}",
+                expected, actual
+            );
+        }
+        fs::remove_dir_all(test_dir).expect("Failed to clean up test directory");
+    }
+
+    #[test]
+    fn test_build_and_query_index_sharedk_sparse_smallchunks() {
+        let test_dir = "test_files_bq3_smallchunks";
+        fs::create_dir_all(test_dir).expect("Failed to create test directory");
+
+        let fof_path = format!("{}/fof.txt", test_dir);
+        let file1_path = format!("{}/file1Q.fa", test_dir);
+        let file2_path = format!("{}/file2Q.fa", test_dir);
+        {
+            let mut fof_file = File::create(&fof_path).expect("Failed to create fof.txt");
+            writeln!(fof_file, "{}", file1_path).expect("Failed to write to fof.txt");
+            writeln!(fof_file, "{}", file2_path).expect("Failed to write to fof.txt");
+        }
+
+        {
+            let mut file1 = File::create(&file1_path).expect("Failed to create file1.fasta");
+            writeln!(file1, ">seq1 ka:f:30").expect("Failed to write header");
+            writeln!(file1, "AAAAAAAAAAAAAAAAAAAAAACACAGATCA").expect("Failed to write sequence");
+            writeln!(file1, ">seq2 ka:f:30").expect("Failed to write header");
+            writeln!(file1, "AAAAAAAAAAAAAAAAAAAAACACAGATCAT").expect("Failed to write sequence");
+            writeln!(file1, ">seq3 ka:f:1500").expect("Failed to write header");
+            writeln!(file1, "AAAAAAAAAAAAAAAAAAAAAACAAAAAGAA").expect("Failed to write sequence");
+        }
+
+        {
+            let mut file2 = File::create(&file2_path).expect("Failed to create file2.fasta");
+            writeln!(file2, ">seq4 ka:f:1000").expect("Failed to write header");
+            writeln!(file2, "AAAAAAAAAAAAAAAAAAAAAACACCCCTGG").expect("Failed to write sequence");
+            writeln!(file2, ">seq5 ka:f:1000").expect("Failed to write header");
+            writeln!(file2, "AAAAAAAAAAAAAAAAAAAAACACCCCTGGG").expect("Failed to write sequence");
+            writeln!(file2, ">seq6 ka:f:4").expect("Failed to write header");
+            writeln!(file2, "AAAAAAAAAAAAAAAAAAAAAACAAAAAGAA").expect("Failed to write sequence");
+        }
+
+        let k = 31;
+        let m = 15;
+        let bf_size = 1024 * 1024;
+        let partition_number = 4;
+        let color_number = 2;
+        let abundance_number = 255;
+        let abundance_max = 255;
+        let chunks_size = 1;
+        let dense_option = false;
+        let threshold = color_number;
+
+        let query_results_path = create_build_query(
+            bf_size,
+            partition_number,
+            k,
+            m,
+            color_number,
+            abundance_number,
+            abundance_max,
+            chunks_size,
+            dense_option,
+            threshold,
+            vec![file1_path, file2_path],
+            0,
+            test_dir,
+        );
+
+        let mut reader = csv::Reader::from_reader(
+            File::open(&query_results_path).expect("Failed to open query results"),
+        );
+
+        let mut results: Vec<(String, usize, usize)> = Vec::new();
+        for record in reader.records() {
+            let record = record.expect("Failed to read record");
+            let seq_id = record[0].to_string();
+            let color: usize = record[1].parse().expect("Failed to parse color");
+            let abundance: usize = record[2].parse().expect("Failed to parse abundance");
+            results.push((seq_id, color, abundance));
+        }
+
+        assert!(!results.is_empty(), "Empty results");
+
+        let mut expected_results = [
+            (">seq1 ka:f:30".to_string(), 0, 30),
+            (">seq2 ka:f:30".to_string(), 0, 30),
+            (">seq3 ka:f:1500".to_string(), 0, 255), //because of abundance_max
+            (">seq3 ka:f:1500".to_string(), 1, 4),
+        ];
+        results.sort();
+        expected_results.sort();
+        for (expected, actual) in expected_results.iter().zip(results.iter()) {
+            assert_eq!(
+                expected, actual,
+                "Mismatch: expected {:?}, got {:?}",
+                expected, actual
+            );
+        }
+        fs::remove_dir_all(test_dir).expect("Failed to clean up test directory");
+    }
+
+    #[test]
+    fn test_build_and_query_index_sharedk_dense_smallchunks() {
+        let test_dir = "test_files_bq3d_smallchunks";
+        fs::create_dir_all(test_dir).expect("Failed to create test directory");
+
+        let fof_path = format!("{}/fof.txt", test_dir);
+        let file1_path = format!("{}/file1Q.fa", test_dir);
+        let file2_path = format!("{}/file2Q.fa", test_dir);
+        {
+            let mut fof_file = File::create(&fof_path).expect("Failed to create fof.txt");
+            writeln!(fof_file, "{}", file1_path).expect("Failed to write to fof.txt");
+            writeln!(fof_file, "{}", file2_path).expect("Failed to write to fof.txt");
+        }
+
+        {
+            let mut file1 = File::create(&file1_path).expect("Failed to create file1.fasta");
+            writeln!(file1, ">seq1 ka:f:30").expect("Failed to write header");
+            writeln!(file1, "AAAAAAAAAAAAAAAAAAAAAACACAGATCA").expect("Failed to write sequence");
+            writeln!(file1, ">seq2 ka:f:30").expect("Failed to write header");
+            writeln!(file1, "AAAAAAAAAAAAAAAAAAAAACACAGATCAT").expect("Failed to write sequence");
+            writeln!(file1, ">seq3 ka:f:1500").expect("Failed to write header");
+            writeln!(file1, "AAAAAAAAAAAAAAAAAAAAAACAAAAAGAA").expect("Failed to write sequence");
+        }
+
+        {
+            let mut file2 = File::create(&file2_path).expect("Failed to create file2.fasta");
+            writeln!(file2, ">seq4 ka:f:1000").expect("Failed to write header");
+            writeln!(file2, "AAAAAAAAAAAAAAAAAAAAAACACCCCTGG").expect("Failed to write sequence");
+            writeln!(file2, ">seq5 ka:f:1000").expect("Failed to write header");
+            writeln!(file2, "AAAAAAAAAAAAAAAAAAAAACACCCCTGGG").expect("Failed to write sequence");
+            writeln!(file2, ">seq6 ka:f:4").expect("Failed to write header");
+            writeln!(file2, "AAAAAAAAAAAAAAAAAAAAAACAAAAAGAA").expect("Failed to write sequence");
+        }
+
+        let k = 31;
+        let m = 15;
+        let bf_size = 1024 * 1024;
+        let partition_number = 4;
+        let color_number = 2;
+        let abundance_number = 255;
+        let abundance_max = 255;
+        let chunks_size = 1;
+        let dense_option = true;
+        let threshold = color_number;
+
+        let query_results_path = create_build_query(
+            bf_size,
+            partition_number,
+            k,
+            m,
+            color_number,
+            abundance_number,
+            abundance_max,
+            chunks_size,
             dense_option,
             threshold,
             vec![file1_path, file2_path],
@@ -2910,6 +3136,7 @@ mod tests {
         let color_number = 2;
         let abundance_number = 255;
         let abundance_max = 65535;
+        let chunks_size = 128;
         let dense_option = false;
         let threshold = color_number;
 
@@ -2921,6 +3148,7 @@ mod tests {
             color_number,
             abundance_number,
             abundance_max,
+            chunks_size,
             dense_option,
             threshold,
             vec![file1_path, file2_path],
@@ -2996,6 +3224,7 @@ mod tests {
         let color_number = 2;
         let abundance_number = 255;
         let abundance_max = 65535;
+        let chunks_size = 128;
         let dense_option = true;
         let threshold = color_number;
 
@@ -3007,6 +3236,7 @@ mod tests {
             color_number,
             abundance_number,
             abundance_max,
+            chunks_size,
             dense_option,
             threshold,
             vec![file1_path, file2_path],
@@ -3097,7 +3327,7 @@ mod tests {
 
             // I add + log_abund because base_position does not have this info and just finds approximately the value
             assert_eq!(
-                position_to_write,
+                position_to_write as u64,
                 base_position + (log_abundance as u64),
                 "Position mismatch: insert = {}, query = {}",
                 position_to_write,
@@ -3135,9 +3365,8 @@ mod tests {
         );
     }
 
-    #[ignore]
     #[test]
-    fn test_split_fof_1() -> std::io::Result<()> {
+    fn test_split_fof() -> std::io::Result<()> {
         use std::fs::{self, File};
         use std::io::{BufRead, BufReader, Write};
 
@@ -3159,11 +3388,13 @@ mod tests {
         let reader = BufReader::new(file);
         let lines: Vec<String> = reader.lines().collect::<Result<_, _>>()?;
 
-        let result = split_fof(&lines);
+        // Test with chunks_size = 2
+        let chunks_size = 2;
+        let result = split_fof(&lines, chunks_size);
 
         assert!(result.is_ok(), "split_fof returned an error");
 
-        let (fof_chunks, _) = result.unwrap();
+        let fof_chunks = result.unwrap();
 
         let expected_chunks = vec![
             vec![
@@ -3176,6 +3407,28 @@ mod tests {
             ],
             vec!["/path/to/file5.fasta".to_string()],
         ];
+
+        assert_eq!(
+            fof_chunks, expected_chunks,
+            "Mismatch in chunk distribution: expected {:?}, got {:?}",
+            expected_chunks, fof_chunks
+        );
+
+        // Test with chunks_size = 5
+        let chunks_size = 5;
+        let result = split_fof(&lines, chunks_size);
+
+        assert!(result.is_ok(), "split_fof returned an error");
+
+        let fof_chunks = result.unwrap();
+
+        let expected_chunks = vec![vec![
+            "/path/to/file1.fasta".to_string(),
+            "/path/to/file2.fasta".to_string(),
+            "/path/to/file3.fasta".to_string(),
+            "/path/to/file4.fasta".to_string(),
+            "/path/to/file5.fasta".to_string(),
+        ]];
 
         assert_eq!(
             fof_chunks, expected_chunks,
@@ -3305,6 +3558,7 @@ mod tests {
         let color_number = 8;
         let abundance_number = 255;
         let abundance_max = 65535;
+        let chunks_size = 128;
         let dense_option = false;
         let threshold = color_number;
 
@@ -3326,6 +3580,7 @@ mod tests {
             color_number,
             abundance_number,
             abundance_max,
+            chunks_size,
             dense_option,
             threshold,
             file_paths,
@@ -3467,6 +3722,7 @@ mod tests {
         let color_number = 6;
         let abundance_number = 255;
         let abundance_max = 65535;
+        let chunks_size = 128;
         let dense_option = false;
         let threshold = color_number;
 
@@ -3486,6 +3742,7 @@ mod tests {
             color_number,
             abundance_number,
             abundance_max,
+            chunks_size,
             dense_option,
             threshold,
             file_paths,
@@ -3591,6 +3848,7 @@ mod tests {
         let color_number = 9;
         let abundance_number = 255;
         let abundance_max = 65535;
+        let chunks_size = 128;
         let dense_option = false;
         let threshold = color_number;
 
@@ -3613,6 +3871,7 @@ mod tests {
             color_number,
             abundance_number,
             abundance_max,
+            chunks_size,
             dense_option,
             threshold,
             file_paths,
@@ -3709,6 +3968,7 @@ mod tests {
         let color_number = 5;
         let abundance_number = 255;
         let abundance_max = 65535;
+        let chunks_size = 128;
         let dense_option = false;
         let threshold = color_number;
 
@@ -3727,6 +3987,7 @@ mod tests {
             color_number,
             abundance_number,
             abundance_max,
+            chunks_size,
             dense_option,
             threshold,
             file_paths,
@@ -3922,6 +4183,7 @@ mod tests {
         let color_number = 9;
         let abundance_number = 255;
         let abundance_max = 65535;
+        let chunks_size = 128;
         let dense_option = false;
         let threshold = color_number;
 
@@ -3944,6 +4206,7 @@ mod tests {
             color_number,
             abundance_number,
             abundance_max,
+            chunks_size,
             dense_option,
             threshold,
             file_paths,
@@ -4005,6 +4268,7 @@ mod tests {
         let color_number = 1;
         let abundance_number = 255;
         let abundance_max = 65535;
+        let chunks_size = 128;
         let _batch_size = 2;
         let dense_option = false;
         let threshold = color_number;
@@ -4022,11 +4286,11 @@ mod tests {
         );
 
         let (_file_paths, index_dir) = index
-            .build(vec![fasta_path.clone()], test_dir, dense_option, threshold)
+            .build(vec![fasta_path.clone()], test_dir, chunks_size, threshold)
             .expect("Failed to build index");
 
         let index_from_csv =
-            Reindeer2::from_csv(&index_dir).expect("Failed to laod index infos from disk");
+            Reindeer2::from_csv(&index_dir).expect("Failed to load index infos from disk");
         index_from_csv
             .query(
                 &fasta_path,
@@ -4091,6 +4355,7 @@ mod tests {
         let color_number = 2;
         let abundance_number = 256;
         let abundance_max = 65535;
+        let chunks_size = 128;
         let dense_option = false;
         let threshold = color_number;
         let canonical = true;
@@ -4107,7 +4372,7 @@ mod tests {
             canonical,
         );
         let (_, index_dir) = index
-            .build(file_paths.clone(), test_dir, dense_option, threshold)
+            .build(file_paths.clone(), test_dir, chunks_size, threshold)
             .expect("Failed to build index");
 
         let query_results_path = format!("{}/query_results.csv", index_dir);
@@ -4162,6 +4427,7 @@ shared_revcomp_with_other_test_file 0-19:3 0-19:10",
         let color_number = 2;
         let abundance_number = 256;
         let abundance_max = 65535;
+        let chunks_size = 128;
         let dense_option = false;
         let threshold = color_number;
         let canonical = true;
@@ -4178,7 +4444,7 @@ shared_revcomp_with_other_test_file 0-19:3 0-19:10",
             canonical,
         );
         let (_, index_dir) = index
-            .build(file_paths.clone(), test_dir, dense_option, threshold)
+            .build(file_paths.clone(), test_dir, chunks_size, threshold)
             .expect("Failed to build index");
 
         let query_results_path = format!("{}/query_results.csv", index_dir);
@@ -4230,6 +4496,7 @@ header_0 0-69:* 0-69:1",
         let color_number = 2;
         let abundance_number = 256;
         let abundance_max = 65535;
+        let chunks_size = 128;
         let dense_option = false;
         let threshold = color_number;
         let canonical = false;
@@ -4246,7 +4513,7 @@ header_0 0-69:* 0-69:1",
             canonical,
         );
         let (_, index_dir) = index
-            .build(file_paths.clone(), test_dir, dense_option, threshold)
+            .build(file_paths.clone(), test_dir, chunks_size, threshold)
             .expect("Failed to build index");
 
         let query_results_path = format!("{}/query_results.csv", index_dir);
@@ -4325,6 +4592,7 @@ shared_revcomp_with_other_test_file 0-19:* 0-19:10",
         let partitions = 2;
         let abundance = 255;
         let abundance_max = 65535;
+        let chunks_size = 128;
         let dense_option = false;
         let canonical = true;
         let tolerated_number_of_zeros = 0;
@@ -4333,20 +4601,20 @@ shared_revcomp_with_other_test_file 0-19:* 0-19:10",
         let index1_file_paths = vec![file1_path.clone()];
         let color_nb_1 = 1;
         let index = Reindeer2::new(
-                bf_size,
-                partitions,
-                k,
-                m,
-                color_nb_1,
-                abundance,
-                abundance_max,
-                dense_option,
-                canonical,
+            bf_size,
+            partitions,
+            k,
+            m,
+            color_nb_1,
+            abundance,
+            abundance_max,
+            dense_option,
+            canonical,
         );
         index.build(
             index1_file_paths,
             &index1_index_dir,
-            dense_option,
+            chunks_size,
             tolerated_number_of_zeros,
         )?;
 
@@ -4367,7 +4635,7 @@ shared_revcomp_with_other_test_file 0-19:* 0-19:10",
         index.build(
             index2_file_paths,
             &index2_index_dir,
-            dense_option,
+            chunks_size,
             tolerated_number_of_zeros,
         )?;
 
@@ -4377,16 +4645,29 @@ shared_revcomp_with_other_test_file 0-19:* 0-19:10",
             writeln!(fof, "{}", index2_index_dir)?;
         }
 
-        merge_multiple_indexes(&indexes_fof, &merged_index_dir).expect("Failed to merge the test indexes");
+        merge_multiple_indexes(&indexes_fof, &merged_index_dir)
+            .expect("Failed to merge the test indexes");
 
-        let merged_index = Reindeer2::from_csv(&merged_index_dir).expect("Failed to read the merged index metadata (csv)");
+        let merged_index = Reindeer2::from_csv(&merged_index_dir)
+            .expect("Failed to read the merged index metadata (csv)");
 
-        assert_eq!(merged_index.nb_color, 3, "Expected merged color count to be 3, got {}", merged_index.nb_color);
+        assert_eq!(
+            merged_index.nb_color, 3,
+            "Expected merged color count to be 3, got {}",
+            merged_index.nb_color
+        );
 
         // check that each partition file in the merged index exists
         for partition in 0..partitions {
-            let part_path = format!("{}/partition_bloom_filters_p{}.bin", merged_index_dir, partition);
-            assert!(Path::new(&part_path).exists(), "Merged partition file {} does not exist", part_path);
+            let part_path = format!(
+                "{}/partition_bloom_filters_p{}.bin",
+                merged_index_dir, partition
+            );
+            assert!(
+                Path::new(&part_path).exists(),
+                "Merged partition file {} does not exist",
+                part_path
+            );
         }
 
         fs::remove_dir_all(base_dir)?;

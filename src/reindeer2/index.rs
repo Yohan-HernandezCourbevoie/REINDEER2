@@ -15,7 +15,7 @@ use crate::reindeer2::{dense_index::DenseIndex, filter::Filters};
 pub fn process_fasta_file(
     path: &str,
     maybe_dense_indexes: &Option<Arc<DenseIndex>>,
-    bloom_filters: &Arc<Filters>,
+    bloom_filters: &Filters,
     k: usize,
     m: usize,
     partition_number: usize,
@@ -112,7 +112,7 @@ pub fn process_fasta_file(
     // flush the dense indexes from sparse k-mers after each file *in the first chunk*
     if chunk_index == 0 {
         if let Some(dense_indexes) = maybe_dense_indexes {
-            dense_indexes.truc(
+            dense_indexes.remove_sparse_entries(
                 bloom_filters,
                 path_num,
                 threshold,

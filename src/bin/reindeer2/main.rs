@@ -10,7 +10,7 @@ use std::time::Instant;
 use cli::Cli;
 use cli::OutputFormatCli;
 use overflow_detection::check_number_of_partitions;
-use reindeer2::reindeer2::{read_fof_file, OutputFormat, Reindeer2, merge_multiple_indexes};
+use reindeer2::reindeer2::{merge_multiple_indexes, read_fof_file, OutputFormat, Reindeer2};
 
 impl OutputFormatCli {
     fn to_output_format(self, normalized: Option<u64>, breakpoints: Option<f64>) -> OutputFormat {
@@ -47,6 +47,7 @@ fn main() -> io::Result<()> {
             let bloomfilter = args.bloomfilter;
             let abundance = args.abundance;
             let abundance_max = args.abundance_max;
+            let chunks_size = args.chunks_size;
             let dense_option = args.dense;
             let canonical = !args.stranded;
             let output_dir = args.output_dir.unwrap_or_else(|| {
@@ -58,7 +59,6 @@ fn main() -> io::Result<()> {
             let bf_size = 1u64 << bloomfilter; // Bloom filter size as a power of 2
 
             let partitions = check_number_of_partitions(&input, partitions, abundance, bf_size);
-
             // CHECKS
             if dense_option {
                 rayon::ThreadPoolBuilder::new()
@@ -68,15 +68,23 @@ fn main() -> io::Result<()> {
                 if kmer > 32 {
                     panic!("ERROR : With the '--dense' option set to 'true', the k-mer size must be <= 32.")
                 }
-                if abundance > 255 {
-                    println!("WARNING : the abundance granularity exceeds the requirements of the '--dense' (<256). The abundance granularity is now set to 255.");
-                }
             } else {
                 rayon::ThreadPoolBuilder::new()
                     .num_threads(max_threads)
                     .build_global()
                     .unwrap();
             }
+            let abundance = if abundance > 255 && dense_option {
+                println!("WARNING : the abundance granularity exceeds the requirements of the '--dense' (<256). The abundance granularity is now set to 255.");
+                255
+            } else if abundance >= 666 {
+                // TODO remove once 666s will be removed from the build step and query step
+                println!("WARNING : the abundance granularity exceeds internal limitations (666). The abundance granularity is now set to 665.");
+                665
+            } else {
+                abundance
+            };
+
             let minimizer = if kmer < minimizer {
                 println!("WARNING : the minimizer size '{}' exceeds the k-mer size '{}'. The minimiser size is now set to '{}'", minimizer, kmer, kmer);
                 kmer
@@ -129,7 +137,7 @@ fn main() -> io::Result<()> {
             index.build(
                 file_paths,
                 &output_dir,
-                dense_option,
+                chunks_size,
                 tolerated_number_of_zeros,
             )?;
             // }
@@ -183,14 +191,14 @@ fn main() -> io::Result<()> {
                 .expect("Failed to query sequences");
             println!("Results written to {}", query_output);
             println!("Query complete in {:.2?}", start_time.elapsed());
-        } 
+        }
 
         cli::Command::Merge(args) => {
             rayon::ThreadPoolBuilder::new()
                 .num_threads(max_threads)
                 .build_global()
                 .unwrap();
-                
+
             let file_of_indexes = args.file_of_indexes;
             let output_dir = args.output_dir.unwrap_or_else(|| {
                 format!("PACAS_index_{}", rand::rng().random::<u64>()) // Generate a unique directory name
@@ -199,10 +207,9 @@ fn main() -> io::Result<()> {
             let start_time = Instant::now();
             merge_multiple_indexes(&file_of_indexes, &output_dir)
                 .expect("Failed to merge the given indexes.");
-            
-            
+
             println!("Query complete in {:.2?}", start_time.elapsed());
-        } 
+        }
     }
 
     Ok(())
