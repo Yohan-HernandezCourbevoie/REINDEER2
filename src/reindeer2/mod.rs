@@ -795,7 +795,7 @@ fn merge_all_partitions(
     let start_time = Instant::now();
     // for each partition in parallel
     (0..num_partitions)
-        .into_iter() // TODO put multithread again (removed for debug purposes)
+        .into_par_iter()
         .try_for_each(|partition_idx| {
             // collect chunk files for the current partition
             let chunk_files_for_partition: Vec<String> = color_counts_per_chunk
