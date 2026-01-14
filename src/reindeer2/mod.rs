@@ -200,6 +200,9 @@ impl Reindeer2 {
         };
 
         for (chunk_i, chunk) in chunks.iter().enumerate() {
+            // OPTIMIZE we are losing the underlying allocation of the Filters here
+            // but currently each chunk could have a different size, so we have to recreate them
+            // if this is a bottleneck, we should find a way to reuse the Filters
             let bloom_filters = Filters::with_number_partition(
                 self.partition_number,
                 chunk.len(),
