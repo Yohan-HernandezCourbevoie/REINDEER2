@@ -708,7 +708,7 @@ fn process_fasta_in_batches<R: io::BufRead>(
 
 // merge an arbitrary number of indexes  listed in a fof
 // each line of the fof is expected to he path to one index dir
-// in the end, alsos write a  new metadata CSV file in the output dir
+// in the end, alsos write a  new metadata JSON file in the output dir
 pub fn merge_multiple_indexes(indexes_fof: &str, output_dir: &str) -> io::Result<()> {
     // read the list of index directories.
     let index_dirs: Vec<String> = {
@@ -1969,7 +1969,7 @@ mod tests {
     }
 
     #[test]
-    fn test_write_and_read_partition_csv() {
+    fn test_write_and_read_metadata() {
         let bf_dir = "test_bf_dir";
         let expected = Reindeer2 {
             k: 31,
