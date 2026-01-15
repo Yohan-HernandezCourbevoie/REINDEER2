@@ -2040,6 +2040,21 @@ mod tests {
         query_results_path
     }
 
+    fn load_query_result_csv<P: AsRef<Path>>(path: P) -> Vec<(String, usize, usize)> {
+        let file = File::open(&path).expect("Failed to open query results");
+
+        csv::Reader::from_reader(file)
+            .records()
+            .map(|record| record.expect("Failed to read record"))
+            .map(|record| {
+                let header = record[0].to_string(); // Now reading the header instead of the sequence ID
+                let color = record[1].parse().expect("Failed to parse color");
+                let abundance = record[2].parse().expect("Failed to parse abundance");
+                (header, color, abundance)
+            })
+            .collect()
+    }
+
     #[test]
     fn test_build_and_query_index_single_sparse() {
         let test_dir = "test_files_bq0";
@@ -2103,20 +2118,7 @@ mod tests {
             )
             .expect("Failed to query sequences");
 
-        let mut reader = csv::Reader::from_reader(
-            File::open(&query_results_path).expect("Failed to open query results"),
-        );
-        let mut results: Vec<(String, usize, usize)> = Vec::new();
-        for record in reader.records() {
-            let record = record.expect("Failed to read record");
-            let header = record[0].to_string(); // Now reading the header instead of the sequence ID
-            let color: usize = record[1].parse().expect("Failed to parse color");
-            let abundance: usize = record[2].parse().expect("Failed to parse abundance");
-            results.push((header, color, abundance));
-        }
-
-        assert!(!results.is_empty(), "Empty results");
-
+        let mut results = load_query_result_csv(query_results_path);
         let mut expected_results = [
             (">seq1 ka:f:30".to_string(), 0, 29),
             (">seq2 ka:f:30".to_string(), 0, 29),
@@ -2187,20 +2189,7 @@ mod tests {
             test_dir,
         );
 
-        let mut reader = csv::Reader::from_reader(
-            File::open(&query_results_path).expect("Failed to open query results"),
-        );
-        let mut results: Vec<(String, usize, usize)> = Vec::new();
-        for record in reader.records() {
-            let record = record.expect("Failed to read record");
-            let header = record[0].to_string(); // Now reading the header instead of the sequence ID
-            let color: usize = record[1].parse().expect("Failed to parse color");
-            let abundance: usize = record[2].parse().expect("Failed to parse abundance");
-            results.push((header, color, abundance));
-        }
-
-        assert!(!results.is_empty(), "Empty results");
-
+        let mut results = load_query_result_csv(query_results_path);
         let mut expected_results = [
             (">seq1 ka:f:30".to_string(), 0, 29),
             (">seq2 ka:f:30".to_string(), 0, 29),
@@ -2280,21 +2269,7 @@ mod tests {
             0,
             test_dir,
         );
-
-        let mut reader = csv::Reader::from_reader(
-            File::open(&query_results_path).expect("Failed to open query results"),
-        );
-        let mut results: Vec<(String, usize, usize)> = Vec::new();
-        for record in reader.records() {
-            let record = record.expect("Failed to read record");
-            let header = record[0].to_string(); // Now reading the header instead of the sequence ID
-            let color: usize = record[1].parse().expect("Failed to parse color");
-            let abundance: usize = record[2].parse().expect("Failed to parse abundance");
-            results.push((header, color, abundance));
-        }
-
-        assert!(!results.is_empty(), "Empty results");
-
+        let mut results = load_query_result_csv(query_results_path);
         let mut expected_results = [
             (">seq1 ka:f:30".to_string(), 0, 29),
             (">seq2 ka:f:30".to_string(), 0, 29),
@@ -2374,26 +2349,14 @@ mod tests {
             test_dir,
         );
 
-        let mut reader = csv::Reader::from_reader(
-            File::open(&query_results_path).expect("Failed to open query results"),
-        );
-        let mut results: Vec<(String, usize, usize)> = Vec::new();
-        for record in reader.records() {
-            let record = record.expect("Failed to read record");
-            let header = record[0].to_string(); // Now reading the header instead of the sequence ID
-            let color: usize = record[1].parse().expect("Failed to parse color");
-            let abundance: usize = record[2].parse().expect("Failed to parse abundance");
-            results.push((header, color, abundance));
-        }
-
-        assert!(!results.is_empty(), "Empty results");
-
+        let mut results = load_query_result_csv(query_results_path);
         let mut expected_results = [
             (">seq1 ka:f:30".to_string(), 0, 29),
             (">seq2 ka:f:30".to_string(), 0, 29),
             (">seq3 ka:f:2".to_string(), 0, 2),
             (">seq3 ka:f:2".to_string(), 1, 997),
         ];
+
         results.sort();
         expected_results.sort();
         for (expected, actual) in expected_results.iter().zip(results.iter()) {
@@ -2465,23 +2428,12 @@ mod tests {
         );
 
         // Validate the results written to the query results CSV file
-        let mut reader = csv::Reader::from_reader(
-            File::open(&query_results_path).expect("Failed to open query results"),
-        );
-        let mut results: Vec<(String, usize, usize)> = Vec::new();
-        for record in reader.records() {
-            let record = record.expect("Failed to read record");
-            let header = record[0].to_string(); // Now reading the header instead of the sequence ID
-            let color: usize = record[1].parse().expect("Failed to parse color");
-            let abundance: usize = record[2].parse().expect("Failed to parse abundance");
-            results.push((header, color, abundance));
-        }
-
-        assert!(!results.is_empty(), "Empty results");
-
+        let mut results = load_query_result_csv(query_results_path);
         let mut expected_results = [(">seq3 ka:f:1000".to_string(), 1, 997)];
+
         results.sort();
         expected_results.sort();
+
         for (expected, actual) in expected_results.iter().zip(results.iter()) {
             assert_eq!(
                 expected, actual,
@@ -2551,23 +2503,12 @@ mod tests {
         );
 
         // Validate the results written to the query results CSV file
-        let mut reader = csv::Reader::from_reader(
-            File::open(&query_results_path).expect("Failed to open query results"),
-        );
-        let mut results: Vec<(String, usize, usize)> = Vec::new();
-        for record in reader.records() {
-            let record = record.expect("Failed to read record");
-            let header = record[0].to_string(); // Now reading the header instead of the sequence ID
-            let color: usize = record[1].parse().expect("Failed to parse color");
-            let abundance: usize = record[2].parse().expect("Failed to parse abundance");
-            results.push((header, color, abundance));
-        }
-
-        assert!(!results.is_empty(), "Empty results");
-
+        let mut results = load_query_result_csv(query_results_path);
         let mut expected_results = [(">seq3 ka:f:1000".to_string(), 1, 997)];
+
         results.sort();
         expected_results.sort();
+
         for (expected, actual) in expected_results.iter().zip(results.iter()) {
             assert_eq!(
                 expected, actual,
@@ -2641,27 +2582,15 @@ mod tests {
             test_dir,
         );
 
-        let mut reader = csv::Reader::from_reader(
-            File::open(&query_results_path).expect("Failed to open query results"),
-        );
-
-        let mut results: Vec<(String, usize, usize)> = Vec::new();
-        for record in reader.records() {
-            let record = record.expect("Failed to read record");
-            let seq_id = record[0].to_string();
-            let color: usize = record[1].parse().expect("Failed to parse color");
-            let abundance: usize = record[2].parse().expect("Failed to parse abundance");
-            results.push((seq_id, color, abundance));
-        }
-
-        assert!(!results.is_empty(), "Empty results");
-
+        let mut results = load_query_result_csv(query_results_path);
         let mut expected_results = [
             (">seq4 ka:f:1000".to_string(), 1, 979),
             (">seq5 ka:f:1000".to_string(), 1, 979),
         ];
+
         results.sort();
         expected_results.sort();
+
         for (expected, actual) in expected_results.iter().zip(results.iter()) {
             assert_eq!(
                 expected, actual,
@@ -2734,27 +2663,15 @@ mod tests {
             test_dir,
         );
 
-        let mut reader = csv::Reader::from_reader(
-            File::open(&query_results_path).expect("Failed to open query results"),
-        );
-
-        let mut results: Vec<(String, usize, usize)> = Vec::new();
-        for record in reader.records() {
-            let record = record.expect("Failed to read record");
-            let seq_id = record[0].to_string();
-            let color: usize = record[1].parse().expect("Failed to parse color");
-            let abundance: usize = record[2].parse().expect("Failed to parse abundance");
-            results.push((seq_id, color, abundance));
-        }
-
-        assert!(!results.is_empty(), "Empty results");
-
+        let mut results = load_query_result_csv(query_results_path);
         let mut expected_results = [
             (">seq4 ka:f:1000".to_string(), 1, 979),
             (">seq5 ka:f:1000".to_string(), 1, 979),
         ];
+
         results.sort();
         expected_results.sort();
+
         for (expected, actual) in expected_results.iter().zip(results.iter()) {
             assert_eq!(
                 expected, actual,
@@ -2826,29 +2743,17 @@ mod tests {
             test_dir,
         );
 
-        let mut reader = csv::Reader::from_reader(
-            File::open(&query_results_path).expect("Failed to open query results"),
-        );
-
-        let mut results: Vec<(String, usize, usize)> = Vec::new();
-        for record in reader.records() {
-            let record = record.expect("Failed to read record");
-            let seq_id = record[0].to_string();
-            let color: usize = record[1].parse().expect("Failed to parse color");
-            let abundance: usize = record[2].parse().expect("Failed to parse abundance");
-            results.push((seq_id, color, abundance));
-        }
-
-        assert!(!results.is_empty(), "Empty results");
-
+        let mut results = load_query_result_csv(query_results_path);
         let mut expected_results = [
             (">seq1 ka:f:30".to_string(), 0, 30),
             (">seq2 ka:f:30".to_string(), 0, 30),
             (">seq3 ka:f:1500".to_string(), 0, 255), //because of abundance_max
             (">seq3 ka:f:1500".to_string(), 1, 4),
         ];
+
         results.sort();
         expected_results.sort();
+
         for (expected, actual) in expected_results.iter().zip(results.iter()) {
             assert_eq!(
                 expected, actual,
@@ -2920,29 +2825,17 @@ mod tests {
             test_dir,
         );
 
-        let mut reader = csv::Reader::from_reader(
-            File::open(&query_results_path).expect("Failed to open query results"),
-        );
-
-        let mut results: Vec<(String, usize, usize)> = Vec::new();
-        for record in reader.records() {
-            let record = record.expect("Failed to read record");
-            let seq_id = record[0].to_string();
-            let color: usize = record[1].parse().expect("Failed to parse color");
-            let abundance: usize = record[2].parse().expect("Failed to parse abundance");
-            results.push((seq_id, color, abundance));
-        }
-
-        assert!(!results.is_empty(), "Empty results");
-
+        let mut results = load_query_result_csv(query_results_path);
         let mut expected_results = [
             (">seq1 ka:f:30".to_string(), 0, 30),
             (">seq2 ka:f:30".to_string(), 0, 30),
             (">seq3 ka:f:1500".to_string(), 0, 255), //because of abundance_max
             (">seq3 ka:f:1500".to_string(), 1, 4),
         ];
+
         results.sort();
         expected_results.sort();
+
         for (expected, actual) in expected_results.iter().zip(results.iter()) {
             assert_eq!(
                 expected, actual,
@@ -3014,29 +2907,17 @@ mod tests {
             test_dir,
         );
 
-        let mut reader = csv::Reader::from_reader(
-            File::open(&query_results_path).expect("Failed to open query results"),
-        );
-
-        let mut results: Vec<(String, usize, usize)> = Vec::new();
-        for record in reader.records() {
-            let record = record.expect("Failed to read record");
-            let seq_id = record[0].to_string();
-            let color: usize = record[1].parse().expect("Failed to parse color");
-            let abundance: usize = record[2].parse().expect("Failed to parse abundance");
-            results.push((seq_id, color, abundance));
-        }
-
-        assert!(!results.is_empty(), "Empty results");
-
+        let mut results = load_query_result_csv(query_results_path);
         let mut expected_results = [
             (">seq1 ka:f:30".to_string(), 0, 30),
             (">seq2 ka:f:30".to_string(), 0, 30),
             (">seq3 ka:f:1500".to_string(), 0, 255), //because of abundance_max
             (">seq3 ka:f:1500".to_string(), 1, 4),
         ];
+
         results.sort();
         expected_results.sort();
+
         for (expected, actual) in expected_results.iter().zip(results.iter()) {
             assert_eq!(
                 expected, actual,
@@ -3108,29 +2989,17 @@ mod tests {
             test_dir,
         );
 
-        let mut reader = csv::Reader::from_reader(
-            File::open(&query_results_path).expect("Failed to open query results"),
-        );
-
-        let mut results: Vec<(String, usize, usize)> = Vec::new();
-        for record in reader.records() {
-            let record = record.expect("Failed to read record");
-            let seq_id = record[0].to_string();
-            let color: usize = record[1].parse().expect("Failed to parse color");
-            let abundance: usize = record[2].parse().expect("Failed to parse abundance");
-            results.push((seq_id, color, abundance));
-        }
-
-        assert!(!results.is_empty(), "Empty results");
-
+        let mut results = load_query_result_csv(query_results_path);
         let mut expected_results = [
             (">seq1 ka:f:30".to_string(), 0, 30),
             (">seq2 ka:f:30".to_string(), 0, 30),
             (">seq3 ka:f:1500".to_string(), 0, 255), //because of abundance_max
             (">seq3 ka:f:1500".to_string(), 1, 4),
         ];
+
         results.sort();
         expected_results.sort();
+
         for (expected, actual) in expected_results.iter().zip(results.iter()) {
             assert_eq!(
                 expected, actual,
@@ -3198,27 +3067,15 @@ mod tests {
             test_dir,
         );
 
-        let mut reader = csv::Reader::from_reader(
-            File::open(&query_results_path).expect("Failed to open query results"),
-        );
-
-        let mut results: Vec<(String, usize, usize)> = Vec::new();
-        for record in reader.records() {
-            let record = record.expect("Failed to read record");
-            let seq_id = record[0].to_string();
-            let color: usize = record[1].parse().expect("Failed to parse color");
-            let abundance: usize = record[2].parse().expect("Failed to parse abundance");
-            results.push((seq_id, color, abundance));
-        }
-
-        assert!(!results.is_empty(), "Empty results");
-
+        let mut results = load_query_result_csv(query_results_path);
         let mut expected_results = [
             (">seq1 ka:f:30".to_string(), 0, 29),
             (">seq2 ka:f:8".to_string(), 0, 8),
         ];
+
         results.sort();
         expected_results.sort();
+
         for (expected, actual) in expected_results.iter().zip(results.iter()) {
             assert_eq!(
                 expected, actual,
@@ -3286,27 +3143,15 @@ mod tests {
             test_dir,
         );
 
-        let mut reader = csv::Reader::from_reader(
-            File::open(&query_results_path).expect("Failed to open query results"),
-        );
-
-        let mut results: Vec<(String, usize, usize)> = Vec::new();
-        for record in reader.records() {
-            let record = record.expect("Failed to read record");
-            let seq_id = record[0].to_string();
-            let color: usize = record[1].parse().expect("Failed to parse color");
-            let abundance: usize = record[2].parse().expect("Failed to parse abundance");
-            results.push((seq_id, color, abundance));
-        }
-
-        assert!(!results.is_empty(), "Empty results");
-
+        let mut results = load_query_result_csv(query_results_path);
         let mut expected_results = [
             (">seq1 ka:f:30".to_string(), 0, 29),
             (">seq2 ka:f:8".to_string(), 0, 8),
         ];
+
         results.sort();
         expected_results.sort();
+
         for (expected, actual) in expected_results.iter().zip(results.iter()) {
             assert_eq!(
                 expected, actual,
@@ -3630,23 +3475,12 @@ mod tests {
             test_dir,
         );
 
-        let mut reader = csv::Reader::from_reader(
-            File::open(&query_results_path).expect("Failed to open query results"),
-        );
-
-        let mut results: Vec<(String, usize, usize)> = Vec::new();
-        for record in reader.records() {
-            let record = record.expect("Failed to read record");
-            let seq_id = record[0].to_string();
-            let color: usize = record[1].parse().expect("Failed to parse color");
-            let abundance: usize = record[2].parse().expect("Failed to parse abundance");
-            results.push((seq_id, color, abundance));
-        }
-
-        assert!(!results.is_empty(), "Empty results");
+        let mut results = load_query_result_csv(query_results_path);
         let mut expected_results = [(">seq1 ka:f:30".to_string(), 0, 29)];
+
         results.sort();
         expected_results.sort();
+
         for (expected, actual) in expected_results.iter().zip(results.iter()) {
             assert_eq!(
                 expected, actual,
@@ -3792,26 +3626,15 @@ mod tests {
             test_dir,
         );
 
-        let mut reader = csv::Reader::from_reader(
-            File::open(&query_results_path).expect("Failed to open query results"),
-        );
-
-        let mut results: Vec<(String, usize, usize)> = Vec::new();
-        for record in reader.records() {
-            let record = record.expect("Failed to read record");
-            let seq_id = record[0].to_string();
-            let color: usize = record[1].parse().expect("Failed to parse color");
-            let abundance: usize = record[2].parse().expect("Failed to parse abundance");
-            results.push((seq_id, color, abundance));
-        }
-
-        assert!(!results.is_empty(), "Empty results");
+        let mut results = load_query_result_csv(query_results_path);
         let mut expected_results = [
             (">seq6 ka:f:4".to_string(), 2, 1476),
             (">seq6 ka:f:4".to_string(), 5, 4),
         ];
+
         results.sort();
         expected_results.sort();
+
         for (expected, actual) in expected_results.iter().zip(results.iter()) {
             assert_eq!(
                 expected, actual,
@@ -3921,23 +3744,12 @@ mod tests {
             test_dir,
         );
 
-        let mut reader = csv::Reader::from_reader(
-            File::open(&query_results_path).expect("Failed to open query results"),
-        );
-
-        let mut results: Vec<(String, usize, usize)> = Vec::new();
-        for record in reader.records() {
-            let record = record.expect("Failed to read record");
-            let seq_id = record[0].to_string();
-            let color: usize = record[1].parse().expect("Failed to parse color");
-            let abundance: usize = record[2].parse().expect("Failed to parse abundance");
-            results.push((seq_id, color, abundance));
-        }
-
-        assert!(!results.is_empty(), "Empty results");
+        let mut results = load_query_result_csv(query_results_path);
         let mut expected_results = [(">seq5 ka:f:60000".to_string(), 4, 59149)];
+
         results.sort();
         expected_results.sort();
+
         for (expected, actual) in expected_results.iter().zip(results.iter()) {
             assert_eq!(
                 expected, actual,
@@ -4037,27 +3849,16 @@ mod tests {
             test_dir,
         );
 
-        let mut reader = csv::Reader::from_reader(
-            File::open(&query_results_path).expect("Failed to open query results"),
-        );
-
-        let mut results: Vec<(String, usize, usize)> = Vec::new();
-        for record in reader.records() {
-            let record = record.expect("Failed to read record");
-            let seq_id = record[0].to_string();
-            let color: usize = record[1].parse().expect("Failed to parse color");
-            let abundance: usize = record[2].parse().expect("Failed to parse abundance");
-            results.push((seq_id, color, abundance));
-        }
-
-        assert!(!results.is_empty(), "Empty results");
+        let mut results = load_query_result_csv(query_results_path);
         let mut expected_results = [
             (">seq5 ka:f:60000".to_string(), 4, 59149),
             (">seq6 ka:f:4".to_string(), 2, 1476),
             (">seq6 ka:f:4".to_string(), 4, 4),
         ];
+
         results.sort();
         expected_results.sort();
+
         for (expected, actual) in expected_results.iter().zip(results.iter()) {
             assert_eq!(
                 expected, actual,
@@ -4256,20 +4057,7 @@ mod tests {
             test_dir,
         );
 
-        let mut reader = csv::Reader::from_reader(
-            File::open(&query_results_path).expect("Failed to open query results"),
-        );
-
-        let mut results: Vec<(String, usize, usize)> = Vec::new();
-        for record in reader.records() {
-            let record = record.expect("Failed to read record");
-            let seq_id = record[0].to_string();
-            let color: usize = record[1].parse().expect("Failed to parse color");
-            let abundance: usize = record[2].parse().expect("Failed to parse abundance");
-            results.push((seq_id, color, abundance));
-        }
-
-        assert!(!results.is_empty(), "Empty results");
+        let results = load_query_result_csv(query_results_path);
         let expected_results = [
             //("seq5".to_string(), 4, 57549),
             (">seq2 ka:f:12".to_string(), 1, 12),
