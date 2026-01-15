@@ -11,7 +11,7 @@ use num_format::{Locale, ToFormattedString};
 use rayon::prelude::*;
 use roaring::RoaringBitmap;
 use serde::{Deserialize, Serialize};
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
 use std::panic;
@@ -320,7 +320,6 @@ impl Reindeer2 {
         Ok((file_paths, dir_path))
     }
 
-    // TODO this only calls a function
     // TODO store bf_dir in Reindeer2 ?
     pub fn query(
         &self,
@@ -330,23 +329,96 @@ impl Reindeer2 {
         output_format: OutputFormat,
         coverage: f32,
     ) -> io::Result<()> {
-        query::query_sequences_in_batches(
-            fasta_file,
-            bf_dir,
+        let reader = read_file(fasta_file)?;
+        let mut writer = BufWriter::new(File::create(output_file)?);
+        let output_format =
+            query::EnrichedOutputFormat::from_pub_output_format(output_format, bf_dir);
+        // write the header of the result file
+        query::write_header(bf_dir, &output_format, &mut writer)
+            .expect("should have been able to write the header of the result file");
+
+        let base = compute_base(self.abundance_number, self.abundance_max);
+
+        // Process FASTA in chunks of 10 000 000 records
+        process_fasta_in_batches(reader, 10_000_000, |batch| {
+            let sequence_results = self.query_single_fasta_batch(bf_dir, base, batch);
+            // Now `sequence_results` has the combined data for this batch.
+            // Let's compute the output in the requested format.
+            query::write_kmer_query(
+                batch,
+                &output_format,
+                coverage,
+                &sequence_results,
+                &mut writer,
+            )
+            .expect("should have been able to write the query result");
+        })
+        .expect("should have been able to process fasta files");
+
+        Ok(())
+    }
+
+    // TODO use compile time to decide wether to sort the output or not
+    fn query_single_fasta_batch(
+        &self,
+        bf_dir: &str,
+        base: f64,
+        batch: &[fasta::Record],
+    ) -> Vec<Vec<Vec<u16>>> {
+        let partition_kmers = query::build_partitions_kmers(
+            batch,
             self.k,
             self.m,
-            self.bf_size,
-            self.partition_number,
-            self.nb_color,
-            self.abundance_number,
-            self.abundance_max,
-            10_000_000,
-            output_file,
-            self.dense_option,
-            output_format,
-            coverage,
+            self.partition_number as u64,
             self.canonical,
-        )
+        );
+
+        // --- PARALLEL PHASE: process each partition's k-mers in parallel ---
+        // This will store final results for *all* sequences in this batch.
+        // Key: sequence header; Value: vector of vector of abundances
+        let result_with_positions: HashMap<usize, Vec<Vec<(usize, u16)>>> = partition_kmers
+            .into_par_iter()
+            // 1) Create a local HashMap in each thread
+            .fold(
+                // OPTIMIZE use compile time monomorphization to get rid of this (usize, u16)
+                // (I expect to go from 128 per element in the vector to 16)
+                // (I needed this extra usize to get the correct order of kmer in the output)
+                HashMap::<usize, Vec<Vec<(usize, u16)>>>::new,
+                |local_results: HashMap<usize, Vec<Vec<(usize, u16)>>>,
+                 (partition_index, kmers)| {
+                    query::fold_into_hashmap(
+                        local_results,
+                        partition_index,
+                        kmers,
+                        base,
+                        bf_dir,
+                        self.bf_size,
+                        self.partition_number,
+                        self.nb_color,
+                        self.abundance_number,
+                        self.dense_option,
+                    )
+                },
+            )
+            // 2) Reduce all local HashMaps into a single HashMap
+            .reduce(
+                HashMap::<usize, Vec<Vec<(usize, u16)>>>::new,
+                query::merge_results,
+            );
+
+        let size = result_with_positions.len();
+
+        let mut res = vec![vec![]; size];
+
+        result_with_positions
+            .into_iter()
+            .for_each(|(header, color_vectors)| {
+                res[header] = color_vectors
+                    .into_iter()
+                    .map(query::sort_abundance_vec)
+                    .collect();
+            });
+        res
     }
 }
 

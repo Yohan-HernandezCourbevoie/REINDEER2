@@ -2,27 +2,18 @@ mod format;
 
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::{self, BufWriter, Read};
+use std::io::{self, Read};
 use std::path::Path;
 
 use super::{
-    approximate_value, compute_base, compute_base_position, dense_index::DenseIndexPartition,
-    kmer_minimizers_seq_level, load_bloom_filter, process_fasta_in_batches, read_file,
-    read_indexed_file_names, update_color_abundances,
+    approximate_value, compute_base_position, dense_index::DenseIndexPartition,
+    kmer_minimizers_seq_level, load_bloom_filter, read_indexed_file_names, update_color_abundances,
 };
-use crate::reindeer2::OutputFormat;
 use bio::io::fasta;
-use format::{write_header, write_kmer_query, EnrichedOutputFormat};
-use rayon::prelude::*;
-
-// === QUERY ===
-
-// --- MAIN FUNCTION ---
-
-// --- QUERY FUNCTIONS ---
+pub use format::{write_header, write_kmer_query, EnrichedOutputFormat};
 
 /// Builds a map from partition_index -> Vec of (sequence_id, position_kmer_in_sequence, kmer_hash).
-fn build_partitions_kmers(
+pub fn build_partitions_kmers(
     batch: &[fasta::Record],
     k: usize,
     m: usize,
@@ -47,7 +38,7 @@ fn build_partitions_kmers(
 
 // TODO rename
 /// parameter `kmers` is Vec<(read_id, pos_in_read, hash)>
-fn fold_into_hashmap(
+pub fn fold_into_hashmap(
     mut local_results: HashMap<usize, Vec<Vec<(usize, u16)>>>,
     partition_index: usize,
     kmers: Vec<(usize, usize, u64)>,
@@ -184,7 +175,7 @@ fn strip_header(s: &str) -> &str {
     stripped.split(' ').next().unwrap()
 }
 
-fn sort_abundance_vec(abund_values: Vec<(usize, u16)>) -> Vec<u16> {
+pub fn sort_abundance_vec(abund_values: Vec<(usize, u16)>) -> Vec<u16> {
     use itertools::Itertools;
 
     #[cfg(debug_assertions)]
@@ -209,122 +200,7 @@ fn sort_abundance_vec(abund_values: Vec<(usize, u16)>) -> Vec<u16> {
         .collect()
 }
 
-// TODO use compile time to decide wether to sort the output or not
-fn query_single_fasta_batch(
-    bf_dir: &str,
-    k: usize,
-    m: usize,
-    bf_size: u64,
-    partition_number: usize,
-    color_number: usize,
-    abundance_number: usize,
-    dense_option: bool,
-    canonical: bool,
-    base: f64,
-    batch: &[fasta::Record],
-) -> Vec<Vec<Vec<u16>>> {
-    let partition_kmers = build_partitions_kmers(batch, k, m, partition_number as u64, canonical);
-
-    // --- PARALLEL PHASE: process each partition's k-mers in parallel ---
-    // This will store final results for *all* sequences in this batch.
-    // Key: sequence header; Value: vector of vector of abundances
-    let result_with_positions: HashMap<usize, Vec<Vec<(usize, u16)>>> = partition_kmers
-        .into_par_iter()
-        // 1) Create a local HashMap in each thread
-        .fold(
-            // OPTIMIZE use compile time monomorphization to get rid of this (usize, u16)
-            // (I expect to go from 128 per element in the vector to 16)
-            // (I needed this extra usize to get the correct order of kmer in the output)
-            HashMap::<usize, Vec<Vec<(usize, u16)>>>::new,
-            |local_results: HashMap<usize, Vec<Vec<(usize, u16)>>>, (partition_index, kmers)| {
-                fold_into_hashmap(
-                    local_results,
-                    partition_index,
-                    kmers,
-                    base,
-                    bf_dir,
-                    bf_size,
-                    partition_number,
-                    color_number,
-                    abundance_number,
-                    dense_option,
-                )
-            },
-        )
-        // 2) Reduce all local HashMaps into a single HashMap
-        .reduce(HashMap::<usize, Vec<Vec<(usize, u16)>>>::new, merge_results);
-
-    let size = result_with_positions.len();
-
-    let mut res = vec![vec![]; size];
-
-    result_with_positions
-        .into_iter()
-        .for_each(|(header, color_vectors)| {
-            res[header] = color_vectors.into_iter().map(sort_abundance_vec).collect();
-        });
-    res
-}
-
-pub fn query_sequences_in_batches(
-    fasta_file: &str,
-    bf_dir: &str,
-    k: usize,
-    m: usize,
-    bf_size: u64,
-    partition_number: usize,
-    color_number: usize,
-    abundance_number: usize,
-    abundance_max: u16,
-    batch_size: usize,
-    output_file: &str,
-    dense_option: bool,
-    output_format: OutputFormat,
-    coverage: f32,
-    canonical: bool,
-) -> io::Result<()> {
-    let reader = read_file(fasta_file)?;
-    let mut writer = BufWriter::new(File::create(output_file)?);
-    let output_format = EnrichedOutputFormat::from_pub_output_format(output_format, bf_dir);
-    // write the header of the result file
-    write_header(bf_dir, &output_format, &mut writer)
-        .expect("should have been able to write the header of the result file");
-
-    let base = compute_base(abundance_number, abundance_max);
-    let output_format = &output_format;
-
-    // Process FASTA in chunks of `batch_size` records
-    process_fasta_in_batches(reader, batch_size, |batch| {
-        let sequence_results = query_single_fasta_batch(
-            bf_dir,
-            k,
-            m,
-            bf_size,
-            partition_number,
-            color_number,
-            abundance_number,
-            dense_option,
-            canonical,
-            base,
-            batch,
-        );
-        // Now `sequence_results` has the combined data for this batch.
-        // Let's compute the output in the requested format.
-        write_kmer_query(
-            batch,
-            output_format,
-            coverage,
-            &sequence_results,
-            &mut writer,
-        )
-        .expect("should have been able to write the query result");
-    })
-    .expect("should have been able to process fasta files");
-
-    Ok(())
-}
-
-fn merge_results(
+pub fn merge_results(
     mut acc: HashMap<usize, Vec<Vec<(usize, u16)>>>,
     local: HashMap<usize, Vec<Vec<(usize, u16)>>>,
 ) -> HashMap<usize, Vec<Vec<(usize, u16)>>> {
@@ -340,3 +216,5 @@ fn merge_results(
     }
     acc
 }
+
+// TODO write unit tests for this file
