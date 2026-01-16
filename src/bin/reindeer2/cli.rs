@@ -78,7 +78,9 @@ pub struct IndexArgs {
 pub enum OutputFormatCli {
     Colored,
     Median,
-    AbundanceMatrix,
+    AbundanceMatrixRaw,
+    AbundanceMatrixMedian,
+    AbundanceMatrixAverage,
 }
 
 #[derive(Args, Debug)]

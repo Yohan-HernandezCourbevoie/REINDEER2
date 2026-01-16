@@ -48,8 +48,6 @@ fn no_effect_chunk() {
     let mut query_results = vec![];
     assert_eq!(color_nb, 4);
     for chunks_size in 1..color_nb {
-        dbg!(chunks_size);
-
         let index_dir = get_output_dir();
         let index_dir_name = index_dir.filename();
         let threshold = 0;
@@ -61,8 +59,7 @@ fn no_effect_chunk() {
 
         let coverage = 0.5;
         let output_format = OutputFormat::AbundanceMatrix {
-            normalized: None,
-            breakpoints: None,
+            format: reindeer2::reindeer2::AbundanceMatrixFormat::Raw(None),
         };
         let query_output =
             AutoRemoveFile::create_from_path(format!("{}_query_results.csv", index_dir_name));

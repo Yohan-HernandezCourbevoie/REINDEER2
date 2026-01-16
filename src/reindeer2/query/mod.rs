@@ -164,16 +164,16 @@ fn load_kmer_counts_vector(dir_path: &str) -> io::Result<Vec<usize>> {
     Ok(counts_vector)
 }
 
-/// Formats a fasta header by removing the first `>` and taking up to the first space (excluded).
-/// E.g.: `>seq1 ka:f:30` -> `seq1`
-fn strip_header(s: &str) -> &str {
-    let stripped = if let Some(stripped) = s.strip_prefix('>') {
-        stripped
-    } else {
-        s
-    };
-    stripped.split(' ').next().unwrap()
-}
+// /// Formats a fasta header by removing the first `>` and taking up to the first space (excluded).
+// /// E.g.: `>seq1 ka:f:30` -> `seq1`
+// fn strip_header(s: &str) -> &str {
+//     let stripped = if let Some(stripped) = s.strip_prefix('>') {
+//         stripped
+//     } else {
+//         s
+//     };
+//     stripped.split(' ').next().unwrap()
+// }
 
 pub fn sort_abundance_vec(abund_values: Vec<(usize, u16)>) -> Vec<u16> {
     use itertools::Itertools;

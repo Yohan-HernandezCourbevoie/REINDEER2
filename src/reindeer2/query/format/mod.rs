@@ -16,37 +16,34 @@ pub use abundance_matrix::SEPARATOR as MATRIX_SEPARATOR;
 
 use super::read_indexed_file_names;
 
-fn count_to_string_with_star(
+fn count_to_string_with_star_normalized(
     count: u16,
-    normalize: &Option<KmerCountsAndNormalizeValue>,
+    normalize: &KmerCountsAndNormalizeValue,
     color_id: usize,
 ) -> String {
-    match normalize {
-        Some(KmerCountsAndNormalizeValue {
-            kmer_counts,
-            normalize_value,
-        }) => {
-            let normalized_count =
-                count as f64 / kmer_counts[color_id] as f64 * (*normalize_value as f64);
-            if normalized_count == 0.0 {
-                String::from("*")
-            } else {
-                normalized_count.to_string()
-            }
-        }
-        None => {
-            if count == 0 {
-                // not normalized and 0
-                String::from("*")
-            } else {
-                // not normalized and not 0
-                count.to_string()
-            }
-        }
+    let KmerCountsAndNormalizeValue {
+        kmer_counts,
+        normalize_value,
+    } = normalize;
+    let normalized_count = count as f64 / kmer_counts[color_id] as f64 * (*normalize_value as f64);
+    if normalized_count == 0.0 {
+        String::from("*")
+    } else {
+        normalized_count.to_string()
     }
 }
 
-fn count_to_string_witout_star(
+fn count_to_string_with_star(count: u16) -> String {
+    if count == 0 {
+        // not normalized and 0
+        String::from("*")
+    } else {
+        // not normalized and not 0
+        count.to_string()
+    }
+}
+
+fn count_to_string_witout_star_maybe_normalized(
     count: u16,
     normalize: &Option<KmerCountsAndNormalizeValue>,
     color_id: usize,
@@ -92,10 +89,7 @@ pub fn write_header(
         EnrichedOutputFormat::Median { normalized: _ } => {
             writeln!(writer, "header,file,abundance")?;
         }
-        EnrichedOutputFormat::AbundanceMatrix {
-            normalized: _,
-            breakpoints: _,
-        } => {
+        EnrichedOutputFormat::AbundanceMatrix { format: _ } => {
             let indexed_files = Path::new(&bf_dir).join("path.txt");
             let indexed_files: Vec<String> = read_indexed_file_names(indexed_files);
             write_header_matrix(&mut writer, indexed_files, MATRIX_SEPARATOR)?;
@@ -121,16 +115,9 @@ pub fn write_kmer_query(
             // Flush the writer to separate batch outputs if needed
             graph_coloring(sequence_results, batch, normalized, writer)
         }
-        EnrichedOutputFormat::AbundanceMatrix {
-            normalized,
-            breakpoints,
-        } => write_abundance_matrix(
-            sequence_results,
-            batch,
-            breakpoints,
-            normalized,
-            &mut writer,
-        ),
+        EnrichedOutputFormat::AbundanceMatrix { format } => {
+            write_abundance_matrix(sequence_results, batch, format, &mut writer)
+        }
         EnrichedOutputFormat::Median { normalized } => {
             write_median_abundance(sequence_results, batch, normalized, coverage, &mut writer)
         }

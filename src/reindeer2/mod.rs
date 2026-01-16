@@ -29,18 +29,30 @@ use crate::reindeer2::dense_index::DenseIndex;
 use crate::reindeer2::filter::Filters;
 
 #[derive(Clone, Debug, PartialEq)]
-pub enum OutputFormat {
-    Colored {
+pub enum BreakpointsNormalize {
+    Breakpoints(f64),
+    Normalize(u64),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum AbundanceMatrixFormat {
+    Raw(
+        /// None if not computing breakpoints nor normalization
+        Option<BreakpointsNormalize>,
+    ),
+    Average {
         normalized: Option<u64>,
     },
     Median {
         normalized: Option<u64>,
     },
-    AbundanceMatrix {
-        normalized: Option<u64>,
-        // None if not computing breakpoints
-        breakpoints: Option<f64>,
-    },
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum OutputFormat {
+    Colored { normalized: Option<u64> },
+    Median { normalized: Option<u64> },
+    AbundanceMatrix { format: AbundanceMatrixFormat },
 }
 
 #[derive(Serialize, Deserialize)]
@@ -4168,6 +4180,7 @@ mod tests {
             lines_b.sorted().collect_vec()
         );
     }
+
     #[test]
     fn test_output_rd1() {
         use itertools::Itertools;
@@ -4214,8 +4227,7 @@ mod tests {
                 &index_dir,
                 &query_results_path,
                 OutputFormat::AbundanceMatrix {
-                    normalized: None,
-                    breakpoints: None,
+                    format: AbundanceMatrixFormat::Raw(None),
                 },
                 0.5,
             )
@@ -4226,13 +4238,13 @@ mod tests {
         let actual = actual.trim();
 
         let expected = String::from(
-            "query random_seq_with_revcomp random_seq
-header_0 0-69:* 0-69:1
-header_1 0-69:* 0-69:1
-header_2 0-69:* 0-69:1
-header_3 0-69:* 0-69:1
-header_4 0-69:* 0-69:1
-shared_revcomp_with_other_test_file 0-19:3 0-19:10",
+            "query\trandom_seq_with_revcomp\trandom_seq
+header_0\t0-69:*\t0-69:1
+header_1\t0-69:*\t0-69:1
+header_2\t0-69:*\t0-69:1
+header_3\t0-69:*\t0-69:1
+header_4\t0-69:*\t0-69:1
+shared_revcomp_with_other_test_file\t0-19:3\t0-19:10",
         );
 
         assert_equal_sorted_content_with_equal_header(&expected, actual);
@@ -4286,8 +4298,7 @@ shared_revcomp_with_other_test_file 0-19:3 0-19:10",
                 &index_dir,
                 &query_results_path,
                 OutputFormat::AbundanceMatrix {
-                    normalized: None,
-                    breakpoints: None,
+                    format: AbundanceMatrixFormat::Raw(None),
                 },
                 0.5,
             )
@@ -4298,10 +4309,10 @@ shared_revcomp_with_other_test_file 0-19:3 0-19:10",
         let actual = actual.trim();
 
         let expected = String::from(
-            "query random_seq_with_revcomp duplication
-header_0 0-69:* 0-69:1
-header_0 0-69:* 0-69:1
-header_0 0-69:* 0-69:1",
+            "query\trandom_seq_with_revcomp\tduplication
+header_0\t0-69:*\t0-69:1
+header_0\t0-69:*\t0-69:1
+header_0\t0-69:*\t0-69:1",
         );
 
         assert_equal_sorted_content_with_equal_header(&expected, actual);
@@ -4355,8 +4366,7 @@ header_0 0-69:* 0-69:1",
                 &index_dir,
                 &query_results_path,
                 OutputFormat::AbundanceMatrix {
-                    normalized: None,
-                    breakpoints: None,
+                    format: AbundanceMatrixFormat::Raw(None),
                 },
                 0.5,
             )
@@ -4366,13 +4376,13 @@ header_0 0-69:* 0-69:1",
         let actual = fs::read_to_string(&query_results_path).unwrap();
         let actual = actual.trim();
         let expected = String::from(
-            "query random_seq_with_revcomp random_seq
-header_0 0-69:* 0-69:1
-header_1 0-69:* 0-69:1
-header_2 0-69:* 0-69:1
-header_3 0-69:* 0-69:1
-header_4 0-69:* 0-69:1
-shared_revcomp_with_other_test_file 0-19:* 0-19:10",
+            "query\trandom_seq_with_revcomp\trandom_seq
+header_0\t0-69:*\t0-69:1
+header_1\t0-69:*\t0-69:1
+header_2\t0-69:*\t0-69:1
+header_3\t0-69:*\t0-69:1
+header_4\t0-69:*\t0-69:1
+shared_revcomp_with_other_test_file\t0-19:*\t0-19:10",
         );
 
         assert_equal_sorted_content_with_equal_header(&expected, actual);

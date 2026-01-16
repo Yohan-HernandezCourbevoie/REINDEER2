@@ -2,7 +2,9 @@ use bio::io::fasta;
 use std::io::{self, Write};
 
 use super::KmerCountsAndNormalizeValue;
-use crate::reindeer2::query::format::{count_to_string_witout_star, get_full_header};
+use crate::reindeer2::query::format::{
+    count_to_string_witout_star_maybe_normalized, get_full_header,
+};
 
 use super::compute_median;
 
@@ -33,7 +35,9 @@ pub fn write_median_abundance(
                 {
                     let median = compute_median(&non_zero_values);
                     if median > 0 {
-                        let median = count_to_string_witout_star(median, normalize, color_idx);
+                        let median = count_to_string_witout_star_maybe_normalized(
+                            median, normalize, color_idx,
+                        );
                         writeln!(writer, "{},{},{}", full_header, color_idx, median)?;
                     }
                 }

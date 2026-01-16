@@ -10,21 +10,63 @@ use std::time::Instant;
 use cli::Cli;
 use cli::OutputFormatCli;
 use overflow_detection::check_number_of_partitions;
-use reindeer2::reindeer2::{merge_multiple_indexes, read_fof_file, OutputFormat, Reindeer2};
+use reindeer2::reindeer2::{
+    merge_multiple_indexes, read_fof_file, AbundanceMatrixFormat, BreakpointsNormalize,
+    OutputFormat, Reindeer2,
+};
 
 impl OutputFormatCli {
     fn to_output_format(self, normalized: Option<u64>, breakpoints: Option<f64>) -> OutputFormat {
         match (self, normalized, breakpoints) {
-            (OutputFormatCli::AbundanceMatrix, normalized, breakpoints) => {
+            // raw matrix
+            (OutputFormatCli::AbundanceMatrixRaw, Some(normalized), None) => {
                 OutputFormat::AbundanceMatrix {
-                    normalized,
-                    breakpoints,
+                    format: AbundanceMatrixFormat::Raw(Some(BreakpointsNormalize::Normalize(
+                        normalized,
+                    ))),
                 }
             }
+            (OutputFormatCli::AbundanceMatrixRaw, None, Some(penalty)) => {
+                OutputFormat::AbundanceMatrix {
+                    format: AbundanceMatrixFormat::Raw(Some(BreakpointsNormalize::Breakpoints(
+                        penalty,
+                    ))),
+                }
+            }
+            (OutputFormatCli::AbundanceMatrixRaw, None, None) => OutputFormat::AbundanceMatrix {
+                format: AbundanceMatrixFormat::Raw(None),
+            },
+            (OutputFormatCli::AbundanceMatrixRaw, Some(_), Some(_)) => {
+                panic!("Cannot compute both breakpoints and normalized abundance.")
+            }
+
+            // matrix average
+            (OutputFormatCli::AbundanceMatrixAverage, normalized, None) => {
+                OutputFormat::AbundanceMatrix {
+                    format: AbundanceMatrixFormat::Average { normalized },
+                }
+            }
+            (OutputFormatCli::AbundanceMatrixAverage, _, Some(_)) => {
+                panic!("Cannot compute breakpoints from a matrix with mode average.")
+            }
+
+            // matrix median
+            (OutputFormatCli::AbundanceMatrixMedian, normalized, None) => {
+                OutputFormat::AbundanceMatrix {
+                    format: AbundanceMatrixFormat::Median { normalized },
+                }
+            }
+            (OutputFormatCli::AbundanceMatrixMedian, _normalized, Some(_)) => {
+                panic!("Cannot compute breakpoints from a matrix with mode median.")
+            }
+
+            // colored
             (OutputFormatCli::Colored, normalized, None) => OutputFormat::Colored { normalized },
             (OutputFormatCli::Colored, _, Some(_)) => {
                 panic!("Cannot compute breakpoints from colored graph.")
             }
+
+            // median
             (OutputFormatCli::Median, normalized, None) => OutputFormat::Median { normalized },
             (OutputFormatCli::Median, _, Some(_)) => {
                 panic!("Cannot compute breakpoints from median output.")
@@ -171,7 +213,7 @@ fn main() -> io::Result<()> {
                     OutputFormat::Colored { normalized: _ } => {
                         format!("{}_colored_graph.fa", index_dir)
                     }
-                    _ => format!("{}_query_results.csv", index_dir),
+                    _ => format!("{}_query_results.tsv", index_dir),
                 },
             };
 
