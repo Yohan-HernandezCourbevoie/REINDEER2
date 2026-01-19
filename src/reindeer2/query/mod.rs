@@ -140,7 +140,7 @@ pub fn fold_into_hashmap(
             }
         }
     } else {
-        eprintln!(
+        log::error!(
             "Failed to load Bloom filter for partition {}",
             partition_index
         );

@@ -77,7 +77,11 @@ impl OutputFormatCli {
 
 fn main() -> io::Result<()> {
     let args = Cli::parse();
+    let env = env_logger::Env::default()
+        .filter_or("MY_LOG_LEVEL", "trace")
+        .write_style_or("MY_LOG_STYLE", "always");
 
+    env_logger::init_from_env(env);
     let max_threads = args.threads;
 
     match args.command {
@@ -117,23 +121,22 @@ fn main() -> io::Result<()> {
                     .unwrap();
             }
             let abundance = if abundance > 255 && dense_option {
-                println!("WARNING : the abundance granularity exceeds the requirements of the '--dense' (<256). The abundance granularity is now set to 255.");
+                log::warn!("WARNING : the abundance granularity exceeds the requirements of the '--dense' (<256). The abundance granularity is now set to 255.");
                 255
             } else if abundance >= 666 {
                 // TODO remove once 666s will be removed from the build step and query step
-                println!("WARNING : the abundance granularity exceeds internal limitations (666). The abundance granularity is now set to 665.");
+                log::warn!("WARNING : the abundance granularity exceeds internal limitations (666). The abundance granularity is now set to 665.");
                 665
             } else {
                 abundance
             };
 
             let minimizer = if kmer < minimizer {
-                println!("WARNING : the minimizer size '{}' exceeds the k-mer size '{}'. The minimiser size is now set to '{}'", minimizer, kmer, kmer);
+                log::warn!("WARNING : the minimizer size '{}' exceeds the k-mer size '{}'. The minimiser size is now set to '{}'", minimizer, kmer, kmer);
                 kmer
             } else {
                 minimizer
             };
-            println!();
 
             let tolerated_number_of_zeros = 0;
 
@@ -184,11 +187,11 @@ fn main() -> io::Result<()> {
             )?;
             // }
 
-            println!("Indexing complete in {:.2?}", start_time.elapsed());
+            log::info!("Indexing complete in {:.2?}", start_time.elapsed());
             if cfg!(unix) {
                 // linux returns memory in kb, no idea if all platforms do the same
                 // just print on linux to prevent being inaccurate
-                println!(
+                log::info!(
                     "Peak memory usage: {} kibibytes",
                     memory_measure::format_int_with_spaces(memory_measure::get_max_rss())
                 );
@@ -217,7 +220,7 @@ fn main() -> io::Result<()> {
                 },
             };
 
-            println!("Index directory: {}", index_dir);
+            log::info!("Index directory: {}", index_dir);
 
             let start_time = Instant::now();
             let index = Reindeer2::load_metadata(&index_dir)
@@ -231,8 +234,8 @@ fn main() -> io::Result<()> {
                     coverage,
                 )
                 .expect("Failed to query sequences");
-            println!("Results written to {}", query_output);
-            println!("Query complete in {:.2?}", start_time.elapsed());
+            log::info!("Results written to {}", query_output);
+            log::info!("Query complete in {:.2?}", start_time.elapsed());
         }
 
         cli::Command::Merge(args) => {
@@ -250,7 +253,7 @@ fn main() -> io::Result<()> {
             merge_multiple_indexes(&file_of_indexes, &output_dir)
                 .expect("Failed to merge the given indexes.");
 
-            println!("Query complete in {:.2?}", start_time.elapsed());
+            log::info!("Query complete in {:.2?}", start_time.elapsed());
         }
     }
 

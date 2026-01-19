@@ -33,15 +33,15 @@ pub fn check_number_of_partitions<P: AsRef<Path>>(
         * usize::try_from(bf_size / 2u64.pow(32)).expect("error in conversion");
 
     if nb_partitions < nb_min_partitions {
-        eprintln!(
+        log::warn!(
             "{}",
             format!(
                 "Warning: the requested number of partition was {}. \
-Keeping this value would lead to a crash. \
-The minimum number of partitions is {}. \
-Indexation will continue with this minimum number of partitions to prevent crash.
-Using the minimum number of partitions prevents adding datasets in the index in the future. \
-If you want to be able to add more datasets, increase the number of partitions.",
+                Keeping this value would lead to a crash. \
+                The minimum number of partitions is {}. \
+                Indexation will continue with this minimum number of partitions to prevent crash. \
+                Using the minimum number of partitions prevents adding datasets in the index in the future. \
+                If you want to be able to add more datasets, increase the number of partitions.",
                 nb_partitions, nb_min_partitions
             )
             .yellow()

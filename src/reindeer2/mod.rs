@@ -7,7 +7,6 @@ use bio::io::fasta;
 use flate2::read::GzDecoder;
 use itertools::Itertools;
 use nthash::{NtHashForwardIterator, NtHashIterator};
-use num_format::{Locale, ToFormattedString};
 use rayon::prelude::*;
 use roaring::RoaringBitmap;
 use serde::{Deserialize, Serialize};
@@ -112,12 +111,12 @@ impl Reindeer2 {
 
     /// Loads an index from the JSON file in the directory of the index
     pub fn load_metadata(bf_dir: &str) -> io::Result<Self> {
-        print!("Loading index metadata...");
+        log::info!("Loading index metadata...");
         let input_path = Self::index_infos_file(bf_dir);
         let file = File::open(input_path)?;
         let reader = BufReader::new(file);
         let rd2 = serde_json::from_reader(reader)?;
-        println!(" Done.");
+        log::info!("Index loaded from metadata.");
         Ok(rd2)
     }
 
@@ -127,7 +126,7 @@ impl Reindeer2 {
         let file = File::create(&output_path)?;
         let writer = BufWriter::new(file);
         serde_json::to_writer(writer, self)?;
-        println!("Index information written to {}", output_path);
+        log::info!("Index information written to {}", output_path);
         Ok(())
     }
 
@@ -156,14 +155,14 @@ impl Reindeer2 {
         let base = compute_base(self.abundance_number, self.abundance_max);
 
         #[cfg(any(debug_assertions, test))]
-        println!("Using log base {}", base);
+        log::debug!("Using log base {}", base);
 
         let partitioned_bf_size = (self.bf_size as usize) / self.partition_number;
 
         #[cfg(any(debug_assertions, test))]
-        println!("In debug mode... the tool may take (much) longer than usual.");
+        log::debug!("In debug mode... the tool may take (much) longer than usual.");
 
-        println!("Initializing Bloom filter slices...");
+        log::info!("Initializing Bloom filter slices...");
 
         let (_, dir_path) = create_dir_and_files(self.partition_number, output_dir)?;
 
@@ -203,7 +202,7 @@ impl Reindeer2 {
                             let reader = match read_file(path) {
                                 Ok(r) => r,
                                 Err(e) => {
-                                    eprintln!("Failed to open file {}: {}", path, e);
+                                    log::error!("Failed to open file {}: {}", path, e);
                                     return;
                                 }
                             };
@@ -216,7 +215,7 @@ impl Reindeer2 {
                                 let h_type = match determine_header_type(header) {
                                     Ok(ht) => ht,
                                     Err(e) => {
-                                        eprintln!("Unsupported header type ({}): {}", path, e);
+                                        log::error!("Unsupported header type ({}): {}", path, e);
                                         return;
                                     }
                                 };
@@ -271,7 +270,7 @@ impl Reindeer2 {
             ) {
                 eprintln!("Error writing Bloom filters for chunk {}: {}", chunk_i, e);
             }
-            println!("Chunk {} done", chunk_i);
+            log::trace!("Chunk {} done", chunk_i);
         }
 
         // After processing all chunks, write the dense indexes to disk
@@ -284,7 +283,7 @@ impl Reindeer2 {
         #[cfg(any(debug_assertions, test))]
         {
             // k-mers repartition between dense and sparse index
-            println!("The index contains {:?} 'dense' k-mers and {:?} 'sparse' k-mers (total k-mers: {:?})", 
+            log::info!("The index contains {:?} 'dense' k-mers and {:?} 'sparse' k-mers (total k-mers: {:?})", 
             atomic_dense_kmers_count.get_mut().separate_with_commas(),
             atomic_sparse_kmers_count.get_mut().separate_with_commas(),
             total_kmers.get_mut().separate_with_commas());
@@ -293,7 +292,7 @@ impl Reindeer2 {
             let silent = *atomic_sparse_kmers_count.get_mut() - *ones;
             let fp = atomic_sparse_fp_seen.get_mut();
             // k-mers indexed in the sparse index, FP silent and FP seen
-            println!("Among the {:?} k-mers added in the 'sparse' index, {:?} encountered hash collisions ({:?} silent and {:?} misleading).", 
+            log::info!("Among the {:?} k-mers added in the 'sparse' index, {:?} encountered hash collisions ({:?} silent and {:?} misleading).", 
             atomic_sparse_kmers_count.get_mut().separate_with_commas(),
             (silent+*fp).separate_with_commas(),
             silent.separate_with_commas(),
@@ -830,7 +829,7 @@ pub fn merge_multiple_indexes(indexes_fof: &str, output_dir: &str) -> io::Result
     };
     index_merged.save_metadata(output_dir)?;
 
-    println!(
+    log::info!(
         "Successfully merged {} indexes into directory: {}",
         indexes_metadata.len(),
         output_dir
@@ -885,7 +884,7 @@ fn merge_all_partitions(
         })?;
 
     let elapsed_time = start_time.elapsed();
-    println!(
+    log::info!(
         "All partitions merged and written to disk in {:.2?}",
         elapsed_time
     );
@@ -962,7 +961,7 @@ fn merge_partition_slices_interleaved(
             match load_bloom_filter(chunk_file) {
                 Ok(bf) => Some(bf),
                 Err(e) => {
-                    eprintln!("Failed to load Bloom filter {}: {}", chunk_file, e);
+                    log::error!("Failed to load Bloom filter {}: {}", chunk_file, e);
                     None // Return None for any errors
                 }
             }
@@ -999,7 +998,7 @@ fn merge_partition_slices_interleaved(
                 // update the offset for the next chunk in this slice
                 current_offset += abundance_number * chunk_color_number;
             } else {
-                eprintln!("Skipping chunk {} due to previous load error", chunk_idx);
+                log::error!("Skipping chunk {} due to previous load error", chunk_idx);
             }
         }
     }
@@ -1115,7 +1114,7 @@ fn create_dir_and_files(
     num_partition: usize,
     output_dir: &str,
 ) -> io::Result<(Vec<String>, String)> {
-    println!("Writing partitioned files in directory: {}", output_dir);
+    log::info!("Writing partitioned files in directory: {}", output_dir);
     let output_path = Path::new(output_dir);
     let partition_dir = match output_path.is_relative() {
         true => std::env::current_dir()?.join(output_path),
@@ -1620,17 +1619,17 @@ fn kmer_minimizers_seq_level<'a>(
 
 // --- MISC ---
 
-fn _display_progress(total_kmers: u64, start_time: Instant) {
-    let elapsed_s = start_time.elapsed().as_secs_f64();
-    let elapsed_ms = start_time.elapsed().as_millis() as f64;
-    let kmers_per_ms = total_kmers as f64 / elapsed_ms;
-    println!(
-        "Processed: {} k-mers | Time elapsed: {:.2} s | Rate: {:.2} k-mers/ms",
-        total_kmers.to_formatted_string(&Locale::en),
-        elapsed_s,
-        kmers_per_ms
-    );
-}
+// fn _display_progress(total_kmers: u64, start_time: Instant) {
+//     let elapsed_s = start_time.elapsed().as_secs_f64();
+//     let elapsed_ms = start_time.elapsed().as_millis() as f64;
+//     let kmers_per_ms = total_kmers as f64 / elapsed_ms;
+//     println!(
+//         "Processed: {} k-mers | Time elapsed: {:.2} s | Rate: {:.2} k-mers/ms",
+//         total_kmers.to_formatted_string(&Locale::en),
+//         elapsed_s,
+//         kmers_per_ms
+//     );
+// }
 
 /* TESTS */
 
