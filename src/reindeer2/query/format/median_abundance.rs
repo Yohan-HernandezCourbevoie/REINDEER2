@@ -34,7 +34,7 @@ pub fn write_median_abundance(
                     && (((zeros_count as f32) / (abund_values.len() as f32)) < coverage)
                 {
                     let median = compute_median(&non_zero_values);
-                    if median > 0 {
+                    if median > 0.0 {
                         let median = count_to_string_witout_star_maybe_normalized(
                             median, normalize, color_idx,
                         );

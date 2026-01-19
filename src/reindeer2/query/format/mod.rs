@@ -44,7 +44,7 @@ fn count_to_string_with_star(count: u16) -> String {
 }
 
 fn count_to_string_witout_star_maybe_normalized(
-    count: u16,
+    count: f64,
     normalize: &Option<KmerCountsAndNormalizeValue>,
     color_id: usize,
 ) -> f64 {
@@ -52,24 +52,24 @@ fn count_to_string_witout_star_maybe_normalized(
         Some(KmerCountsAndNormalizeValue {
             kmer_counts,
             normalize_value,
-        }) => count as f64 / kmer_counts[color_id] as f64 * (*normalize_value as f64),
-        None => count as f64,
+        }) => count / kmer_counts[color_id] as f64 * (*normalize_value as f64),
+        None => count,
     }
 }
 
-fn compute_median(values: &[u16]) -> u16 {
+fn compute_median(values: &[u16]) -> f64 {
     let mut abund_sorted = values.to_vec();
     abund_sorted.sort_unstable();
     if abund_sorted.iter().all(|&x| x == 0) {
-        0
+        0.0
     } else if abund_sorted.len() == 1 {
-        abund_sorted[0]
+        abund_sorted[0] as f64
     } else {
         let mid = abund_sorted.len() / 2;
         if abund_sorted.len() % 2 == 1 {
-            abund_sorted[mid]
+            abund_sorted[mid] as f64
         } else {
-            (abund_sorted[mid - 1] + abund_sorted[mid]) / 2
+            (abund_sorted[mid - 1] as f64 + abund_sorted[mid] as f64) / 2.0
         }
     }
 }
