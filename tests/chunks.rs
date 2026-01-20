@@ -27,6 +27,7 @@ fn no_effect_chunk() {
     let input = get_input_fof();
     let (file_paths, color_nb) = read_fof_file(&input).unwrap();
     let abundance = 255;
+    let abundance_min = 0;
     let abundance_max = 65024;
     let dense_option = false;
     let canonical = false;
@@ -40,6 +41,7 @@ fn no_effect_chunk() {
         minimizer,
         color_nb,
         abundance,
+        abundance_min,
         abundance_max,
         dense_option,
         canonical,

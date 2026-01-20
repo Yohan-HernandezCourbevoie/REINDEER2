@@ -92,6 +92,7 @@ fn main() -> io::Result<()> {
             let partitions = args.partitions;
             let bloomfilter = args.bloomfilter;
             let abundance = args.abundance;
+            let abundance_min = args.abundance_min;
             let abundance_max = args.abundance_max;
             let chunks_size = args.chunks_size;
             let dense_option = args.dense;
@@ -130,6 +131,11 @@ fn main() -> io::Result<()> {
             } else {
                 abundance
             };
+
+            assert!(
+                abundance_min > abundance_max,
+                "the minimum abundance ({abundance_min}) should not be smaller than the max abundance ({abundance_max})"
+            );
 
             let minimizer = if kmer < minimizer {
                 log::warn!("WARNING : the minimizer size '{}' exceeds the k-mer size '{}'. The minimiser size is now set to '{}'", minimizer, kmer, kmer);
@@ -175,6 +181,7 @@ fn main() -> io::Result<()> {
                 minimizer,
                 color_nb,
                 abundance,
+                abundance_min,
                 abundance_max,
                 dense_option,
                 canonical,

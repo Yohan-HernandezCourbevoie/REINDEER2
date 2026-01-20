@@ -51,6 +51,10 @@ pub struct IndexArgs {
     #[arg(short, long, value_name = "ABUND", default_value_t = 255)]
     pub abundance: usize,
 
+    /// Sets the minimal abundance to take into account
+    #[arg(long, value_name = "ABUND_MIN", default_value_t = 0)]
+    pub abundance_min: u16,
+
     /// Sets the maximal abundance to take into account
     #[arg(short = 'A', long, value_name = "ABUND_MAX", default_value_t = 65024)]
     pub abundance_max: u16,

@@ -21,6 +21,7 @@ pub fn process_fasta_file(
     partition_number: usize,
     color_number_global: usize,
     threshold: usize,
+    abundance_min: u16,
     abundance_max: u16,
     path_num: usize,
     path_num_global: usize,
@@ -44,7 +45,8 @@ pub fn process_fasta_file(
 
         // this part reads the batches of sequences and records kmers info until the structure is too large in memory
         for record in batch {
-            let processed = process_fasta_record(record, base, abundance_max, &header_type); //read fasta
+            let processed =
+                process_fasta_record(record, base, abundance_min, abundance_max, &header_type); //read fasta
             match processed {
                 Ok((seq, log_abundance, count_value)) => {
                     if log_abundance != 666 {
@@ -132,6 +134,7 @@ pub fn process_fasta_file(
 pub fn process_fasta_record(
     record: &fasta::Record,
     base: f64,
+    abundance_min: u16,
     abundance_max: u16,
     header_type: &HeaderType,
 ) -> Result<(Vec<u8>, u16, u16), io::Error> {
@@ -143,7 +146,7 @@ pub fn process_fasta_record(
     };
 
     // compute the lossy abundance value
-    let log_abundance = if count_value > 0 {
+    let log_abundance = if count_value > abundance_min {
         compute_log_abundance(count_value, base, abundance_max)
     } else {
         666
@@ -156,6 +159,7 @@ pub fn process_fasta_record(
 mod tests {
     use super::*;
 
+    // TODO test abundance min/max
     #[test]
     fn test_process_fasta_record() {
         let fasta_input =
@@ -166,7 +170,7 @@ mod tests {
         let result = result.expect("error during fasta parsing");
 
         let base = 2.0;
-        let processed = process_fasta_record(&result, base, 65535, &HeaderType::Logan);
+        let processed = process_fasta_record(&result, base, 0, 65535, &HeaderType::Logan);
 
         assert!(processed.is_ok(), "processing failed");
         let (seq, log_abundance, _) = processed.unwrap();

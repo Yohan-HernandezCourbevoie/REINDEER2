@@ -63,6 +63,7 @@ pub struct Reindeer2 {
     m: usize,
     nb_color: usize,
     abundance_number: usize,
+    abundance_min: u16,
     abundance_max: u16,
     dense_option: bool,
     canonical: bool,
@@ -87,6 +88,7 @@ impl Reindeer2 {
         m: usize,
         nb_color: usize,
         abundance_number: usize,
+        abundance_min: u16,
         abundance_max: u16,
         // TODO rename is_dense
         dense_option: bool,
@@ -98,8 +100,9 @@ impl Reindeer2 {
             k,
             m,
             nb_color,
-            abundance_max,
             abundance_number,
+            abundance_min,
+            abundance_max,
             dense_option,
             canonical,
         }
@@ -229,6 +232,7 @@ impl Reindeer2 {
                                     self.partition_number,
                                     self.nb_color,
                                     threshold,
+                                    self.abundance_min,
                                     self.abundance_max,
                                     path_num,
                                     path_num + chunk_i * color_chunks[0],
@@ -1989,6 +1993,7 @@ mod tests {
             partition_number: 4,
             nb_color: 3,
             abundance_number: 2,
+            abundance_min: 0,
             abundance_max: 512,
             dense_option: false,
             canonical: false,
@@ -2012,6 +2017,7 @@ mod tests {
         m: usize,
         color_number: usize,
         abundance_number: usize,
+        abundance_min: u16,
         abundance_max: u16,
         chunks_size: usize,
         dense_option: bool,
@@ -2027,6 +2033,7 @@ mod tests {
             m,
             color_number,
             abundance_number,
+            abundance_min,
             abundance_max,
             dense_option,
             true,
@@ -2095,6 +2102,7 @@ mod tests {
         let partition_number = 4;
         let color_number = 1;
         let abundance_number = 256;
+        let abundance_min = 0;
         let abundance_max = 65535;
         let chunks_size = 128;
         let dense_option = false;
@@ -2107,6 +2115,7 @@ mod tests {
             m,
             color_number,
             abundance_number,
+            abundance_min,
             abundance_max,
             dense_option,
             false,
@@ -2179,6 +2188,7 @@ mod tests {
         let partition_number = 4;
         let color_number = 1;
         let abundance_number = 255;
+        let abundance_min = 0;
         let abundance_max = 65535;
         let chunks_size = 128;
         let dense_option = true;
@@ -2191,6 +2201,7 @@ mod tests {
             m,
             color_number,
             abundance_number,
+            abundance_min,
             abundance_max,
             chunks_size,
             dense_option,
@@ -2260,6 +2271,7 @@ mod tests {
         let partition_number = 4;
         let color_number = 2;
         let abundance_number = 256;
+        let abundance_min = 0;
         let abundance_max = 65535;
         let chunks_size = 128;
         let dense_option = false;
@@ -2272,6 +2284,7 @@ mod tests {
             m,
             color_number,
             abundance_number,
+            abundance_min,
             abundance_max,
             chunks_size,
             dense_option,
@@ -2339,6 +2352,7 @@ mod tests {
         let partition_number = 4;
         let color_number = 2;
         let abundance_number = 256;
+        let abundance_min = 0;
         let abundance_max = 65535;
         let chunks_size = 128;
         let dense_option = true;
@@ -2351,6 +2365,7 @@ mod tests {
             m,
             color_number,
             abundance_number,
+            abundance_min,
             abundance_max,
             chunks_size,
             dense_option,
@@ -2417,6 +2432,7 @@ mod tests {
         let partition_number = 4;
         let color_number = 2;
         let abundance_number = 256;
+        let abundance_min = 0;
         let abundance_max = 65535;
         let chunks_size = 128;
         let dense_option = false;
@@ -2429,6 +2445,7 @@ mod tests {
             m,
             color_number,
             abundance_number,
+            abundance_min,
             abundance_max,
             chunks_size,
             dense_option,
@@ -2492,6 +2509,7 @@ mod tests {
         let partition_number = 4;
         let color_number = 2;
         let abundance_number = 256;
+        let abundance_min = 0;
         let abundance_max = 65535;
         let chunks_size = 128;
         let dense_option = true;
@@ -2504,6 +2522,7 @@ mod tests {
             m,
             color_number,
             abundance_number,
+            abundance_min,
             abundance_max,
             chunks_size,
             dense_option,
@@ -2572,6 +2591,7 @@ mod tests {
         let partition_number = 4;
         let color_number = 2;
         let abundance_number = 255;
+        let abundance_min = 0;
         let abundance_max = 65535;
         let chunks_size = 128;
         let dense_option = false;
@@ -2584,6 +2604,7 @@ mod tests {
             m,
             color_number,
             abundance_number,
+            abundance_min,
             abundance_max,
             chunks_size,
             dense_option,
@@ -2653,6 +2674,7 @@ mod tests {
         let partition_number = 4;
         let color_number = 2;
         let abundance_number = 255;
+        let abundance_min = 0;
         let abundance_max = 65535;
         let chunks_size = 128;
         let dense_option = true;
@@ -2665,6 +2687,7 @@ mod tests {
             m,
             color_number,
             abundance_number,
+            abundance_min,
             abundance_max,
             chunks_size,
             dense_option,
@@ -2733,6 +2756,7 @@ mod tests {
         let partition_number = 4;
         let color_number = 2;
         let abundance_number = 255;
+        let abundance_min = 0;
         let abundance_max = 255;
         let chunks_size = 128;
         let dense_option = false;
@@ -2745,6 +2769,7 @@ mod tests {
             m,
             color_number,
             abundance_number,
+            abundance_min,
             abundance_max,
             chunks_size,
             dense_option,
@@ -2815,6 +2840,7 @@ mod tests {
         let partition_number = 4;
         let color_number = 2;
         let abundance_number = 255;
+        let abundance_min = 0;
         let abundance_max = 255;
         let chunks_size = 128;
         let dense_option = true;
@@ -2827,6 +2853,7 @@ mod tests {
             m,
             color_number,
             abundance_number,
+            abundance_min,
             abundance_max,
             chunks_size,
             dense_option,
@@ -2897,6 +2924,7 @@ mod tests {
         let partition_number = 4;
         let color_number = 2;
         let abundance_number = 255;
+        let abundance_min = 0;
         let abundance_max = 255;
         let chunks_size = 1;
         let dense_option = false;
@@ -2909,6 +2937,7 @@ mod tests {
             m,
             color_number,
             abundance_number,
+            abundance_min,
             abundance_max,
             chunks_size,
             dense_option,
@@ -2979,6 +3008,7 @@ mod tests {
         let partition_number = 4;
         let color_number = 2;
         let abundance_number = 255;
+        let abundance_min = 0;
         let abundance_max = 255;
         let chunks_size = 1;
         let dense_option = true;
@@ -2991,6 +3021,7 @@ mod tests {
             m,
             color_number,
             abundance_number,
+            abundance_min,
             abundance_max,
             chunks_size,
             dense_option,
@@ -3057,6 +3088,7 @@ mod tests {
         let partition_number = 4;
         let color_number = 2;
         let abundance_number = 255;
+        let abundance_min = 0;
         let abundance_max = 65535;
         let chunks_size = 128;
         let dense_option = false;
@@ -3069,6 +3101,7 @@ mod tests {
             m,
             color_number,
             abundance_number,
+            abundance_min,
             abundance_max,
             chunks_size,
             dense_option,
@@ -3133,6 +3166,7 @@ mod tests {
         let partition_number = 4;
         let color_number = 2;
         let abundance_number = 255;
+        let abundance_min = 0;
         let abundance_max = 65535;
         let chunks_size = 128;
         let dense_option = true;
@@ -3145,6 +3179,7 @@ mod tests {
             m,
             color_number,
             abundance_number,
+            abundance_min,
             abundance_max,
             chunks_size,
             dense_option,
@@ -3455,6 +3490,7 @@ mod tests {
         //let color_number = 6;
         let color_number = 8;
         let abundance_number = 255;
+        let abundance_min = 0;
         let abundance_max = 65535;
         let chunks_size = 128;
         let dense_option = false;
@@ -3477,6 +3513,7 @@ mod tests {
             m,
             color_number,
             abundance_number,
+            abundance_min,
             abundance_max,
             chunks_size,
             dense_option,
@@ -3608,6 +3645,7 @@ mod tests {
         let partition_number = 2;
         let color_number = 6;
         let abundance_number = 255;
+        let abundance_min = 0;
         let abundance_max = 65535;
         let chunks_size = 128;
         let dense_option = false;
@@ -3628,6 +3666,7 @@ mod tests {
             m,
             color_number,
             abundance_number,
+            abundance_min,
             abundance_max,
             chunks_size,
             dense_option,
@@ -3723,6 +3762,7 @@ mod tests {
         let partition_number = 2;
         let color_number = 9;
         let abundance_number = 255;
+        let abundance_min = 0;
         let abundance_max = 65535;
         let chunks_size = 128;
         let dense_option = false;
@@ -3746,6 +3786,7 @@ mod tests {
             m,
             color_number,
             abundance_number,
+            abundance_min,
             abundance_max,
             chunks_size,
             dense_option,
@@ -3832,6 +3873,7 @@ mod tests {
         let partition_number = 2;
         let color_number = 5;
         let abundance_number = 255;
+        let abundance_min = 0;
         let abundance_max = 65535;
         let chunks_size = 128;
         let dense_option = false;
@@ -3851,6 +3893,7 @@ mod tests {
             m,
             color_number,
             abundance_number,
+            abundance_min,
             abundance_max,
             chunks_size,
             dense_option,
@@ -4036,6 +4079,7 @@ mod tests {
         let partition_number = 2;
         let color_number = 9;
         let abundance_number = 255;
+        let abundance_min = 0;
         let abundance_max = 65535;
         let chunks_size = 128;
         let dense_option = false;
@@ -4059,6 +4103,7 @@ mod tests {
             m,
             color_number,
             abundance_number,
+            abundance_min,
             abundance_max,
             chunks_size,
             dense_option,
@@ -4108,6 +4153,7 @@ mod tests {
         let partition_number = 4;
         let color_number = 1;
         let abundance_number = 255;
+        let abundance_min = 0;
         let abundance_max = 65535;
         let chunks_size = 128;
         let _batch_size = 2;
@@ -4121,6 +4167,7 @@ mod tests {
             m,
             color_number,
             abundance_number,
+            abundance_min,
             abundance_max,
             dense_option,
             false,
@@ -4196,6 +4243,7 @@ mod tests {
         let partition_number = 4;
         let color_number = 2;
         let abundance_number = 256;
+        let abundance_min = 0;
         let abundance_max = 65535;
         let chunks_size = 128;
         let dense_option = false;
@@ -4209,6 +4257,7 @@ mod tests {
             m,
             color_number,
             abundance_number,
+            abundance_min,
             abundance_max,
             dense_option,
             canonical,
@@ -4267,6 +4316,7 @@ shared_revcomp_with_other_test_file\t0-19:3\t0-19:10",
         let partition_number = 4;
         let color_number = 2;
         let abundance_number = 256;
+        let abundance_min = 0;
         let abundance_max = 65535;
         let chunks_size = 128;
         let dense_option = false;
@@ -4280,6 +4330,7 @@ shared_revcomp_with_other_test_file\t0-19:3\t0-19:10",
             m,
             color_number,
             abundance_number,
+            abundance_min,
             abundance_max,
             dense_option,
             canonical,
@@ -4335,6 +4386,7 @@ header_0\t0-69:*\t0-69:1",
         let partition_number = 4;
         let color_number = 2;
         let abundance_number = 256;
+        let abundance_min = 0;
         let abundance_max = 65535;
         let chunks_size = 128;
         let dense_option = false;
@@ -4348,6 +4400,7 @@ header_0\t0-69:*\t0-69:1",
             m,
             color_number,
             abundance_number,
+            abundance_min,
             abundance_max,
             dense_option,
             canonical,
@@ -4430,6 +4483,7 @@ shared_revcomp_with_other_test_file\t0-19:*\t0-19:10",
         let bf_size = 1024;
         let partitions = 2;
         let abundance = 255;
+        let abundance_min = 0;
         let abundance_max = 65535;
         let chunks_size = 128;
         let dense_option = false;
@@ -4446,6 +4500,7 @@ shared_revcomp_with_other_test_file\t0-19:*\t0-19:10",
             m,
             color_nb_1,
             abundance,
+            abundance_min,
             abundance_max,
             dense_option,
             canonical,
@@ -4467,6 +4522,7 @@ shared_revcomp_with_other_test_file\t0-19:*\t0-19:10",
             m,
             color_nb_2,
             abundance,
+            abundance_min,
             abundance_max,
             dense_option,
             canonical,
