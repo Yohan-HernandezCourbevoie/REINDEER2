@@ -78,10 +78,7 @@ impl OutputFormatCli {
 
 fn main() -> io::Result<()> {
     let args = Cli::parse();
-    let env = env_logger::Env::default()
-        .filter_or("MY_LOG_LEVEL", "trace")
-        .write_style_or("MY_LOG_STYLE", "always");
-
+    let env = env_logger::Env::default().default_filter_or("trace");
     env_logger::init_from_env(env);
     let max_threads = args.threads;
 
@@ -135,7 +132,7 @@ fn main() -> io::Result<()> {
                 NonZero::new(abundance_max).expect("max abundance should be positive");
 
             assert!(
-                abundance_min > abundance_max.get(),
+                abundance_min < abundance_max.get(),
                 "the minimum abundance ({abundance_min}) should not be smaller than the max abundance ({abundance_max})"
             );
 
