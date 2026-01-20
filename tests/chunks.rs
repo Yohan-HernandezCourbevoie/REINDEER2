@@ -1,5 +1,7 @@
 mod common;
 
+use std::num::NonZero;
+
 use common::{check_number_of_partitions, is_all_same, AutoRemoveDirectory, AutoRemoveFile};
 
 use reindeer2::reindeer2::{read_fof_file, OutputFormat, Reindeer2};
@@ -26,13 +28,13 @@ fn no_effect_chunk() {
     let minimizer = 15;
     let input = get_input_fof();
     let (file_paths, color_nb) = read_fof_file(&input).unwrap();
-    let abundance = 255;
+    let abundance = NonZero::new(255).unwrap();
     let abundance_min = 0;
-    let abundance_max = 65024;
+    let abundance_max = NonZero::new(65024).unwrap();
     let dense_option = false;
     let canonical = false;
 
-    let partitions = check_number_of_partitions(&input, partitions, abundance, bf_size);
+    let partitions = check_number_of_partitions(&input, partitions, abundance.get(), bf_size);
 
     let index = Reindeer2::new(
         bf_size,

@@ -5,6 +5,7 @@ mod overflow_detection;
 use clap::Parser;
 use rand::Rng;
 use std::io::{self};
+use std::num::NonZero;
 use std::time::Instant;
 
 use cli::Cli;
@@ -124,16 +125,17 @@ fn main() -> io::Result<()> {
             let abundance = if abundance > 255 && dense_option {
                 log::warn!("WARNING : the abundance granularity exceeds the requirements of the '--dense' (<256). The abundance granularity is now set to 255.");
                 255
-            } else if abundance >= 666 {
-                // TODO remove once 666s will be removed from the build step and query step
-                log::warn!("WARNING : the abundance granularity exceeds internal limitations (666). The abundance granularity is now set to 665.");
-                665
             } else {
                 abundance
             };
+            let abundance =
+                NonZero::new(abundance).expect("abundance granularity should be positive");
+
+            let abundance_max =
+                NonZero::new(abundance_max).expect("max abundance should be positive");
 
             assert!(
-                abundance_min > abundance_max,
+                abundance_min > abundance_max.get(),
                 "the minimum abundance ({abundance_min}) should not be smaller than the max abundance ({abundance_max})"
             );
 

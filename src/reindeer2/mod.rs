@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
+use std::num::NonZero;
 use std::panic;
 use std::path::Path;
 use std::sync::{atomic, Arc, Mutex};
@@ -62,9 +63,9 @@ pub struct Reindeer2 {
     k: usize,
     m: usize,
     nb_color: usize,
-    abundance_number: usize,
+    abundance_number: NonZero<usize>,
     abundance_min: u16,
-    abundance_max: u16,
+    abundance_max: NonZero<u16>,
     dense_option: bool,
     canonical: bool,
 }
@@ -87,9 +88,9 @@ impl Reindeer2 {
         k: usize,
         m: usize,
         nb_color: usize,
-        abundance_number: usize,
+        abundance_number: NonZero<usize>,
         abundance_min: u16,
-        abundance_max: u16,
+        abundance_max: NonZero<u16>,
         // TODO rename is_dense
         dense_option: bool,
         canonical: bool,
@@ -193,7 +194,7 @@ impl Reindeer2 {
                 // TODO unit: is it in buts ?
                 // TODO can I use usize here ?
                 self.bf_size as usize,
-                self.abundance_number,
+                self.abundance_number.get(),
             );
 
             // For each file in this chunk, process in *parallel* (soon)
@@ -263,7 +264,7 @@ impl Reindeer2 {
                 bloom_filters.update_sparse_counts(
                     &atomic_sparse_one_seen,
                     &atomic_sparse_fp_seen,
-                    self.abundance_number,
+                    self.abundance_number.get(),
                 )?;
             }
             if let Err(e) = bloom_filters.write_to_disk(
@@ -309,7 +310,7 @@ impl Reindeer2 {
                 &dir_path,
                 &dir_path, // output
                 partitioned_bf_size,
-                self.abundance_number,
+                self.abundance_number.get(),
                 color_chunks,
                 self.partition_number,
                 self.nb_color,
@@ -410,7 +411,7 @@ impl Reindeer2 {
                         self.bf_size,
                         self.partition_number,
                         self.nb_color,
-                        self.abundance_number,
+                        self.abundance_number.get(),
                         self.dense_option,
                     )
                 },
@@ -819,7 +820,7 @@ pub fn merge_multiple_indexes(indexes_fof: &str, output_dir: &str) -> io::Result
             chunk_files,
             partition_idx,
             partitioned_bf_size,
-            index_ref.abundance_number,
+            index_ref.abundance_number.get(),
             &color_counts,
             &mut merged_bf,
             output_dir,
@@ -1387,20 +1388,18 @@ fn extract_count_from_logan_header(header: &str) -> Result<u16, io::Error> {
 
 // --- ABUNDANCE ENCODING ---
 
-fn compute_log_abundance(count_value: u16, base: f64, max: u16) -> u16 {
-    let mut count_valuef = count_value as f64;
+fn compute_log_abundance(value: NonZero<u16>, base: f64, max: NonZero<u16>) -> u16 {
+    assert!(base > 0.0, "base must be greater than 0");
+    let value = value.get();
+    let max = max.get();
+
+    let value_f = value.min(max) as f64;
     let threshold = 1.0 / (base - 1.0);
-    if count_valuef <= 0.0 || base <= 0.0 {
-        panic!("value and base must be greater than 0");
-        // count_valuef=1.0;
-    }
-    if count_value > max {
-        count_valuef = max as f64;
-    }
-    if count_valuef < threshold {
-        (count_valuef - 1.0) as u16
+
+    if value_f < threshold {
+        value - 1
     } else {
-        (count_valuef.ln() / base.ln() + (base - 1.0).ln() / base.ln() + threshold - 1.0) as u16
+        (value_f.ln() / base.ln() + (base - 1.0).ln() / base.ln() + threshold - 1.0) as u16
     }
 }
 
@@ -1418,21 +1417,10 @@ fn approximate_value(log_value: usize, base: f64) -> u16 {
 }
 
 // TOUN
-fn compute_base(abundance_number: usize, abundance_max: u16) -> f64 {
-    let abundance_numberf = abundance_number as f64;
+fn compute_base(abundance_number: NonZero<usize>, abundance_max: NonZero<u16>) -> f64 {
+    let abundance_numberf = abundance_number.get() as f64;
     const TOL: f64 = 1e-9;
-    let abundance_maxf = abundance_max as f64;
-
-    // TODO pourquoi ce test ? C'est pas possible non ?
-    // TODO voir si utiliser assert est possible
-    if abundance_numberf <= 0.0 {
-        panic!("abundance number must be greater than 0");
-    }
-
-    #[expect(clippy::absurd_extreme_comparisons)]
-    if abundance_max <= 0 {
-        panic!("Maximal abundance must be greater than 0");
-    }
+    let abundance_maxf = abundance_max.get() as f64;
 
     let equation = |b: f64| -> f64 {
         if b <= 1.0 + 1.0 / abundance_maxf {
@@ -1643,6 +1631,7 @@ mod tests {
 
     use super::*;
     use bio::io::fasta;
+    use serde::de::value;
     use std::io::Cursor;
 
     use itertools::Itertools;
@@ -1711,34 +1700,40 @@ mod tests {
 
     #[test]
     fn test_compute_log_abundance_gives_zero() {
-        let result = compute_log_abundance(1, 2.0, 65535);
-        assert_eq!(result, 0, "expected log for 1 to be 0");
+        let value = NonZero::new(1).unwrap();
+        let max = NonZero::new(65535).unwrap();
 
-        let result2 = compute_log_abundance(1, 1.5, 65535);
+        let result = compute_log_abundance(value, 2.0, max);
+        assert_eq!(result, 0, "expected log for 1 to be 0");
+        let result2 = compute_log_abundance(value, 1.5, max);
         assert_eq!(result2, 0, "expected log for 1 to be 0");
     }
 
     #[test]
     fn test_compute_log_abundance_is_linear() {
+        let max = NonZero::new(65535).unwrap();
         let b = 1.1;
         for n in 1..9 {
-            let result = compute_log_abundance(n, b, 65535);
+            let n = NonZero::new(n).unwrap();
+            let result = compute_log_abundance(n, b, max);
             assert_eq!(
                 result,
-                n - 1,
+                n.get() - 1,
                 "expected abundance function to be linear for the first values"
             );
         }
         assert_eq!(
-            compute_log_abundance(10, b, 65535),
-            compute_log_abundance(11, b, 65535),
+            compute_log_abundance(NonZero::new(10).unwrap(), b, max),
+            compute_log_abundance(NonZero::new(11).unwrap(), b, max),
             "expected abundance function not to be linear at the threshold"
         );
     }
 
     #[test]
     fn test_compute_log_abundance_positive_values() {
-        let result = compute_log_abundance(8, 2.0, 65535);
+        let value = NonZero::new(8).unwrap();
+        let max = NonZero::new(65535).unwrap();
+        let result = compute_log_abundance(value, 2.0, max);
         assert!(
             ((result as f64) - 3.0).abs() < 1e-6,
             "expected log base 2 of 8 to be 3"
@@ -1747,23 +1742,27 @@ mod tests {
 
     #[test]
     fn test_compute_log_abundance_with_large_values() {
-        let result = compute_log_abundance(65535, 2.0, 65535);
-        let expected_log = 65535_f64.log2().floor() as u16;
+        let value = NonZero::new(65535).unwrap();
+        let max = value;
+        let result = compute_log_abundance(value, 2.0, max);
+        let expected = (value.get() as f64).log2().floor() as u16;
         assert_eq!(
-            result, expected_log,
+            result, expected,
             "expected log base 2 of 65535 to be {}, but got {}",
-            expected_log, result
+            expected, result
         );
     }
 
     #[test]
     fn test_compute_log_abundance_above_max() {
-        let result = compute_log_abundance(65535, 2.0, 256);
-        let expected_log = 256_f64.log2().floor() as u16;
+        let value = NonZero::new(65535).unwrap();
+        let max = NonZero::new(256).unwrap();
+        let result = compute_log_abundance(value, 2.0, max);
+        let expected = 256_f64.log2().floor() as u16;
         assert_eq!(
-            result, expected_log,
+            result, expected,
             "expected abundance to be scaled at log base 2 of 256 should have been {}, but got {}",
-            expected_log, result
+            expected, result
         );
     }
 
@@ -1792,16 +1791,13 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "value and base must be greater than 0")]
-    fn test_compute_log_abundance_zero_count_value() {
-        compute_log_abundance(0, 2.0, 65535);
+    #[should_panic(expected = "base must be greater than 0")]
+    fn test_compute_log_abundance_non_positive_base() {
+        let value = NonZero::new(8).unwrap();
+        let max = NonZero::new(65535).unwrap();
+        compute_log_abundance(value, 0.0, max);
     }
 
-    #[test]
-    #[should_panic(expected = "value and base must be greater than 0")]
-    fn test_compute_log_abundance_non_positive_base() {
-        compute_log_abundance(8, 0.0, 65535);
-    }
     #[test]
     fn test_approximate_value_with_positive_values() {
         let result = approximate_value(3, 2.0);
@@ -1836,7 +1832,9 @@ mod tests {
 
     #[test]
     fn test_compute_base_with_positive_values() {
-        let result = compute_base(16, 1024);
+        let abundance_number = NonZero::new(16).unwrap();
+        let abundance_max = NonZero::new(1024).unwrap();
+        let result = compute_base(abundance_number, abundance_max);
         assert!(
             (result - 1.5635206).abs() < 1e-6,
             "expected base for 16 with max 1024 to be ~1.56"
@@ -1845,7 +1843,9 @@ mod tests {
 
     #[test]
     fn test_compute_base_with_large_abundance_number() {
-        let result = compute_base(32, 1024);
+        let abundance_number = NonZero::new(32).unwrap();
+        let abundance_max = NonZero::new(1024).unwrap();
+        let result = compute_base(abundance_number, abundance_max);
         assert!(
             (result - 1.218096).abs() < 1e-6,
             "expected base for 32 with max 1024 to be approximately ~1.22"
@@ -1854,23 +1854,13 @@ mod tests {
 
     #[test]
     fn test_compute_base_with_small_abundance_number() {
-        let result = compute_base(8, 1024);
+        let abundance_number = NonZero::new(8).unwrap();
+        let abundance_max = NonZero::new(1024).unwrap();
+        let result = compute_base(abundance_number, abundance_max);
         assert!(
             (result - 2.740397).abs() < 1e-6,
             "expected base for 8 with max 1024 to be ~2.74"
         );
-    }
-
-    #[test]
-    #[should_panic(expected = "abundance number must be greater than 0")]
-    fn test_compute_base_with_zero_abundance_number() {
-        compute_base(0, 1024);
-    }
-
-    #[test]
-    #[should_panic(expected = "Maximal abundance must be greater than 0")]
-    fn test_compute_base_with_zero_abundance_max() {
-        compute_base(16, 0);
     }
 
     #[test]
@@ -1992,9 +1982,9 @@ mod tests {
             bf_size: 1024,
             partition_number: 4,
             nb_color: 3,
-            abundance_number: 2,
+            abundance_number: NonZero::new(2).unwrap(),
             abundance_min: 0,
-            abundance_max: 512,
+            abundance_max: NonZero::new(512).unwrap(),
             dense_option: false,
             canonical: false,
         };
@@ -2016,9 +2006,9 @@ mod tests {
         k: usize,
         m: usize,
         color_number: usize,
-        abundance_number: usize,
+        abundance_number: NonZero<usize>,
         abundance_min: u16,
-        abundance_max: u16,
+        abundance_max: NonZero<u16>,
         chunks_size: usize,
         dense_option: bool,
         threshold: usize,
@@ -2101,9 +2091,9 @@ mod tests {
         let bf_size = 1024 * 1024;
         let partition_number = 4;
         let color_number = 1;
-        let abundance_number = 256;
+        let abundance_number = NonZero::new(256).unwrap();
         let abundance_min = 0;
-        let abundance_max = 65535;
+        let abundance_max = NonZero::new(65535).unwrap();
         let chunks_size = 128;
         let dense_option = false;
         let threshold = color_number;
@@ -2187,9 +2177,9 @@ mod tests {
         let bf_size = 1024 * 1024;
         let partition_number = 4;
         let color_number = 1;
-        let abundance_number = 255;
+        let abundance_number = NonZero::new(255).unwrap();
         let abundance_min = 0;
-        let abundance_max = 65535;
+        let abundance_max = NonZero::new(65535).unwrap();
         let chunks_size = 128;
         let dense_option = true;
         let threshold = color_number;
@@ -2270,9 +2260,9 @@ mod tests {
         let bf_size = 1024 * 1024;
         let partition_number = 4;
         let color_number = 2;
-        let abundance_number = 256;
+        let abundance_number = NonZero::new(256).unwrap();
         let abundance_min = 0;
-        let abundance_max = 65535;
+        let abundance_max = NonZero::new(65535).unwrap();
         let chunks_size = 128;
         let dense_option = false;
         let threshold = color_number;
@@ -2351,9 +2341,9 @@ mod tests {
         let bf_size = 1024 * 1024;
         let partition_number = 4;
         let color_number = 2;
-        let abundance_number = 256;
+        let abundance_number = NonZero::new(256).unwrap();
         let abundance_min = 0;
-        let abundance_max = 65535;
+        let abundance_max = NonZero::new(65535).unwrap();
         let chunks_size = 128;
         let dense_option = true;
         let threshold = color_number;
@@ -2431,9 +2421,9 @@ mod tests {
         let bf_size = 1024 * 1024;
         let partition_number = 4;
         let color_number = 2;
-        let abundance_number = 256;
+        let abundance_number = NonZero::new(256).unwrap();
         let abundance_min = 0;
-        let abundance_max = 65535;
+        let abundance_max = NonZero::new(65535).unwrap();
         let chunks_size = 128;
         let dense_option = false;
         let threshold = color_number;
@@ -2508,9 +2498,9 @@ mod tests {
         let bf_size = 1024 * 1024;
         let partition_number = 4;
         let color_number = 2;
-        let abundance_number = 256;
+        let abundance_number = NonZero::new(256).unwrap();
         let abundance_min = 0;
-        let abundance_max = 65535;
+        let abundance_max = NonZero::new(65535).unwrap();
         let chunks_size = 128;
         let dense_option = true;
         let threshold = color_number;
@@ -2590,9 +2580,9 @@ mod tests {
         let bf_size = 1024 * 1024;
         let partition_number = 4;
         let color_number = 2;
-        let abundance_number = 255;
+        let abundance_number = NonZero::new(255).unwrap();
         let abundance_min = 0;
-        let abundance_max = 65535;
+        let abundance_max = NonZero::new(65535).unwrap();
         let chunks_size = 128;
         let dense_option = false;
         let threshold = 1;
@@ -2673,9 +2663,9 @@ mod tests {
         let bf_size = 1024 * 1024;
         let partition_number = 4;
         let color_number = 2;
-        let abundance_number = 255;
+        let abundance_number = NonZero::new(255).unwrap();
         let abundance_min = 0;
-        let abundance_max = 65535;
+        let abundance_max = NonZero::new(65535).unwrap();
         let chunks_size = 128;
         let dense_option = true;
         let threshold = 1;
@@ -2755,9 +2745,9 @@ mod tests {
         let bf_size = 1024 * 1024;
         let partition_number = 4;
         let color_number = 2;
-        let abundance_number = 255;
+        let abundance_number = NonZero::new(255).unwrap();
         let abundance_min = 0;
-        let abundance_max = 255;
+        let abundance_max = NonZero::new(255).unwrap();
         let chunks_size = 128;
         let dense_option = false;
         let threshold = color_number;
@@ -2839,9 +2829,9 @@ mod tests {
         let bf_size = 1024 * 1024;
         let partition_number = 4;
         let color_number = 2;
-        let abundance_number = 255;
+        let abundance_number = NonZero::new(255).unwrap();
         let abundance_min = 0;
-        let abundance_max = 255;
+        let abundance_max = NonZero::new(255).unwrap();
         let chunks_size = 128;
         let dense_option = true;
         let threshold = color_number;
@@ -2923,9 +2913,9 @@ mod tests {
         let bf_size = 1024 * 1024;
         let partition_number = 4;
         let color_number = 2;
-        let abundance_number = 255;
+        let abundance_number = NonZero::new(255).unwrap();
         let abundance_min = 0;
-        let abundance_max = 255;
+        let abundance_max = NonZero::new(255).unwrap();
         let chunks_size = 1;
         let dense_option = false;
         let threshold = color_number;
@@ -3007,9 +2997,9 @@ mod tests {
         let bf_size = 1024 * 1024;
         let partition_number = 4;
         let color_number = 2;
-        let abundance_number = 255;
+        let abundance_number = NonZero::new(255).unwrap();
         let abundance_min = 0;
-        let abundance_max = 255;
+        let abundance_max = NonZero::new(255).unwrap();
         let chunks_size = 1;
         let dense_option = true;
         let threshold = color_number;
@@ -3087,9 +3077,9 @@ mod tests {
         let bf_size = 1024 * 1024;
         let partition_number = 4;
         let color_number = 2;
-        let abundance_number = 255;
+        let abundance_number = NonZero::new(255).unwrap();
         let abundance_min = 0;
-        let abundance_max = 65535;
+        let abundance_max = NonZero::new(65535).unwrap();
         let chunks_size = 128;
         let dense_option = false;
         let threshold = color_number;
@@ -3165,9 +3155,9 @@ mod tests {
         let bf_size = 1024 * 1024;
         let partition_number = 4;
         let color_number = 2;
-        let abundance_number = 255;
+        let abundance_number = NonZero::new(255).unwrap();
         let abundance_min = 0;
-        let abundance_max = 65535;
+        let abundance_max = NonZero::new(65535).unwrap();
         let chunks_size = 128;
         let dense_option = true;
         let threshold = color_number;
@@ -3489,9 +3479,9 @@ mod tests {
         let partition_number = 2;
         //let color_number = 6;
         let color_number = 8;
-        let abundance_number = 255;
+        let abundance_number = NonZero::new(255).unwrap();
         let abundance_min = 0;
-        let abundance_max = 65535;
+        let abundance_max = NonZero::new(65535).unwrap();
         let chunks_size = 128;
         let dense_option = false;
         let threshold = color_number;
@@ -3644,9 +3634,9 @@ mod tests {
         let bf_size = 8;
         let partition_number = 2;
         let color_number = 6;
-        let abundance_number = 255;
+        let abundance_number = NonZero::new(255).unwrap();
         let abundance_min = 0;
-        let abundance_max = 65535;
+        let abundance_max = NonZero::new(65535).unwrap();
         let chunks_size = 128;
         let dense_option = false;
         let threshold = color_number;
@@ -3761,9 +3751,9 @@ mod tests {
         let bf_size = 4;
         let partition_number = 2;
         let color_number = 9;
-        let abundance_number = 255;
+        let abundance_number = NonZero::new(255).unwrap();
         let abundance_min = 0;
-        let abundance_max = 65535;
+        let abundance_max = NonZero::new(65535).unwrap();
         let chunks_size = 128;
         let dense_option = false;
         let threshold = color_number;
@@ -3872,9 +3862,9 @@ mod tests {
         let bf_size = 256 * 256;
         let partition_number = 2;
         let color_number = 5;
-        let abundance_number = 255;
+        let abundance_number = NonZero::new(255).unwrap();
         let abundance_min = 0;
-        let abundance_max = 65535;
+        let abundance_max = NonZero::new(65535).unwrap();
         let chunks_size = 128;
         let dense_option = false;
         let threshold = color_number;
@@ -4078,9 +4068,9 @@ mod tests {
         let bf_size = 32;
         let partition_number = 2;
         let color_number = 9;
-        let abundance_number = 255;
+        let abundance_number = NonZero::new(255).unwrap();
         let abundance_min = 0;
-        let abundance_max = 65535;
+        let abundance_max = NonZero::new(65535).unwrap();
         let chunks_size = 128;
         let dense_option = false;
         let threshold = color_number;
@@ -4152,9 +4142,9 @@ mod tests {
         let bf_size = 1024 * 1024;
         let partition_number = 4;
         let color_number = 1;
-        let abundance_number = 255;
+        let abundance_number = NonZero::new(255).unwrap();
         let abundance_min = 0;
-        let abundance_max = 65535;
+        let abundance_max = NonZero::new(65535).unwrap();
         let chunks_size = 128;
         let _batch_size = 2;
         let dense_option = false;
@@ -4242,9 +4232,9 @@ mod tests {
         let bf_size = 1024 * 1024;
         let partition_number = 4;
         let color_number = 2;
-        let abundance_number = 256;
+        let abundance_number = NonZero::new(256).unwrap();
         let abundance_min = 0;
-        let abundance_max = 65535;
+        let abundance_max = NonZero::new(65535).unwrap();
         let chunks_size = 128;
         let dense_option = false;
         let threshold = color_number;
@@ -4315,9 +4305,9 @@ shared_revcomp_with_other_test_file\t0-19:3\t0-19:10",
         let bf_size = 1024 * 1024;
         let partition_number = 4;
         let color_number = 2;
-        let abundance_number = 256;
+        let abundance_number = NonZero::new(256).unwrap();
         let abundance_min = 0;
-        let abundance_max = 65535;
+        let abundance_max = NonZero::new(65535).unwrap();
         let chunks_size = 128;
         let dense_option = false;
         let threshold = color_number;
@@ -4385,9 +4375,9 @@ header_0\t0-69:*\t0-69:1",
         let bf_size = 1024 * 1024;
         let partition_number = 4;
         let color_number = 2;
-        let abundance_number = 256;
+        let abundance_number = NonZero::new(256).unwrap();
         let abundance_min = 0;
-        let abundance_max = 65535;
+        let abundance_max = NonZero::new(65535).unwrap();
         let chunks_size = 128;
         let dense_option = false;
         let threshold = color_number;
@@ -4482,9 +4472,9 @@ shared_revcomp_with_other_test_file\t0-19:*\t0-19:10",
         let m = 3;
         let bf_size = 1024;
         let partitions = 2;
-        let abundance = 255;
+        let abundance = NonZero::new(255).unwrap();
         let abundance_min = 0;
-        let abundance_max = 65535;
+        let abundance_max = NonZero::new(65535).unwrap();
         let chunks_size = 128;
         let dense_option = false;
         let canonical = true;
