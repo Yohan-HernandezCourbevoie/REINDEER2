@@ -1026,50 +1026,20 @@ const fn compute_base_position(
     position * (color_number as u64) * (abundance_number as u64)
 }
 
-// TOUN
-// TODO why the outparameter ?
-/// update color abundances for a specific base position in the Bloom filter
-fn update_color_abundances(
-    bitmap: &RoaringBitmap,
-    base_position: u64,
-    color_number: usize,
-    abundance_number: usize,
-    kmer_position: usize,
-    color_abundances: &mut [Vec<(usize, usize)>],
-) {
-    for color in 0..color_number {
-        let mut insert = false;
-        for abundance in 0..abundance_number {
-            let position_to_check =
-                base_position + (color as u64) * (abundance_number as u64) + (abundance as u64);
+// fn _get_current_chunk_index(i: usize, chunk_sizes: &Vec<usize>, partition_nb: usize) -> usize {
+//     let mut cumulative_size = 0;
 
-            if bitmap.contains(position_to_check as u32) {
-                color_abundances[color].push((kmer_position, abundance));
-                insert = true;
-                break; // keep the minimum
-            }
-        }
-        if !insert {
-            // TODO weird discuss value
-            color_abundances[color].push((kmer_position, 666)); // important to record absent k-mers, to compute the median value, also, todo test
-        }
-    }
-}
-
-fn _get_current_chunk_index(i: usize, chunk_sizes: &Vec<usize>, partition_nb: usize) -> usize {
-    let mut cumulative_size = 0;
-
-    for (chunk_idx, &_chunk_size) in chunk_sizes.iter().enumerate() {
-        cumulative_size += partition_nb;
-        if i < cumulative_size {
-            return chunk_idx;
-        }
-    }
-    panic!(
-        "Index {} out of bounds for chunk sizes {:?}",
-        i, chunk_sizes
-    );
-}
+//     for (chunk_idx, &_chunk_size) in chunk_sizes.iter().enumerate() {
+//         cumulative_size += partition_nb;
+//         if i < cumulative_size {
+//             return chunk_idx;
+//         }
+//     }
+//     panic!(
+//         "Index {} out of bounds for chunk sizes {:?}",
+//         i, chunk_sizes
+//     );
+// }
 
 // // this part fills the BFs per partition
 // fn flush_map_into_bfs(
@@ -1936,42 +1906,6 @@ mod tests {
             );
         }
     */
-    #[test]
-    fn test_update_color_abundances() {
-        use roaring::RoaringBitmap;
-
-        let mut bitmap = RoaringBitmap::new();
-        let base_position = 100;
-        let color_number = 3;
-        let abundance_number = 2;
-
-        bitmap.insert((base_position + 0) as u32); // color 0, abundance 0
-        bitmap.insert((base_position + 1) as u32); // color 0, abundance 1
-        bitmap.insert((base_position + 2) as u32); // color 1, abundance 0
-
-        let mut color_abundances = vec![vec![]; color_number];
-
-        update_color_abundances(
-            &bitmap,
-            base_position,
-            color_number,
-            abundance_number,
-            0,
-            &mut color_abundances,
-        );
-
-        let expected_color_abundances = vec![
-            vec![(0, 0)],   // color 0 has abundance levels 0 and 1 -> will keep the min
-            vec![(0, 0)],   // color 1 has abundance level 0
-            vec![(0, 666)], // color 2 has no abundance, set to 666 instead (handle later in the pipeline)
-        ];
-
-        assert_eq!(
-            color_abundances, expected_color_abundances,
-            "Color abundances mismatch: expected {:?}, got {:?}",
-            expected_color_abundances, color_abundances
-        );
-    }
 
     #[test]
     fn test_write_and_read_metadata() {
@@ -3257,7 +3191,7 @@ mod tests {
                 base_position + (log_abundance as u64)
             );
 
-            update_color_abundances(
+            query::update_color_abundances(
                 bitmap,
                 base_position,
                 color_number,

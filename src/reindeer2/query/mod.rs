@@ -7,7 +7,7 @@ use std::path::Path;
 
 use super::{
     approximate_value, compute_base_position, dense_index::DenseIndexPartition,
-    kmer_minimizers_seq_level, load_bloom_filter, read_indexed_file_names, update_color_abundances,
+    kmer_minimizers_seq_level, load_bloom_filter, read_indexed_file_names,
 };
 use bio::io::fasta;
 pub use format::{write_header, write_kmer_query, EnrichedOutputFormat};
@@ -149,6 +149,36 @@ pub fn fold_into_hashmap(
     local_results
 }
 
+// TOUN
+// TODO why the outparameter ?
+/// update color abundances for a specific base position in the Bloom filter
+pub fn update_color_abundances(
+    bitmap: &roaring::RoaringBitmap,
+    base_position: u64,
+    color_number: usize,
+    abundance_number: usize,
+    kmer_position: usize,
+    color_abundances: &mut [Vec<(usize, usize)>],
+) {
+    for color in 0..color_number {
+        let mut insert = false;
+        for abundance in 0..abundance_number {
+            let position_to_check =
+                base_position + (color as u64) * (abundance_number as u64) + (abundance as u64);
+
+            if bitmap.contains(position_to_check as u32) {
+                color_abundances[color].push((kmer_position, abundance));
+                insert = true;
+                break; // keep the minimum
+            }
+        }
+        if !insert {
+            // TODO weird discuss value
+            color_abundances[color].push((kmer_position, 666)); // important to record absent k-mers, to compute the median value, also, todo test
+        }
+    }
+}
+
 fn load_kmer_counts_vector(dir_path: &str) -> io::Result<Vec<usize>> {
     let mut file = File::open(Path::new(dir_path).join("kmer_counts_per_color.bin"))?;
 
@@ -217,4 +247,45 @@ pub fn merge_results(
     acc
 }
 
-// TODO write unit tests for this file
+// TODO write more unit tests for this file
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_update_color_abundances() {
+        use roaring::RoaringBitmap;
+
+        let mut bitmap = RoaringBitmap::new();
+        let base_position = 100;
+        let color_number = 3;
+        let abundance_number = 2;
+
+        bitmap.insert((base_position + 0) as u32); // color 0, abundance 0
+        bitmap.insert((base_position + 1) as u32); // color 0, abundance 1
+        bitmap.insert((base_position + 2) as u32); // color 1, abundance 0
+
+        let mut color_abundances = vec![vec![]; color_number];
+
+        update_color_abundances(
+            &bitmap,
+            base_position,
+            color_number,
+            abundance_number,
+            0,
+            &mut color_abundances,
+        );
+
+        let expected_color_abundances = vec![
+            vec![(0, 0)],   // color 0 has abundance levels 0 and 1 -> will keep the min
+            vec![(0, 0)],   // color 1 has abundance level 0
+            vec![(0, 666)], // color 2 has no abundance, set to 666 instead (handle later in the pipeline)
+        ];
+
+        assert_eq!(
+            color_abundances, expected_color_abundances,
+            "Color abundances mismatch: expected {:?}, got {:?}",
+            expected_color_abundances, color_abundances
+        );
+    }
+}
