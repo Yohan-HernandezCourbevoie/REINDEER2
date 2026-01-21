@@ -1,0 +1,4 @@
+query	datasetA	datasetB
+all_present_with_variations	99	99
+single_present_kmer	48	48
+present_kmers_then_nothing	0	0

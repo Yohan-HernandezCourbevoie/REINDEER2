@@ -1,0 +1,7 @@
+header,file,abundance
+>all_present_with_variations,0,99
+>all_present_with_variations,1,99
+>single_present_kmer,0,48
+>single_present_kmer,1,48
+>present_kmers_then_nothing,0,0
+>present_kmers_then_nothing,1,0
