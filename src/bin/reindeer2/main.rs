@@ -16,6 +16,8 @@ use reindeer2::reindeer2::{
     OutputFormat, Reindeer2,
 };
 
+use crate::cli::{IndexArgs, MergeArgs, QueryArgs};
+
 impl OutputFormatCli {
     fn to_output_format(self, normalized: Option<u64>, breakpoints: Option<f64>) -> OutputFormat {
         match (self, normalized, breakpoints) {
@@ -83,19 +85,23 @@ fn main() -> io::Result<()> {
     let max_threads = args.threads;
 
     match args.command {
-        cli::Command::Index(args) => {
-            let input = args.input;
-            let kmer = args.kmer;
-            let minimizer = args.minimizer;
-            let partitions = args.partitions;
-            let bloomfilter = args.bloomfilter;
-            let abundance = args.abundance;
-            let abundance_min = args.abundance_min;
-            let abundance_max = args.abundance_max;
-            let chunks_size = args.chunks_size;
-            let dense_option = args.dense;
-            let canonical = !args.stranded;
-            let output_dir = args.output_dir.unwrap_or_else(|| {
+        cli::Command::Index(IndexArgs {
+            input,
+            kmer,
+            minimizer,
+            partitions,
+            bloomfilter,
+            abundance,
+            abundance_min,
+            abundance_max,
+            chunks_size,
+            dense,
+            stranded,
+            output_dir,
+        }) => {
+            let dense_option = dense;
+            let canonical = !stranded;
+            let output_dir = output_dir.unwrap_or_else(|| {
                 format!("PACAS_index_{}", rand::rng().random::<u64>()) // Generate a unique directory name
             });
             // let muset_option = args.muset;
@@ -204,19 +210,24 @@ fn main() -> io::Result<()> {
             }
         }
 
-        cli::Command::Query(args) => {
+        cli::Command::Query(QueryArgs {
+            fasta,
+            index,
+            output_format,
+            normalize,
+            output,
+            coverage,
+            breakpoints,
+        }) => {
             rayon::ThreadPoolBuilder::new()
                 .num_threads(max_threads)
                 .build_global()
                 .unwrap();
 
-            let fasta_file = args.fasta;
-            let index_dir = args.index;
-            let coverage = args.coverage;
-            let output_format = args
-                .output_format
-                .to_output_format(args.normalize, args.breakpoints);
-            let query_output = match args.output {
+            let fasta_file = fasta;
+            let index_dir = index;
+            let output_format = output_format.to_output_format(normalize, breakpoints);
+            let query_output = match output {
                 Some(output) => output,
                 None => match output_format {
                     OutputFormat::Colored { normalized: _ } => {
@@ -244,14 +255,16 @@ fn main() -> io::Result<()> {
             log::info!("Query complete in {:.2?}", start_time.elapsed());
         }
 
-        cli::Command::Merge(args) => {
+        cli::Command::Merge(MergeArgs {
+            file_of_indexes,
+            output_dir,
+        }) => {
             rayon::ThreadPoolBuilder::new()
                 .num_threads(max_threads)
                 .build_global()
                 .unwrap();
 
-            let file_of_indexes = args.file_of_indexes;
-            let output_dir = args.output_dir.unwrap_or_else(|| {
+            let output_dir = output_dir.unwrap_or_else(|| {
                 format!("PACAS_index_{}", rand::rng().random::<u64>()) // Generate a unique directory name
             });
 
