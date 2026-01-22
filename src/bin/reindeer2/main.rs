@@ -13,7 +13,7 @@ use cli::OutputFormatCli;
 use overflow_detection::check_number_of_partitions;
 use reindeer2::reindeer2::{
     merge_multiple_indexes, read_fof_file, AbundanceMatrixFormat, BreakpointsNormalize,
-    OutputFormat, Reindeer2,
+    OutputFormat, Parameters, Reindeer2,
 };
 
 use crate::cli::{IndexArgs, MergeArgs, QueryArgs};
@@ -179,24 +179,20 @@ fn main() -> io::Result<()> {
             let (file_paths, color_nb) = read_fof_file(&input)?;
 
             // run the index construction process: build and fill BFs per partitions and in chunks, serialize, merge chunks
-            let index = Reindeer2::new(
+            let parameters = Parameters {
                 bf_size,
-                partitions,
-                kmer,
-                minimizer,
-                color_nb,
-                abundance,
+                partition_number: partitions,
+                k: kmer,
+                m: minimizer,
+                nb_color: color_nb,
+                abundance_number: abundance,
                 abundance_min,
                 abundance_max,
                 dense_option,
                 canonical,
-            );
-            index.build(
-                file_paths,
-                &output_dir,
-                chunks_size,
-                tolerated_number_of_zeros,
-            )?;
+            };
+            let mut index = Reindeer2::new(parameters, output_dir);
+            index.build(file_paths, chunks_size, tolerated_number_of_zeros)?;
             // }
 
             log::info!("Indexing complete in {:.2?}", start_time.elapsed());
@@ -240,7 +236,7 @@ fn main() -> io::Result<()> {
             log::info!("Index directory: {}", index_dir);
 
             let start_time = Instant::now();
-            let index = Reindeer2::load_metadata(&index_dir)
+            let index = Reindeer2::load_from_disk(&index_dir)
                 .expect("should have been able to load index infos from disk");
             index
                 .query(

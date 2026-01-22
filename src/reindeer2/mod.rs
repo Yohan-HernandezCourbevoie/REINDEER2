@@ -57,33 +57,23 @@ pub enum OutputFormat {
     AbundanceMatrix { format: AbundanceMatrixFormat },
 }
 
-#[derive(Serialize, Deserialize)]
+/// Reindeer2 parameters
+#[derive(Serialize, Deserialize, Clone)]
 #[cfg_attr(any(test, debug_assertions), derive(PartialEq, Debug))]
-pub struct Reindeer2 {
-    bf_size: u64,
-    partition_number: usize,
-    k: usize,
-    m: usize,
-    nb_color: usize,
-    abundance_number: NonZero<usize>,
-    abundance_min: u16,
-    abundance_max: NonZero<u16>,
-    dense_option: bool,
-    canonical: bool,
+pub struct Parameters {
+    pub bf_size: u64,
+    pub partition_number: usize,
+    pub k: usize,
+    pub m: usize,
+    pub nb_color: usize,
+    pub abundance_number: NonZero<usize>,
+    pub abundance_min: u16,
+    pub abundance_max: NonZero<u16>,
+    pub dense_option: bool,
+    pub canonical: bool,
 }
 
-/// Declares a variable. The variable is declared as mut iif `#[cfg(any(debug_assertions, test))]`.
-macro_rules! mut_if_debug {
-    ($name:ident = $val:expr) => {
-        #[cfg(any(debug_assertions, test))]
-        let mut $name = $val;
-
-        #[cfg(not(any(debug_assertions, test)))]
-        let $name = $val;
-    };
-}
-
-impl Reindeer2 {
+impl Parameters {
     pub const fn new(
         bf_size: u64,
         partition_number: usize,
@@ -111,24 +101,77 @@ impl Reindeer2 {
         }
     }
 
+    fn can_merge(&self, parameters2: &Parameters) -> bool {
+        self.k == parameters2.k
+            && self.m == parameters2.m
+            && self.bf_size == parameters2.bf_size
+            && self.partition_number == parameters2.partition_number
+            && self.abundance_number == parameters2.abundance_number
+            && self.abundance_max == parameters2.abundance_max
+            && self.dense_option == parameters2.dense_option
+            && self.canonical == parameters2.canonical
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+#[cfg_attr(any(test, debug_assertions), derive(PartialEq, Debug))]
+pub struct Reindeer2 {
+    /// Parameters used to build the index
+    parameters: Parameters,
+    /// Names of indexed files
+    indexed_file_names: Vec<String>,
+    /// Index directory
+    #[serde(skip)]
+    index_dir: String,
+}
+
+/// Declares a variable. The variable is declared as mut iif `#[cfg(any(debug_assertions, test))]`.
+macro_rules! mut_if_debug {
+    ($name:ident = $val:expr) => {
+        #[cfg(any(debug_assertions, test))]
+        let mut $name = $val;
+
+        #[cfg(not(any(debug_assertions, test)))]
+        let $name = $val;
+    };
+}
+
+impl Reindeer2 {
+    pub const fn new(parameters: Parameters, index_dir: String) -> Self {
+        Self {
+            parameters,
+            indexed_file_names: Vec::new(),
+            index_dir,
+        }
+    }
+
+    #[cfg(any(debug_assertions, test))]
+    pub fn set_indexed_file_names(&mut self, indexed_file_names: Vec<String>) {
+        self.indexed_file_names = indexed_file_names;
+    }
+
     fn index_infos_file(bf_dir: &str) -> String {
         format!("{}/index_info.json", bf_dir)
     }
 
     /// Loads an index from the JSON file in the directory of the index
-    pub fn load_metadata(bf_dir: &str) -> io::Result<Self> {
-        log::info!("Loading index metadata...");
-        let input_path = Self::index_infos_file(bf_dir);
+    pub fn load_from_disk(bf_dir: impl Into<String>) -> io::Result<Self> {
+        let bf_dir = bf_dir.into();
+        log::info!("Loading index from disk ({})...", bf_dir);
+        let input_path = Self::index_infos_file(&bf_dir);
         let file = File::open(input_path)?;
         let reader = BufReader::new(file);
-        let rd2 = serde_json::from_reader(reader)?;
-        log::info!("Index loaded from metadata.");
+        let mut rd2: Reindeer2 = serde_json::from_reader(reader)?;
+        debug_assert_eq!(rd2.index_dir, "");
+        rd2.index_dir = bf_dir;
+        log::info!("Index loaded from disk.");
         Ok(rd2)
     }
 
     /// Save an index metadata into a JSON file in the directory of the index
-    fn save_metadata(&self, bf_dir: &str) -> io::Result<()> {
-        let output_path = Self::index_infos_file(bf_dir);
+    fn save_to_disk(&self) -> io::Result<()> {
+        log::info!("Saving index information to {}", self.index_dir);
+        let output_path = Self::index_infos_file(&self.index_dir);
         let file = File::create(&output_path)?;
         let writer = BufWriter::new(file);
         serde_json::to_writer(writer, self)?;
@@ -137,15 +180,16 @@ impl Reindeer2 {
     }
 
     pub fn build(
-        &self,
+        &mut self,
         file_paths: Vec<String>,
-        output_dir: &str,
         chunks_size: usize,
         threshold: usize,
     ) -> io::Result<(Vec<String>, String)> {
         mut_if_debug!(total_kmers = atomic::AtomicU64::new(0));
         mut_if_debug!(atomic_dense_kmers_count = atomic::AtomicU64::new(0));
         mut_if_debug!(atomic_sparse_kmers_count = atomic::AtomicU64::new(0));
+
+        let parameters = &self.parameters;
 
         #[cfg(any(debug_assertions, test))]
         let mut atomic_sparse_one_seen = atomic::AtomicU64::new(0);
@@ -154,33 +198,28 @@ impl Reindeer2 {
         let mut atomic_sparse_fp_seen = atomic::AtomicU64::new(0);
 
         let kmer_counts_vector: Arc<Mutex<Vec<usize>>> =
-            Arc::new(Mutex::new(vec![0; self.nb_color]));
+            Arc::new(Mutex::new(vec![0; parameters.nb_color]));
         let chunks = split_fof(&file_paths, chunks_size)?;
         // the number of color in each chunck
         let color_chunks = chunks.iter().map(Vec::len).collect_vec();
-        let base = compute_base(self.abundance_number, self.abundance_max);
+        let base = compute_base(parameters.abundance_number, parameters.abundance_max);
 
         #[cfg(any(debug_assertions, test))]
         log::debug!("Using log base {}", base);
 
-        let partitioned_bf_size = (self.bf_size as usize) / self.partition_number;
+        let partitioned_bf_size = (parameters.bf_size as usize) / parameters.partition_number;
 
         #[cfg(any(debug_assertions, test))]
         log::debug!("In debug mode... the tool may take (much) longer than usual.");
 
         log::info!("Initializing Bloom filter slices...");
 
-        let (_, dir_path) = create_dir_and_files(self.partition_number, output_dir)?;
-
-        // keep a trace of the input files in the index,
-        // so that we can put their name in the matrix output if needed
-        let indexed_files = Path::new(&dir_path).join("path.txt");
-        write_indexed_file_names(&indexed_files, &file_paths);
+        let (_, dir_path) = create_dir_and_files(parameters.partition_number, &self.index_dir)?;
 
         // Shared data structures protected by Mutex for safe parallel access
-        let maybe_dense_indexes: Option<Arc<DenseIndex>> = if self.dense_option {
+        let maybe_dense_indexes: Option<Arc<DenseIndex>> = if parameters.dense_option {
             Some(Arc::new(DenseIndex::with_partition_number(
-                self.partition_number,
+                parameters.partition_number,
             )))
         } else {
             None
@@ -191,12 +230,12 @@ impl Reindeer2 {
             // but currently each chunk could have a different size, so we have to recreate them
             // if this is a bottleneck, we should find a way to reuse the Filters
             let bloom_filters = Filters::with_number_partition(
-                self.partition_number,
+                parameters.partition_number,
                 chunk.len(),
                 // TODO unit: is it in buts ?
                 // TODO can I use usize here ?
-                self.bf_size as usize,
-                self.abundance_number.get(),
+                parameters.bf_size as usize,
+                parameters.abundance_number.get(),
             );
 
             // For each file in this chunk, process in *parallel* (soon)
@@ -230,13 +269,13 @@ impl Reindeer2 {
                                     path,
                                     &maybe_dense_indexes,
                                     &bloom_filters,
-                                    self.k,
-                                    self.m,
-                                    self.partition_number,
-                                    self.nb_color,
+                                    parameters.k,
+                                    parameters.m,
+                                    parameters.partition_number,
+                                    parameters.nb_color,
                                     threshold,
-                                    self.abundance_min,
-                                    self.abundance_max,
+                                    parameters.abundance_min,
+                                    parameters.abundance_max,
                                     path_num,
                                     path_num + chunk_i * color_chunks[0],
                                     base,
@@ -247,7 +286,7 @@ impl Reindeer2 {
                                     &atomic_dense_kmers_count,
                                     &atomic_sparse_kmers_count,
                                     &kmer_counts_vector,
-                                    self.canonical,
+                                    parameters.canonical,
                                 ) {
                                     eprintln!("Error processing {}: {}", path, e);
                                 }
@@ -266,13 +305,13 @@ impl Reindeer2 {
                 bloom_filters.update_sparse_counts(
                     &atomic_sparse_one_seen,
                     &atomic_sparse_fp_seen,
-                    self.abundance_number.get(),
+                    parameters.abundance_number.get(),
                 )?;
             }
             if let Err(e) = bloom_filters.write_to_disk(
                 &dir_path,
                 &color_chunks,
-                self.partition_number,
+                parameters.partition_number,
                 chunk_i,
             ) {
                 eprintln!("Error writing Bloom filters for chunk {}: {}", chunk_i, e);
@@ -312,14 +351,14 @@ impl Reindeer2 {
                 &dir_path,
                 &dir_path, // output
                 partitioned_bf_size,
-                self.abundance_number.get(),
+                parameters.abundance_number.get(),
                 color_chunks,
-                self.partition_number,
-                self.nb_color,
+                parameters.partition_number,
+                parameters.nb_color,
             )?;
         } else {
             // If there was only one chunk, rename files directly
-            for partition_idx in 0..self.partition_number {
+            for partition_idx in 0..parameters.partition_number {
                 let input_path = format!(
                     "{}/partition_bloom_filters_c0_p{}.bin",
                     dir_path, partition_idx
@@ -333,7 +372,8 @@ impl Reindeer2 {
         }
 
         // write metadata info to disk
-        self.save_metadata(&dir_path)?;
+        self.indexed_file_names = get_file_names(&file_paths);
+        self.save_to_disk()?;
 
         Ok((file_paths, dir_path))
     }
@@ -352,10 +392,11 @@ impl Reindeer2 {
         let output_format =
             query::EnrichedOutputFormat::from_pub_output_format(output_format, bf_dir);
         // write the header of the result file
-        query::write_header(bf_dir, &output_format, &mut writer)
+        query::write_header(&self.indexed_file_names, &output_format, &mut writer)
             .expect("should have been able to write the header of the result file");
+        let parameters = &self.parameters;
 
-        let base = compute_base(self.abundance_number, self.abundance_max);
+        let base = compute_base(parameters.abundance_number, parameters.abundance_max);
 
         // Process FASTA in chunks of 10 000 000 records
         process_fasta_in_batches(reader, 10_000_000, |batch| {
@@ -383,12 +424,13 @@ impl Reindeer2 {
         base: f64,
         batch: &[fasta::Record],
     ) -> Vec<Vec<Vec<u16>>> {
+        let parameters = &self.parameters;
         let partition_kmers = query::build_partitions_kmers(
             batch,
-            self.k,
-            self.m,
-            self.partition_number as u64,
-            self.canonical,
+            parameters.k,
+            parameters.m,
+            parameters.partition_number as u64,
+            parameters.canonical,
         );
 
         // --- PARALLEL PHASE: process each partition's k-mers in parallel ---
@@ -410,11 +452,11 @@ impl Reindeer2 {
                         kmers,
                         base,
                         bf_dir,
-                        self.bf_size,
-                        self.partition_number,
-                        self.nb_color,
-                        self.abundance_number.get(),
-                        self.dense_option,
+                        parameters.bf_size,
+                        parameters.partition_number,
+                        parameters.nb_color,
+                        parameters.abundance_number.get(),
+                        parameters.dense_option,
                     )
                 },
             )
@@ -440,31 +482,15 @@ impl Reindeer2 {
     }
 }
 
-/// Write each filename in `file_paths` in `dir_path`.
-fn write_indexed_file_names<P>(indexed_files: P, file_paths: &[String])
-where
-    P: AsRef<Path>,
-{
-    let file = File::create(&indexed_files).expect("should be able to create file");
-    let mut writer = BufWriter::new(file);
-    for file_path in file_paths {
-        // get the file name, excluding everything after the first "."
-        let filename = Path::new(file_path).file_name().unwrap().to_str().unwrap();
-        let name = filename.split('.').next().unwrap();
-        writeln!(writer, "{}", name).expect("should be able to write indexed file name");
-    }
-    writer.flush().expect("should be able to flush writer");
-}
-
-fn read_indexed_file_names<P>(indexed_files: P) -> Vec<String>
-where
-    P: AsRef<Path>,
-{
-    let file = File::open(indexed_files).expect("should be able to open file");
-    let reader = BufReader::new(file);
-    reader
-        .lines()
-        .map(|line| line.expect("should be able to read line"))
+fn get_file_names(file_paths: &[String]) -> Vec<String> {
+    file_paths
+        .iter()
+        .map(|file_path| {
+            // get the file name, excluding everything after the first "."
+            let filename = Path::new(file_path).file_name().unwrap().to_str().unwrap();
+            let name = filename.split('.').next().unwrap();
+            String::from(name)
+        })
         .collect()
 }
 
@@ -1621,7 +1647,7 @@ mod tests {
     #[test]
     fn test_write_and_read_metadata() {
         let bf_dir = "test_bf_dir";
-        let expected = Reindeer2 {
+        let parameters = Parameters {
             k: 31,
             m: 15,
             bf_size: 1024,
@@ -1633,11 +1659,14 @@ mod tests {
             dense_option: false,
             canonical: false,
         };
+        let indexed_file_names = vec![String::from("a"), String::from("b")];
 
+        let mut expected = Reindeer2::new(parameters, String::from(bf_dir));
+        expected.set_indexed_file_names(indexed_file_names);
         fs::create_dir_all(bf_dir).expect("Failed to create test directory");
-        expected.save_metadata(bf_dir).unwrap();
+        expected.save_to_disk().unwrap();
 
-        let actual = Reindeer2::load_metadata(bf_dir).unwrap();
+        let actual = Reindeer2::load_from_disk(bf_dir).unwrap();
         assert_eq!(actual, expected);
 
         fs::remove_dir_all(bf_dir).expect("Failed to remove test directory");
@@ -1646,41 +1675,22 @@ mod tests {
     /// Helper function for tests
     /// Creates an index indexing `file_paths`, load it from disk, and query file `file_paths[query_file_id]`.
     fn create_build_query(
-        bf_size: u64,
-        partition_number: usize,
-        k: usize,
-        m: usize,
-        color_number: usize,
-        abundance_number: NonZero<usize>,
-        abundance_min: u16,
-        abundance_max: NonZero<u16>,
+        parameters: Parameters,
         chunks_size: usize,
-        dense_option: bool,
         threshold: usize,
         file_paths: Vec<String>,
         query_file_id: usize,
-        test_dir: &str,
+        test_dir: impl Into<String>,
     ) -> String {
-        let index = Reindeer2::new(
-            bf_size,
-            partition_number,
-            k,
-            m,
-            color_number,
-            abundance_number,
-            abundance_min,
-            abundance_max,
-            dense_option,
-            true,
-        );
+        let mut index = Reindeer2::new(parameters, test_dir.into());
         let (_file_paths, index_dir) = index
-            .build(file_paths.clone(), test_dir, chunks_size, threshold)
+            .build(file_paths.clone(), chunks_size, threshold)
             .expect("Failed to build index");
 
         let query_results_path = format!("{}/query_results.csv", index_dir);
 
         let index_from_disk =
-            Reindeer2::load_metadata(&index_dir).expect("Failed to load index infos from disk");
+            Reindeer2::load_from_disk(&index_dir).expect("Failed to load index infos from disk");
         index_from_disk
             .query(
                 &file_paths[query_file_id],
@@ -1731,38 +1741,30 @@ mod tests {
             writeln!(file1, "AAAAAAAAAAAAAAAAAAAAAACAAAAAGAA").expect("Failed to write sequence");
         }
 
-        let k = 31;
-        let m = 15;
-        let bf_size = 1024 * 1024;
-        let partition_number = 4;
-        let color_number = 1;
-        let abundance_number = NonZero::new(256).unwrap();
-        let abundance_min = 0;
-        let abundance_max = NonZero::new(65535).unwrap();
+        let parameters = Parameters {
+            k: 31,
+            m: 15,
+            bf_size: 1024 * 1024,
+            partition_number: 4,
+            nb_color: 1,
+            abundance_number: NonZero::new(256).unwrap(),
+            abundance_min: 0,
+            abundance_max: NonZero::new(65535).unwrap(),
+            dense_option: false,
+            canonical: false,
+        };
         let chunks_size = 128;
-        let dense_option = false;
-        let threshold = color_number;
+        let threshold = parameters.nb_color;
 
-        let index = Reindeer2::new(
-            bf_size,
-            partition_number,
-            k,
-            m,
-            color_number,
-            abundance_number,
-            abundance_min,
-            abundance_max,
-            dense_option,
-            false,
-        );
+        let mut index = Reindeer2::new(parameters, String::from(test_dir));
         let (_file_paths, index_dir) = index
-            .build(vec![file1_path.clone()], test_dir, chunks_size, threshold)
+            .build(vec![file1_path.clone()], chunks_size, threshold)
             .expect("Failed to build index");
 
         let query_results_path = format!("{}/query_results.csv", index_dir);
 
         let index_from_disk =
-            Reindeer2::load_metadata(&index_dir).expect("Failed to load index infos from disk");
+            Reindeer2::load_from_disk(&index_dir).expect("Failed to load index infos from disk");
         index_from_disk
             .query(
                 &file1_path,
@@ -1817,29 +1819,24 @@ mod tests {
             writeln!(file1, "AAAAAAAAAAAAAAAAAAAAAACAAAAAGAA").expect("Failed to write sequence");
         }
 
-        let k = 31;
-        let m = 15;
-        let bf_size = 1024 * 1024;
-        let partition_number = 4;
-        let color_number = 1;
-        let abundance_number = NonZero::new(255).unwrap();
-        let abundance_min = 0;
-        let abundance_max = NonZero::new(65535).unwrap();
+        let parameters = Parameters {
+            k: 31,
+            m: 15,
+            bf_size: 1024 * 1024,
+            partition_number: 4,
+            nb_color: 1,
+            abundance_number: NonZero::new(255).unwrap(),
+            abundance_min: 0,
+            abundance_max: NonZero::new(65535).unwrap(),
+            dense_option: true,
+            canonical: true,
+        };
         let chunks_size = 128;
-        let dense_option = true;
-        let threshold = color_number;
+        let threshold = parameters.nb_color;
 
         let query_results_path = create_build_query(
-            bf_size,
-            partition_number,
-            k,
-            m,
-            color_number,
-            abundance_number,
-            abundance_min,
-            abundance_max,
+            parameters,
             chunks_size,
-            dense_option,
             threshold,
             vec![file1_path],
             0,
@@ -1900,29 +1897,24 @@ mod tests {
             writeln!(file2, "AAAAAAAAAAAAAAAAAAAAAACAAAAAGAA").expect("Failed to write sequence");
         }
 
-        let k = 31;
-        let m = 15;
-        let bf_size = 1024 * 1024;
-        let partition_number = 4;
-        let color_number = 2;
-        let abundance_number = NonZero::new(256).unwrap();
-        let abundance_min = 0;
-        let abundance_max = NonZero::new(65535).unwrap();
+        let parameters = Parameters {
+            k: 31,
+            m: 15,
+            bf_size: 1024 * 1024,
+            partition_number: 4,
+            nb_color: 2,
+            abundance_number: NonZero::new(256).unwrap(),
+            abundance_min: 0,
+            abundance_max: NonZero::new(65535).unwrap(),
+            dense_option: false,
+            canonical: true,
+        };
         let chunks_size = 128;
-        let dense_option = false;
-        let threshold = color_number;
+        let threshold = parameters.nb_color;
 
         let query_results_path = create_build_query(
-            bf_size,
-            partition_number,
-            k,
-            m,
-            color_number,
-            abundance_number,
-            abundance_min,
-            abundance_max,
+            parameters,
             chunks_size,
-            dense_option,
             threshold,
             vec![file1_path, file2_path],
             0,
@@ -1981,29 +1973,24 @@ mod tests {
             writeln!(file2, "AAAAAAAAAAAAAAAAAAAAAACAAAAAGAA").expect("Failed to write sequence");
         }
 
-        let k = 31;
-        let m = 15;
-        let bf_size = 1024 * 1024;
-        let partition_number = 4;
-        let color_number = 2;
-        let abundance_number = NonZero::new(256).unwrap();
-        let abundance_min = 0;
-        let abundance_max = NonZero::new(65535).unwrap();
+        let parameters = Parameters {
+            k: 31,
+            m: 15,
+            bf_size: 1024 * 1024,
+            partition_number: 4,
+            nb_color: 2,
+            abundance_number: NonZero::new(256).unwrap(),
+            abundance_min: 0,
+            abundance_max: NonZero::new(65535).unwrap(),
+            dense_option: true,
+            canonical: true,
+        };
         let chunks_size = 128;
-        let dense_option = true;
-        let threshold = color_number;
+        let threshold = parameters.nb_color;
 
         let query_results_path = create_build_query(
-            bf_size,
-            partition_number,
-            k,
-            m,
-            color_number,
-            abundance_number,
-            abundance_min,
-            abundance_max,
+            parameters,
             chunks_size,
-            dense_option,
             threshold,
             vec![file1_path, file2_path],
             0,
@@ -2061,29 +2048,24 @@ mod tests {
                 .expect("Failed to write sequence");
         }
 
-        let k = 31;
-        let m = 15;
-        let bf_size = 1024 * 1024;
-        let partition_number = 4;
-        let color_number = 2;
-        let abundance_number = NonZero::new(256).unwrap();
-        let abundance_min = 0;
-        let abundance_max = NonZero::new(65535).unwrap();
+        let parameters = Parameters {
+            k: 31,
+            m: 15,
+            bf_size: 1024 * 1024,
+            partition_number: 4,
+            nb_color: 2,
+            abundance_number: NonZero::new(256).unwrap(),
+            abundance_min: 0,
+            abundance_max: NonZero::new(65535).unwrap(),
+            dense_option: false,
+            canonical: true,
+        };
         let chunks_size = 128;
-        let dense_option = false;
-        let threshold = color_number;
+        let threshold = parameters.nb_color;
 
         let query_results_path = create_build_query(
-            bf_size,
-            partition_number,
-            k,
-            m,
-            color_number,
-            abundance_number,
-            abundance_min,
-            abundance_max,
+            parameters,
             chunks_size,
-            dense_option,
             threshold,
             vec![file1_path, file2_path],
             1,
@@ -2138,29 +2120,24 @@ mod tests {
                 .expect("Failed to write sequence");
         }
 
-        let k = 31;
-        let m = 15;
-        let bf_size = 1024 * 1024;
-        let partition_number = 4;
-        let color_number = 2;
-        let abundance_number = NonZero::new(256).unwrap();
-        let abundance_min = 0;
-        let abundance_max = NonZero::new(65535).unwrap();
+        let parameters = Parameters {
+            k: 31,
+            m: 15,
+            bf_size: 1024 * 1024,
+            partition_number: 4,
+            nb_color: 2,
+            abundance_number: NonZero::new(256).unwrap(),
+            abundance_min: 0,
+            abundance_max: NonZero::new(65535).unwrap(),
+            dense_option: true,
+            canonical: true,
+        };
         let chunks_size = 128;
-        let dense_option = true;
-        let threshold = color_number;
+        let threshold = parameters.nb_color;
 
         let query_results_path = create_build_query(
-            bf_size,
-            partition_number,
-            k,
-            m,
-            color_number,
-            abundance_number,
-            abundance_min,
-            abundance_max,
+            parameters,
             chunks_size,
-            dense_option,
             threshold,
             vec![file1_path, file2_path],
             1,
@@ -2220,29 +2197,24 @@ mod tests {
             writeln!(file2, "AAAAAAAAAAAAAAAAAAAAACACCCCTGGG").expect("Failed to write sequence");
         }
 
-        let k = 31;
-        let m = 15;
-        let bf_size = 1024 * 1024;
-        let partition_number = 4;
-        let color_number = 2;
-        let abundance_number = NonZero::new(255).unwrap();
-        let abundance_min = 0;
-        let abundance_max = NonZero::new(65535).unwrap();
+        let parameters = Parameters {
+            k: 31,
+            m: 15,
+            bf_size: 1024 * 1024,
+            partition_number: 4,
+            nb_color: 2,
+            abundance_number: NonZero::new(255).unwrap(),
+            abundance_min: 0,
+            abundance_max: NonZero::new(65535).unwrap(),
+            dense_option: false,
+            canonical: true,
+        };
         let chunks_size = 128;
-        let dense_option = false;
         let threshold = 1;
 
         let query_results_path = create_build_query(
-            bf_size,
-            partition_number,
-            k,
-            m,
-            color_number,
-            abundance_number,
-            abundance_min,
-            abundance_max,
+            parameters,
             chunks_size,
-            dense_option,
             threshold,
             vec![file1_path, file2_path],
             1,
@@ -2303,29 +2275,24 @@ mod tests {
             writeln!(file2, "AAAAAAAAAAAAAAAAAAAAACACCCCTGGG").expect("Failed to write sequence");
         }
 
-        let k = 31;
-        let m = 15;
-        let bf_size = 1024 * 1024;
-        let partition_number = 4;
-        let color_number = 2;
-        let abundance_number = NonZero::new(255).unwrap();
-        let abundance_min = 0;
-        let abundance_max = NonZero::new(65535).unwrap();
+        let parameters = Parameters {
+            k: 31,
+            m: 15,
+            bf_size: 1024 * 1024,
+            partition_number: 4,
+            nb_color: 2,
+            abundance_number: NonZero::new(255).unwrap(),
+            abundance_min: 0,
+            abundance_max: NonZero::new(65535).unwrap(),
+            dense_option: true,
+            canonical: true,
+        };
         let chunks_size = 128;
-        let dense_option = true;
         let threshold = 1;
 
         let query_results_path = create_build_query(
-            bf_size,
-            partition_number,
-            k,
-            m,
-            color_number,
-            abundance_number,
-            abundance_min,
-            abundance_max,
+            parameters,
             chunks_size,
-            dense_option,
             threshold,
             vec![file1_path, file2_path],
             1,
@@ -2385,29 +2352,24 @@ mod tests {
             writeln!(file2, "AAAAAAAAAAAAAAAAAAAAAACAAAAAGAA").expect("Failed to write sequence");
         }
 
-        let k = 31;
-        let m = 15;
-        let bf_size = 1024 * 1024;
-        let partition_number = 4;
-        let color_number = 2;
-        let abundance_number = NonZero::new(255).unwrap();
-        let abundance_min = 0;
-        let abundance_max = NonZero::new(255).unwrap();
+        let parameters = Parameters {
+            k: 31,
+            m: 15,
+            bf_size: 1024 * 1024,
+            partition_number: 4,
+            nb_color: 2,
+            abundance_number: NonZero::new(255).unwrap(),
+            abundance_min: 0,
+            abundance_max: NonZero::new(255).unwrap(),
+            dense_option: false,
+            canonical: true,
+        };
         let chunks_size = 128;
-        let dense_option = false;
-        let threshold = color_number;
+        let threshold = parameters.nb_color;
 
         let query_results_path = create_build_query(
-            bf_size,
-            partition_number,
-            k,
-            m,
-            color_number,
-            abundance_number,
-            abundance_min,
-            abundance_max,
+            parameters,
             chunks_size,
-            dense_option,
             threshold,
             vec![file1_path, file2_path],
             0,
@@ -2469,29 +2431,24 @@ mod tests {
             writeln!(file2, "AAAAAAAAAAAAAAAAAAAAAACAAAAAGAA").expect("Failed to write sequence");
         }
 
-        let k = 31;
-        let m = 15;
-        let bf_size = 1024 * 1024;
-        let partition_number = 4;
-        let color_number = 2;
-        let abundance_number = NonZero::new(255).unwrap();
-        let abundance_min = 0;
-        let abundance_max = NonZero::new(255).unwrap();
+        let parameters = Parameters {
+            k: 31,
+            m: 15,
+            bf_size: 1024 * 1024,
+            partition_number: 4,
+            nb_color: 2,
+            abundance_number: NonZero::new(255).unwrap(),
+            abundance_min: 0,
+            abundance_max: NonZero::new(255).unwrap(),
+            dense_option: true,
+            canonical: true,
+        };
         let chunks_size = 128;
-        let dense_option = true;
-        let threshold = color_number;
+        let threshold = parameters.nb_color;
 
         let query_results_path = create_build_query(
-            bf_size,
-            partition_number,
-            k,
-            m,
-            color_number,
-            abundance_number,
-            abundance_min,
-            abundance_max,
+            parameters,
             chunks_size,
-            dense_option,
             threshold,
             vec![file1_path, file2_path],
             0,
@@ -2553,29 +2510,24 @@ mod tests {
             writeln!(file2, "AAAAAAAAAAAAAAAAAAAAAACAAAAAGAA").expect("Failed to write sequence");
         }
 
-        let k = 31;
-        let m = 15;
-        let bf_size = 1024 * 1024;
-        let partition_number = 4;
-        let color_number = 2;
-        let abundance_number = NonZero::new(255).unwrap();
-        let abundance_min = 0;
-        let abundance_max = NonZero::new(255).unwrap();
+        let parameters = Parameters {
+            k: 31,
+            m: 15,
+            bf_size: 1024 * 1024,
+            partition_number: 4,
+            nb_color: 2,
+            abundance_number: NonZero::new(255).unwrap(),
+            abundance_min: 0,
+            abundance_max: NonZero::new(255).unwrap(),
+            dense_option: false,
+            canonical: true,
+        };
         let chunks_size = 1;
-        let dense_option = false;
-        let threshold = color_number;
+        let threshold = parameters.nb_color;
 
         let query_results_path = create_build_query(
-            bf_size,
-            partition_number,
-            k,
-            m,
-            color_number,
-            abundance_number,
-            abundance_min,
-            abundance_max,
+            parameters,
             chunks_size,
-            dense_option,
             threshold,
             vec![file1_path, file2_path],
             0,
@@ -2637,29 +2589,24 @@ mod tests {
             writeln!(file2, "AAAAAAAAAAAAAAAAAAAAAACAAAAAGAA").expect("Failed to write sequence");
         }
 
-        let k = 31;
-        let m = 15;
-        let bf_size = 1024 * 1024;
-        let partition_number = 4;
-        let color_number = 2;
-        let abundance_number = NonZero::new(255).unwrap();
-        let abundance_min = 0;
-        let abundance_max = NonZero::new(255).unwrap();
+        let parameters = Parameters {
+            k: 31,
+            m: 15,
+            bf_size: 1024 * 1024,
+            partition_number: 4,
+            nb_color: 2,
+            abundance_number: NonZero::new(255).unwrap(),
+            abundance_min: 0,
+            abundance_max: NonZero::new(255).unwrap(),
+            dense_option: true,
+            canonical: true,
+        };
         let chunks_size = 1;
-        let dense_option = true;
-        let threshold = color_number;
+        let threshold = parameters.nb_color;
 
         let query_results_path = create_build_query(
-            bf_size,
-            partition_number,
-            k,
-            m,
-            color_number,
-            abundance_number,
-            abundance_min,
-            abundance_max,
+            parameters,
             chunks_size,
-            dense_option,
             threshold,
             vec![file1_path, file2_path],
             0,
@@ -2717,29 +2664,24 @@ mod tests {
             writeln!(file2, "CAAAAAAAAAAAAAAAAAAAAACACCCCTGGAC").expect("Failed to write sequence");
         }
 
-        let k = 31;
-        let m = 15;
-        let bf_size = 1024 * 1024;
-        let partition_number = 4;
-        let color_number = 2;
-        let abundance_number = NonZero::new(255).unwrap();
-        let abundance_min = 0;
-        let abundance_max = NonZero::new(65535).unwrap();
+        let parameters = Parameters {
+            k: 31,
+            m: 15,
+            bf_size: 1024 * 1024,
+            partition_number: 4,
+            nb_color: 2,
+            abundance_number: NonZero::new(255).unwrap(),
+            abundance_min: 0,
+            abundance_max: NonZero::new(65535).unwrap(),
+            dense_option: false,
+            canonical: true,
+        };
         let chunks_size = 128;
-        let dense_option = false;
-        let threshold = color_number;
+        let threshold = parameters.nb_color;
 
         let query_results_path = create_build_query(
-            bf_size,
-            partition_number,
-            k,
-            m,
-            color_number,
-            abundance_number,
-            abundance_min,
-            abundance_max,
+            parameters,
             chunks_size,
-            dense_option,
             threshold,
             vec![file1_path, file2_path],
             0,
@@ -2795,29 +2737,24 @@ mod tests {
             writeln!(file2, "CAAAAAAAAAAAAAAAAAAAAACACCCCTGGAC").expect("Failed to write sequence");
         }
 
-        let k = 31;
-        let m = 15;
-        let bf_size = 1024 * 1024;
-        let partition_number = 4;
-        let color_number = 2;
-        let abundance_number = NonZero::new(255).unwrap();
-        let abundance_min = 0;
-        let abundance_max = NonZero::new(65535).unwrap();
+        let parameters = Parameters {
+            k: 31,
+            m: 15,
+            bf_size: 1024 * 1024,
+            partition_number: 4,
+            nb_color: 2,
+            abundance_number: NonZero::new(255).unwrap(),
+            abundance_min: 0,
+            abundance_max: NonZero::new(65535).unwrap(),
+            dense_option: true,
+            canonical: true,
+        };
         let chunks_size = 128;
-        let dense_option = true;
-        let threshold = color_number;
+        let threshold = parameters.nb_color;
 
         let query_results_path = create_build_query(
-            bf_size,
-            partition_number,
-            k,
-            m,
-            color_number,
-            abundance_number,
-            abundance_min,
-            abundance_max,
+            parameters,
             chunks_size,
-            dense_option,
             threshold,
             vec![file1_path, file2_path],
             0,
@@ -3118,18 +3055,20 @@ mod tests {
             writeln!(file, "{}", sequence).expect("Failed to write sequence");
         }
 
-        let k = 31;
-        let m = 15;
-        let bf_size = 8;
-        let partition_number = 2;
-        //let color_number = 6;
-        let color_number = 8;
-        let abundance_number = NonZero::new(255).unwrap();
-        let abundance_min = 0;
-        let abundance_max = NonZero::new(65535).unwrap();
+        let parameters = Parameters {
+            k: 31,
+            m: 15,
+            bf_size: 8,
+            partition_number: 2,
+            nb_color: 8,
+            abundance_number: NonZero::new(255).unwrap(),
+            abundance_min: 0,
+            abundance_max: NonZero::new(65535).unwrap(),
+            dense_option: false,
+            canonical: true,
+        };
         let chunks_size = 128;
-        let dense_option = false;
-        let threshold = color_number;
+        let threshold = parameters.nb_color;
 
         let file_paths = vec![
             file1_path.clone(),
@@ -3141,22 +3080,8 @@ mod tests {
             file7_path.clone(),
             file8_path.clone(),
         ];
-        let query_results_path = create_build_query(
-            bf_size,
-            partition_number,
-            k,
-            m,
-            color_number,
-            abundance_number,
-            abundance_min,
-            abundance_max,
-            chunks_size,
-            dense_option,
-            threshold,
-            file_paths,
-            0,
-            test_dir,
-        );
+        let query_results_path =
+            create_build_query(parameters, chunks_size, threshold, file_paths, 0, test_dir);
 
         let mut results = load_query_result_csv(query_results_path);
         let mut expected_results = [(">seq1 ka:f:30".to_string(), 0, 29)];
@@ -3274,17 +3199,20 @@ mod tests {
             writeln!(file, "{}", sequence).expect("Failed to write sequence");
         }
 
-        let k = 31;
-        let m = 15;
-        let bf_size = 8;
-        let partition_number = 2;
-        let color_number = 6;
-        let abundance_number = NonZero::new(255).unwrap();
-        let abundance_min = 0;
-        let abundance_max = NonZero::new(65535).unwrap();
+        let parameters = Parameters {
+            k: 31,
+            m: 15,
+            bf_size: 8,
+            partition_number: 2,
+            nb_color: 6,
+            abundance_number: NonZero::new(255).unwrap(),
+            abundance_min: 0,
+            abundance_max: NonZero::new(65535).unwrap(),
+            dense_option: false,
+            canonical: true,
+        };
         let chunks_size = 128;
-        let dense_option = false;
-        let threshold = color_number;
+        let threshold = parameters.nb_color;
 
         let file_paths = vec![
             file1_path.clone(),
@@ -3294,22 +3222,8 @@ mod tests {
             file5_path.clone(),
             file6_path.clone(),
         ];
-        let query_results_path = create_build_query(
-            bf_size,
-            partition_number,
-            k,
-            m,
-            color_number,
-            abundance_number,
-            abundance_min,
-            abundance_max,
-            chunks_size,
-            dense_option,
-            threshold,
-            file_paths,
-            5,
-            test_dir,
-        );
+        let query_results_path =
+            create_build_query(parameters, chunks_size, threshold, file_paths, 5, test_dir);
 
         let mut results = load_query_result_csv(query_results_path);
         let mut expected_results = [
@@ -3391,17 +3305,20 @@ mod tests {
             writeln!(file, "{}", sequence).expect("Failed to write sequence");
         }
 
-        let k = 31;
-        let m = 15;
-        let bf_size = 4;
-        let partition_number = 2;
-        let color_number = 9;
-        let abundance_number = NonZero::new(255).unwrap();
-        let abundance_min = 0;
-        let abundance_max = NonZero::new(65535).unwrap();
+        let parameters = Parameters {
+            k: 31,
+            m: 15,
+            bf_size: 4,
+            partition_number: 2,
+            nb_color: 9,
+            abundance_number: NonZero::new(255).unwrap(),
+            abundance_min: 0,
+            abundance_max: NonZero::new(65535).unwrap(),
+            dense_option: false,
+            canonical: true,
+        };
         let chunks_size = 128;
-        let dense_option = false;
-        let threshold = color_number;
+        let threshold = parameters.nb_color;
 
         let file_paths = vec![
             file1_path.clone(),
@@ -3414,22 +3331,8 @@ mod tests {
             file8_path.clone(),
             file9_path.clone(),
         ];
-        let query_results_path = create_build_query(
-            bf_size,
-            partition_number,
-            k,
-            m,
-            color_number,
-            abundance_number,
-            abundance_min,
-            abundance_max,
-            chunks_size,
-            dense_option,
-            threshold,
-            file_paths,
-            4,
-            test_dir,
-        );
+        let query_results_path =
+            create_build_query(parameters, chunks_size, threshold, file_paths, 4, test_dir);
 
         let mut results = load_query_result_csv(query_results_path);
         let mut expected_results = [(">seq5 ka:f:60000".to_string(), 4, 59149)];
@@ -3502,17 +3405,20 @@ mod tests {
             }
         }
 
-        let k = 31;
-        let m = 15;
-        let bf_size = 256 * 256;
-        let partition_number = 2;
-        let color_number = 5;
-        let abundance_number = NonZero::new(255).unwrap();
-        let abundance_min = 0;
-        let abundance_max = NonZero::new(65535).unwrap();
+        let parameters = Parameters {
+            k: 31,
+            m: 15,
+            bf_size: 256 * 256,
+            partition_number: 2,
+            nb_color: 5,
+            abundance_number: NonZero::new(255).unwrap(),
+            abundance_min: 0,
+            abundance_max: NonZero::new(65535).unwrap(),
+            dense_option: false,
+            canonical: true,
+        };
         let chunks_size = 128;
-        let dense_option = false;
-        let threshold = color_number;
+        let threshold = parameters.nb_color;
 
         let file_paths = vec![
             file1_path.clone(),
@@ -3521,22 +3427,8 @@ mod tests {
             file4_path.clone(),
             file5_path.clone(),
         ];
-        let query_results_path = create_build_query(
-            bf_size,
-            partition_number,
-            k,
-            m,
-            color_number,
-            abundance_number,
-            abundance_min,
-            abundance_max,
-            chunks_size,
-            dense_option,
-            threshold,
-            file_paths,
-            4,
-            test_dir,
-        );
+        let query_results_path =
+            create_build_query(parameters, chunks_size, threshold, file_paths, 4, test_dir);
 
         let mut results = load_query_result_csv(query_results_path);
         let mut expected_results = [
@@ -3708,17 +3600,20 @@ mod tests {
             writeln!(file, "{}", sequence).expect("Failed to write sequence");
         }
 
-        let k = 31;
-        let m = 15;
-        let bf_size = 32;
-        let partition_number = 2;
-        let color_number = 9;
-        let abundance_number = NonZero::new(255).unwrap();
-        let abundance_min = 0;
-        let abundance_max = NonZero::new(65535).unwrap();
+        let parameters = Parameters {
+            k: 31,
+            m: 15,
+            bf_size: 32,
+            partition_number: 2,
+            nb_color: 9,
+            abundance_number: NonZero::new(255).unwrap(),
+            abundance_min: 0,
+            abundance_max: NonZero::new(65535).unwrap(),
+            dense_option: false,
+            canonical: true,
+        };
         let chunks_size = 128;
-        let dense_option = false;
-        let threshold = color_number;
+        let threshold = parameters.nb_color;
 
         let file_paths = vec![
             file1_path.clone(),
@@ -3731,22 +3626,8 @@ mod tests {
             file8_path.clone(),
             file9_path.clone(),
         ];
-        let query_results_path = create_build_query(
-            bf_size,
-            partition_number,
-            k,
-            m,
-            color_number,
-            abundance_number,
-            abundance_min,
-            abundance_max,
-            chunks_size,
-            dense_option,
-            threshold,
-            file_paths,
-            1,
-            test_dir,
-        );
+        let query_results_path =
+            create_build_query(parameters, chunks_size, threshold, file_paths, 1, test_dir);
 
         let results = load_query_result_csv(query_results_path);
         let expected_results = [
@@ -3782,38 +3663,31 @@ mod tests {
             writeln!(file, "TTTTTAATGATCGATTTTTTTTTTTACCCCTGG").expect("Failed to write sequence");
         }
 
-        let k = 31;
-        let m = 15;
-        let bf_size = 1024 * 1024;
-        let partition_number = 4;
-        let color_number = 1;
-        let abundance_number = NonZero::new(255).unwrap();
-        let abundance_min = 0;
-        let abundance_max = NonZero::new(65535).unwrap();
+        let parameters = Parameters {
+            k: 31,
+            m: 15,
+            bf_size: 1024 * 1024,
+            partition_number: 4,
+            nb_color: 1,
+            abundance_number: NonZero::new(255).unwrap(),
+            abundance_min: 0,
+            abundance_max: NonZero::new(65535).unwrap(),
+            dense_option: false,
+            canonical: false,
+        };
         let chunks_size = 128;
-        let _batch_size = 2;
-        let dense_option = false;
-        let threshold = color_number;
+        let threshold = parameters.nb_color;
 
-        let index = Reindeer2::new(
-            bf_size,
-            partition_number,
-            k,
-            m,
-            color_number,
-            abundance_number,
-            abundance_min,
-            abundance_max,
-            dense_option,
-            false,
-        );
+        let _batch_size = 2;
+
+        let mut index = Reindeer2::new(parameters, String::from(test_dir));
 
         let (_file_paths, index_dir) = index
-            .build(vec![fasta_path.clone()], test_dir, chunks_size, threshold)
+            .build(vec![fasta_path.clone()], chunks_size, threshold)
             .expect("Failed to build index");
 
         let index_from_disk =
-            Reindeer2::load_metadata(&index_dir).expect("Failed to load index infos from disk");
+            Reindeer2::load_from_disk(&index_dir).expect("Failed to load index infos from disk");
         index_from_disk
             .query(
                 &fasta_path,
@@ -3872,38 +3746,29 @@ mod tests {
         let file2_path = String::from("tests/unit_tests_data/random_seq.fa");
         let file_paths = vec![file1_path, file2_path];
 
-        let k = 31;
-        let m = 15;
-        let bf_size = 1024 * 1024;
-        let partition_number = 4;
-        let color_number = 2;
-        let abundance_number = NonZero::new(256).unwrap();
-        let abundance_min = 0;
-        let abundance_max = NonZero::new(65535).unwrap();
+        let parameters = Parameters {
+            k: 31,
+            m: 15,
+            bf_size: 1024 * 1024,
+            partition_number: 4,
+            nb_color: 2,
+            abundance_number: NonZero::new(256).unwrap(),
+            abundance_min: 0,
+            abundance_max: NonZero::new(65535).unwrap(),
+            dense_option: false,
+            canonical: true,
+        };
         let chunks_size = 128;
-        let dense_option = false;
-        let threshold = color_number;
-        let canonical = true;
+        let threshold = parameters.nb_color;
 
-        let index = Reindeer2::new(
-            bf_size,
-            partition_number,
-            k,
-            m,
-            color_number,
-            abundance_number,
-            abundance_min,
-            abundance_max,
-            dense_option,
-            canonical,
-        );
+        let mut index = Reindeer2::new(parameters, String::from(test_dir));
         let (_, index_dir) = index
-            .build(file_paths.clone(), test_dir, chunks_size, threshold)
+            .build(file_paths.clone(), chunks_size, threshold)
             .expect("Failed to build index");
 
         let query_results_path = format!("{}/query_results.csv", index_dir);
 
-        let index_from_disk = Reindeer2::load_metadata(&index_dir).unwrap();
+        let index_from_disk = Reindeer2::load_from_disk(&index_dir).unwrap();
         index_from_disk
             .query(
                 &file_paths[1],
@@ -3945,38 +3810,29 @@ shared_revcomp_with_other_test_file\t0-19:3\t0-19:10",
         let file2_path = String::from("tests/unit_tests_data/duplication.fa");
         let file_paths = vec![file1_path, file2_path];
 
-        let k = 31;
-        let m = 15;
-        let bf_size = 1024 * 1024;
-        let partition_number = 4;
-        let color_number = 2;
-        let abundance_number = NonZero::new(256).unwrap();
-        let abundance_min = 0;
-        let abundance_max = NonZero::new(65535).unwrap();
+        let parameters = Parameters {
+            k: 31,
+            m: 15,
+            bf_size: 1024 * 1024,
+            partition_number: 4,
+            nb_color: 2,
+            abundance_number: NonZero::new(256).unwrap(),
+            abundance_min: 0,
+            abundance_max: NonZero::new(65535).unwrap(),
+            dense_option: false,
+            canonical: true,
+        };
         let chunks_size = 128;
-        let dense_option = false;
-        let threshold = color_number;
-        let canonical = true;
+        let threshold = parameters.nb_color;
 
-        let index = Reindeer2::new(
-            bf_size,
-            partition_number,
-            k,
-            m,
-            color_number,
-            abundance_number,
-            abundance_min,
-            abundance_max,
-            dense_option,
-            canonical,
-        );
+        let mut index = Reindeer2::new(parameters, String::from(test_dir));
         let (_, index_dir) = index
-            .build(file_paths.clone(), test_dir, chunks_size, threshold)
+            .build(file_paths.clone(), chunks_size, threshold)
             .expect("Failed to build index");
 
         let query_results_path = format!("{}/query_results.csv", index_dir);
 
-        let index_from_disk = Reindeer2::load_metadata(&index_dir).unwrap();
+        let index_from_disk = Reindeer2::load_from_disk(&index_dir).unwrap();
         index_from_disk
             .query(
                 &file_paths[1],
@@ -4015,38 +3871,29 @@ header_0\t0-69:*\t0-69:1",
         let file2_path = String::from("tests/unit_tests_data/random_seq.fa");
         let file_paths = vec![file1_path, file2_path];
 
-        let k = 31;
-        let m = 15;
-        let bf_size = 1024 * 1024;
-        let partition_number = 4;
-        let color_number = 2;
-        let abundance_number = NonZero::new(256).unwrap();
-        let abundance_min = 0;
-        let abundance_max = NonZero::new(65535).unwrap();
+        let parameters = Parameters {
+            k: 31,
+            m: 15,
+            bf_size: 1024 * 1024,
+            partition_number: 4,
+            nb_color: 2,
+            abundance_number: NonZero::new(256).unwrap(),
+            abundance_min: 0,
+            abundance_max: NonZero::new(65535).unwrap(),
+            dense_option: false,
+            canonical: false,
+        };
         let chunks_size = 128;
-        let dense_option = false;
-        let threshold = color_number;
-        let canonical = false;
+        let threshold = parameters.nb_color;
 
-        let index = Reindeer2::new(
-            bf_size,
-            partition_number,
-            k,
-            m,
-            color_number,
-            abundance_number,
-            abundance_min,
-            abundance_max,
-            dense_option,
-            canonical,
-        );
+        let mut index = Reindeer2::new(parameters, String::from(test_dir));
         let (_, index_dir) = index
-            .build(file_paths.clone(), test_dir, chunks_size, threshold)
+            .build(file_paths.clone(), chunks_size, threshold)
             .expect("Failed to build index");
 
         let query_results_path = format!("{}/query_results.csv", index_dir);
 
-        let index_from_disk = Reindeer2::load_metadata(&index_dir).unwrap();
+        let index_from_disk = Reindeer2::load_from_disk(&index_dir).unwrap();
         index_from_disk
             .query(
                 &file_paths[1],
@@ -4113,61 +3960,32 @@ shared_revcomp_with_other_test_file\t0-19:*\t0-19:10",
             writeln!(file, "ACGTACG")?;
         }
 
-        let k = 7;
-        let m = 3;
-        let bf_size = 1024;
-        let partitions = 2;
-        let abundance = NonZero::new(255).unwrap();
-        let abundance_min = 0;
-        let abundance_max = NonZero::new(65535).unwrap();
+        let mut parameters = Parameters {
+            k: 7,
+            m: 3,
+            bf_size: 1024,
+            partition_number: 2,
+            nb_color: 1,
+            abundance_number: NonZero::new(255).unwrap(),
+            abundance_min: 0,
+            abundance_max: NonZero::new(65535).unwrap(),
+            dense_option: false,
+            canonical: true,
+        };
+
         let chunks_size = 128;
-        let dense_option = false;
-        let canonical = true;
         let tolerated_number_of_zeros = 0;
 
         // for index1, color count = 1
         let index1_file_paths = vec![file1_path.clone()];
-        let color_nb_1 = 1;
-        let index = Reindeer2::new(
-            bf_size,
-            partitions,
-            k,
-            m,
-            color_nb_1,
-            abundance,
-            abundance_min,
-            abundance_max,
-            dense_option,
-            canonical,
-        );
-        index.build(
-            index1_file_paths,
-            &index1_index_dir,
-            chunks_size,
-            tolerated_number_of_zeros,
-        )?;
+        let mut index = Reindeer2::new(parameters.clone(), String::from(&index1_index_dir));
+        index.build(index1_file_paths, chunks_size, tolerated_number_of_zeros)?;
 
         //index2, color count = 2
+        parameters.nb_color = 2;
         let index2_file_paths = vec![file2_path.clone(), file3_path.clone()];
-        let color_nb_2 = 2;
-        let index = Reindeer2::new(
-            bf_size,
-            partitions,
-            k,
-            m,
-            color_nb_2,
-            abundance,
-            abundance_min,
-            abundance_max,
-            dense_option,
-            canonical,
-        );
-        index.build(
-            index2_file_paths,
-            &index2_index_dir,
-            chunks_size,
-            tolerated_number_of_zeros,
-        )?;
+        let mut index = Reindeer2::new(parameters.clone(), String::from(&index2_index_dir));
+        index.build(index2_file_paths, chunks_size, tolerated_number_of_zeros)?;
 
         {
             let mut fof = File::create(&indexes_fof)?;
@@ -4178,17 +3996,21 @@ shared_revcomp_with_other_test_file\t0-19:*\t0-19:10",
         merge_multiple_indexes(&indexes_fof, &merged_index_dir)
             .expect("Failed to merge the test indexes");
 
-        let merged_index = Reindeer2::load_metadata(&merged_index_dir)
+        let merged_index = Reindeer2::load_from_disk(&merged_index_dir)
             .expect("Failed to read the merged index metadata)");
+        assert_eq!(
+            merged_index.parameters.nb_color, 3,
+            "Expected merged color count to be 3, got {}",
+            merged_index.parameters.nb_color
+        );
 
         assert_eq!(
-            merged_index.nb_color, 3,
-            "Expected merged color count to be 3, got {}",
-            merged_index.nb_color
+            merged_index.indexed_file_names,
+            vec!["file1", "file2", "file3"],
         );
 
         // check that each partition file in the merged index exists
-        for partition in 0..partitions {
+        for partition in 0..parameters.partition_number {
             let part_path = format!(
                 "{}/partition_bloom_filters_p{}.bin",
                 merged_index_dir, partition

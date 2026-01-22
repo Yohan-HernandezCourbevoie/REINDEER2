@@ -35,7 +35,7 @@ use cell_computation::{
 /// Writes the header of the matrix, including a `\n` at the end
 pub fn write_header_matrix(
     writer: &mut impl Write,
-    indexed_files: Vec<String>,
+    indexed_files: &[String],
     sep: &str,
 ) -> io::Result<()> {
     write!(writer, "query")?;

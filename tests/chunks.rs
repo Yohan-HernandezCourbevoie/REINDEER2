@@ -4,7 +4,7 @@ use std::num::NonZero;
 
 use common::{check_number_of_partitions, is_all_same, AutoRemoveDirectory, AutoRemoveFile};
 
-use reindeer2::reindeer2::{read_fof_file, OutputFormat, Reindeer2};
+use reindeer2::reindeer2::{read_fof_file, OutputFormat, Parameters, Reindeer2};
 
 fn get_input_fof() -> String {
     String::from("tests/chunk_data/fof.txt")
@@ -21,45 +21,40 @@ fn get_query() -> String {
 #[test]
 /// Checks that the number of chunk has no effect on RD2's output.
 fn no_effect_chunk() {
-    let bf_size = 1u64 << 16;
-    let partitions = 512;
-
-    let kmer = 31;
-    let minimizer = 15;
     let input = get_input_fof();
-    let (file_paths, color_nb) = read_fof_file(&input).unwrap();
-    let abundance = NonZero::new(255).unwrap();
-    let abundance_min = 0;
-    let abundance_max = NonZero::new(65024).unwrap();
-    let dense_option = false;
-    let canonical = false;
 
-    let partitions = check_number_of_partitions(&input, partitions, abundance.get(), bf_size);
+    let (file_paths, nb_color) = read_fof_file(&input).unwrap();
+    let mut parameters = Parameters {
+        k: 31,
+        m: 15,
+        bf_size: 1u64 << 16,
+        partition_number: 512,
+        nb_color,
+        abundance_number: NonZero::new(255).unwrap(),
+        abundance_min: 0,
+        abundance_max: NonZero::new(65024).unwrap(),
+        dense_option: false,
+        canonical: false,
+    };
+    assert_eq!(parameters.nb_color, 4);
 
-    let index = Reindeer2::new(
-        bf_size,
-        partitions,
-        kmer,
-        minimizer,
-        color_nb,
-        abundance,
-        abundance_min,
-        abundance_max,
-        dense_option,
-        canonical,
+    let partitions = check_number_of_partitions(
+        &input,
+        parameters.partition_number,
+        parameters.abundance_number.get(),
+        parameters.bf_size,
     );
+    parameters.partition_number = partitions;
 
     let mut query_results = vec![];
-    assert_eq!(color_nb, 4);
-    for chunks_size in 1..color_nb {
+    for chunks_size in 1..parameters.nb_color {
         let index_dir = get_output_dir();
+        let mut index = Reindeer2::new(parameters.clone(), String::from(index_dir.filename()));
         let index_dir_name = index_dir.filename();
         let threshold = 0;
         let paths = file_paths.clone();
 
-        index
-            .build(paths, index_dir_name, chunks_size, threshold)
-            .unwrap();
+        index.build(paths, chunks_size, threshold).unwrap();
 
         let coverage = 0.5;
         let output_format = OutputFormat::AbundanceMatrix {

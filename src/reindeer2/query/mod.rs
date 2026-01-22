@@ -7,7 +7,7 @@ use std::path::Path;
 
 use super::{
     approximate_value, compute_base_position, dense_index::DenseIndexPartition,
-    kmer_minimizers_seq_level, load_bloom_filter, read_indexed_file_names,
+    kmer_minimizers_seq_level, load_bloom_filter,
 };
 use bio::io::fasta;
 pub use format::{write_header, write_kmer_query, EnrichedOutputFormat};

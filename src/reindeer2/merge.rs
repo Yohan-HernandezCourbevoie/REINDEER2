@@ -6,7 +6,7 @@ use std::{
     time::Instant,
 };
 
-use crate::reindeer2::{load_bloom_filter, Reindeer2};
+use crate::reindeer2::{load_bloom_filter, Parameters, Reindeer2};
 
 // merge an arbitrary number of indexes  listed in a fof
 // each line of the fof is expected to he path to one index dir
@@ -39,51 +39,43 @@ pub fn merge_multiple_indexes(indexes_fof: &str, output_dir: &str) -> io::Result
     // read metadata from the first index as base parameter
     // let (k, m, bf_size, partition_number, first_color, abundance_number, abundance_max, dense_option) =
     // read_partition_from_csv(&index_dirs[0], "index_info.csv")?;
-    let index_ref = Reindeer2::load_metadata(&index_dirs[0]).expect(&format!(
+    let index_ref = Reindeer2::load_from_disk(&index_dirs[0]).expect(&format!(
         "should have been able to load index infos from disk {}",
         &index_dirs[0]
     ));
 
     //  vector to store (index_dir, color_count) for every index.
-    let mut indexes_metadata = vec![(index_dirs[0].clone(), index_ref.nb_color)];
-    let mut new_color_number = index_ref.nb_color;
+    let mut indexes_metadata = vec![(index_dirs[0].clone(), index_ref.parameters.nb_color)];
+    let mut new_color_number = index_ref.parameters.nb_color;
+    let mut indexed_file_names = index_ref.indexed_file_names;
 
     // for all other indexes, check that the parameters match and add its color count
     for index_dir in index_dirs.iter().skip(1) {
-        // let (k2, m2, bf_size2, partition_number2, color_count, abundance_number2, abundance_max2, dense_option) =
-        // read_partition_from_csv(index_dir, "index_info.csv")?;
-        let index_to_merge = Reindeer2::load_metadata(index_dir).expect(&format!(
+        let index_to_merge = Reindeer2::load_from_disk(index_dir).expect(&format!(
             "should have been able to load index infos from disk {}",
             index_dir
         ));
-        if index_ref.k != index_to_merge.k
-            || index_ref.m != index_to_merge.m
-            || index_ref.bf_size != index_to_merge.bf_size
-            || index_ref.partition_number != index_to_merge.partition_number
-            || index_ref.abundance_number != index_to_merge.abundance_number
-            || index_ref.abundance_max != index_to_merge.abundance_max
-            || index_ref.dense_option != index_to_merge.dense_option
-            || index_ref.canonical != index_to_merge.canonical
-        {
+        if !index_ref.parameters.can_merge(&index_to_merge.parameters) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 format!(
-                    "Index {} does not match parameters of the first index",
-                    index_dir
+                    "Index {} does not match parameters of the first index ({})",
+                    index_dir, index_ref.index_dir
                 ),
             ));
         }
-        new_color_number += index_to_merge.nb_color;
-        indexes_metadata.push((index_dir.clone(), index_to_merge.nb_color));
+        new_color_number += index_to_merge.parameters.nb_color;
+        indexes_metadata.push((index_dir.clone(), index_to_merge.parameters.nb_color));
+        indexed_file_names.extend(index_to_merge.indexed_file_names);
     }
 
     fs::create_dir_all(output_dir)?;
 
-    let partitioned_bf_size = (index_ref.bf_size as usize) / index_ref.partition_number;
+    let partitioned_bf_size =
+        (index_ref.parameters.bf_size as usize) / index_ref.parameters.partition_number;
 
     // for each partition, merge the corresponding bfs for every index
-    let mut total_nb_colors = 0;
-    for partition_idx in 0..index_ref.partition_number {
+    for partition_idx in 0..index_ref.parameters.partition_number {
         // for each index, build the file name for the given partition
         let chunk_files: Vec<String> = indexes_metadata
             .iter()
@@ -98,7 +90,6 @@ pub fn merge_multiple_indexes(indexes_fof: &str, output_dir: &str) -> io::Result
 
         // collect the color counts from each index
         let color_counts: Vec<usize> = indexes_metadata.iter().map(|(_, count)| *count).collect();
-        total_nb_colors = new_color_number;
 
         //merge
         let mut merged_bf = RoaringBitmap::new();
@@ -106,19 +97,23 @@ pub fn merge_multiple_indexes(indexes_fof: &str, output_dir: &str) -> io::Result
             chunk_files,
             partition_idx,
             partitioned_bf_size,
-            index_ref.abundance_number.get(),
+            index_ref.parameters.abundance_number.get(),
             &color_counts,
             &mut merged_bf,
             output_dir,
-            total_nb_colors,
+            new_color_number,
         )?;
     }
-
-    let index_merged = Reindeer2 {
-        nb_color: total_nb_colors,
-        ..index_ref
+    let parameters = Parameters {
+        nb_color: new_color_number,
+        ..index_ref.parameters
     };
-    index_merged.save_metadata(output_dir)?;
+    let index_merged = Reindeer2 {
+        parameters,
+        indexed_file_names,
+        index_dir: String::from(output_dir),
+    };
+    index_merged.save_to_disk()?;
 
     log::info!(
         "Successfully merged {} indexes into directory: {}",

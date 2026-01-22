@@ -5,7 +5,6 @@ mod median_abundance;
 
 use bio::io::fasta;
 use std::io::{self, Write};
-use std::path::Path;
 
 use abundance_matrix::{write_abundance_matrix, write_header_matrix};
 pub use enriched_output_format::{EnrichedOutputFormat, KmerCountsAndNormalizeValue};
@@ -13,8 +12,6 @@ use graph_coloring::graph_coloring;
 use median_abundance::write_median_abundance;
 
 pub use abundance_matrix::SEPARATOR as MATRIX_SEPARATOR;
-
-use super::read_indexed_file_names;
 
 fn count_to_string_with_star_normalized(
     count: u16,
@@ -81,7 +78,7 @@ fn get_full_header(record: &fasta::Record) -> String {
     format!(">{} {}", id, desc).trim().to_string()
 }
 pub fn write_header(
-    bf_dir: &str,
+    index_file_names: &[String],
     output_format: &EnrichedOutputFormat,
     mut writer: &mut impl Write,
 ) -> std::io::Result<()> {
@@ -90,9 +87,7 @@ pub fn write_header(
             writeln!(writer, "header,file,abundance")?;
         }
         EnrichedOutputFormat::AbundanceMatrix { format: _ } => {
-            let indexed_files = Path::new(&bf_dir).join("path.txt");
-            let indexed_files: Vec<String> = read_indexed_file_names(indexed_files);
-            write_header_matrix(&mut writer, indexed_files, MATRIX_SEPARATOR)?;
+            write_header_matrix(&mut writer, index_file_names, MATRIX_SEPARATOR)?;
         }
         EnrichedOutputFormat::Colored { normalized: _ } => {
             // no header
