@@ -1,6 +1,7 @@
 use bio::io::fasta;
 use std::collections::HashMap;
 use std::io;
+use std::num::NonZero;
 use std::sync::atomic::Ordering;
 use std::sync::{atomic, Arc, Mutex};
 
@@ -21,7 +22,8 @@ pub fn process_fasta_file(
     partition_number: usize,
     color_number_global: usize,
     threshold: usize,
-    abundance_max: u16,
+    abundance_min: u16,
+    abundance_max: NonZero<u16>,
     path_num: usize,
     path_num_global: usize,
     base: f64,
@@ -44,10 +46,12 @@ pub fn process_fasta_file(
 
         // this part reads the batches of sequences and records kmers info until the structure is too large in memory
         for record in batch {
-            let processed = process_fasta_record(record, base, abundance_max, &header_type); //read fasta
+            let processed =
+                process_fasta_record(record, base, abundance_min, abundance_max, &header_type); //read fasta
             match processed {
                 Ok((seq, log_abundance, count_value)) => {
-                    if log_abundance != 666 {
+                    // TODO discuss we should at least print a warning here if it is None
+                    if let Some(log_abundance) = log_abundance {
                         // case where the abundance value of the kmers in the unitigs file was < 1
                         atomic_record_count.fetch_add(1, Ordering::Relaxed);
                         let seq_str = std::str::from_utf8(&seq).expect("Invalid UTF-8 sequence");
@@ -132,9 +136,10 @@ pub fn process_fasta_file(
 pub fn process_fasta_record(
     record: &fasta::Record,
     base: f64,
-    abundance_max: u16,
+    abundance_min: u16,
+    abundance_max: NonZero<u16>,
     header_type: &HeaderType,
-) -> Result<(Vec<u8>, u16, u16), io::Error> {
+) -> Result<(Vec<u8>, Option<u16>, u16), io::Error> {
     let header_option = record.desc();
     let header = header_option.unwrap_or("no header found");
     let count_value = match extract_count(header, header_type) {
@@ -143,19 +148,23 @@ pub fn process_fasta_record(
     };
 
     // compute the lossy abundance value
-    let log_abundance = if count_value > 0 {
-        compute_log_abundance(count_value, base, abundance_max)
+    let abundance = if count_value > abundance_min {
+        NonZero::new(count_value)
     } else {
-        666
+        None
     };
+    let log_abundance = abundance.map(|value| compute_log_abundance(value, base, abundance_max));
     let seq = record.seq().to_vec();
     Ok((seq, log_abundance, count_value))
 }
 
 #[cfg(test)]
 mod tests {
+    use std::num::NonZero;
+
     use super::*;
 
+    // TODO test abundance min/max
     #[test]
     fn test_process_fasta_record() {
         let fasta_input =
@@ -166,7 +175,8 @@ mod tests {
         let result = result.expect("error during fasta parsing");
 
         let base = 2.0;
-        let processed = process_fasta_record(&result, base, 65535, &HeaderType::Logan);
+        let max = NonZero::new(65535).unwrap();
+        let processed = process_fasta_record(&result, base, 0, max, &HeaderType::Logan);
 
         assert!(processed.is_ok(), "processing failed");
         let (seq, log_abundance, _) = processed.unwrap();
@@ -175,7 +185,8 @@ mod tests {
 
         assert_eq!(seq, expected_seq, "sequence mismatch");
         assert_eq!(
-            log_abundance, expected_log_abundance,
+            log_abundance.unwrap(),
+            expected_log_abundance,
             "log abundance mismatch"
         );
     }

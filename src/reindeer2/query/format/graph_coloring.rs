@@ -3,7 +3,8 @@ use std::io::Write;
 use bio::io::fasta;
 
 use super::{
-    compute_median, count_to_string_witout_star, get_full_header, KmerCountsAndNormalizeValue,
+    compute_median, count_to_string_witout_star_maybe_normalized, get_full_header,
+    KmerCountsAndNormalizeValue,
 };
 
 // rewrites a bcalm-like graph so that headers have abund info (one of the possible query operations)
@@ -38,7 +39,7 @@ pub fn graph_coloring(
                 continue;
             }
             let median = compute_median(vals);
-            let median = count_to_string_witout_star(median, normalize, color_idx);
+            let median = count_to_string_witout_star_maybe_normalized(median, normalize, color_idx);
             // push e.g. "col:1:12"
             header_parts.push(format!("col:{}:{}", color_idx, median));
         }

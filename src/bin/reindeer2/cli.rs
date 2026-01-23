@@ -1,6 +1,7 @@
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
 #[derive(Parser, Debug)]
+#[command(version, about, long_about = None)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Command,
@@ -38,9 +39,10 @@ pub struct IndexArgs {
     #[arg(short, long, value_name = "MINSIZE", default_value_t = 15)]
     pub minimizer: usize,
 
-    /// Sets the number of partitions
-    #[arg(short, long, value_name = "PARTS", default_value_t = 512)]
-    pub partitions: usize,
+    // TODO better help
+    /// Capacity of the index (in number of files). Default: only reserve space for the indexed files.
+    #[arg(short, long, value_name = "NB_FILE_CAPACITY")]
+    pub nb_file_capacity: Option<usize>,
 
     /// Sets the Bloom filter size in log2 scale
     #[arg(short, long, value_name = "BF", default_value_t = 32)]
@@ -49,6 +51,10 @@ pub struct IndexArgs {
     /// Sets the abundance granularity
     #[arg(short, long, value_name = "ABUND", default_value_t = 255)]
     pub abundance: usize,
+
+    /// Sets the minimal abundance to take into account
+    #[arg(long, value_name = "ABUND_MIN", default_value_t = 0)]
+    pub abundance_min: u16,
 
     /// Sets the maximal abundance to take into account
     #[arg(short = 'A', long, value_name = "ABUND_MAX", default_value_t = 65024)]
@@ -64,7 +70,7 @@ pub struct IndexArgs {
     #[arg(short = 'd', long = "dense", default_value_t = false)]
     pub dense: bool,
 
-    /// Sets the index output directory (default: random name in the form of PACAS_index_)
+    /// Sets the index output directory (default: random name in the form of RD2_index_)
     #[arg(short = 'o', long = "output-dir", value_name = "OUT")]
     pub output_dir: Option<String>,
 
@@ -77,7 +83,9 @@ pub struct IndexArgs {
 pub enum OutputFormatCli {
     Colored,
     Median,
-    AbundanceMatrix,
+    AbundanceMatrixRaw,
+    AbundanceMatrixMedian,
+    AbundanceMatrixAverage,
 }
 
 #[derive(Args, Debug)]
@@ -123,7 +131,7 @@ pub struct MergeArgs {
     #[arg(short = 'f', long = "file-of-indexes", value_name = "FILE_OF_INDEXES")]
     pub file_of_indexes: String,
 
-    /// Sets the index output directory (default: random name in the form of PACAS_index_)
+    /// Sets the index output directory (default: random name in the form of RD2_index_)
     #[arg(short = 'o', long = "output-dir", value_name = "OUT")]
     pub output_dir: Option<String>,
 }
