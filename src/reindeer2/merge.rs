@@ -2,7 +2,7 @@ use rayon::prelude::*;
 use roaring::RoaringBitmap;
 use std::{
     fs::{self, File},
-    io::{self, BufRead, BufWriter, Write},
+    io::{self, BufRead, BufReader, BufWriter, Write},
     time::Instant,
 };
 
@@ -15,9 +15,17 @@ pub fn merge_multiple_indexes(indexes_fof: &str, output_dir: &str) -> io::Result
     // read the list of index directories.
     let index_dirs: Vec<String> = {
         let file = File::open(indexes_fof)?;
-        io::BufReader::new(file)
+        BufReader::new(file)
             .lines()
-            .filter_map(Result::ok)
+            .map(|line| {
+                line.unwrap_or_else(|_| {
+                    let msg = format!("Fatal error: when merging indexes, an error was encountered when reading the file {indexes_fof}.");
+                    println!("{msg}");  // warn user
+                    log::error!("{msg}");  // log error
+                    // TODO discuss if we panic or exit
+                    panic!("should have been able to read file {}", indexes_fof);  // panic
+                })
+            })
             .map(|line| line.trim().to_string())
             .filter(|line| !line.is_empty())
             .collect()
