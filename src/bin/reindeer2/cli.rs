@@ -69,7 +69,7 @@ pub struct IndexArgs {
     #[arg(short = 'd', long = "dense", default_value_t = false)]
     pub dense: bool,
 
-    /// Sets the index output directory (default: random name in the form of PACAS_index_)
+    /// Sets the index output directory (default: random name in the form of RD2_index_)
     #[arg(short = 'o', long = "output-dir", value_name = "OUT")]
     pub output_dir: Option<String>,
 
@@ -130,7 +130,7 @@ pub struct MergeArgs {
     #[arg(short = 'f', long = "file-of-indexes", value_name = "FILE_OF_INDEXES")]
     pub file_of_indexes: String,
 
-    /// Sets the index output directory (default: random name in the form of PACAS_index_)
+    /// Sets the index output directory (default: random name in the form of RD2_index_)
     #[arg(short = 'o', long = "output-dir", value_name = "OUT")]
     pub output_dir: Option<String>,
 }

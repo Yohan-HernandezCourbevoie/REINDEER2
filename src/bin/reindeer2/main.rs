@@ -102,7 +102,7 @@ fn main() -> io::Result<()> {
             let dense_option = dense;
             let canonical = !stranded;
             let output_dir = output_dir.unwrap_or_else(|| {
-                format!("PACAS_index_{}", rand::rng().random::<u64>()) // Generate a unique directory name
+                format!("RD2_index_{}", rand::rng().random::<u64>()) // Generate a unique directory name
             });
             // let muset_option = args.muset;
             // TODO add threads
@@ -261,7 +261,7 @@ fn main() -> io::Result<()> {
                 .unwrap();
 
             let output_dir = output_dir.unwrap_or_else(|| {
-                format!("PACAS_index_{}", rand::rng().random::<u64>()) // Generate a unique directory name
+                format!("RD2_index_{}", rand::rng().random::<u64>()) // Generate a unique directory name
             });
 
             let start_time = Instant::now();
