@@ -408,6 +408,7 @@ impl Reindeer2 {
                 &output_format,
                 coverage,
                 &sequence_results,
+                &self.indexed_file_names,
                 &mut writer,
             )
             .expect("should have been able to write the query result");
@@ -1703,7 +1704,7 @@ mod tests {
         query_results_path
     }
 
-    fn load_query_result_csv<P: AsRef<Path>>(path: P) -> Vec<(String, usize, usize)> {
+    fn load_query_result_csv<P: AsRef<Path>>(path: P) -> Vec<(String, String, usize)> {
         let file = File::open(&path).expect("Failed to open query results");
 
         csv::Reader::from_reader(file)
@@ -1711,7 +1712,7 @@ mod tests {
             .map(|record| record.expect("Failed to read record"))
             .map(|record| {
                 let header = record[0].to_string(); // Now reading the header instead of the sequence ID
-                let color = record[1].parse().expect("Failed to parse color");
+                let color = record[1].parse().expect("Failed to parse color's name");
                 let abundance = record[2].parse().expect("Failed to parse abundance");
                 (header, color, abundance)
             })
@@ -1777,9 +1778,9 @@ mod tests {
 
         let mut results = load_query_result_csv(query_results_path);
         let mut expected_results = [
-            (">seq1 ka:f:30".to_string(), 0, 29),
-            (">seq2 ka:f:30".to_string(), 0, 29),
-            (">seq3 ka:f:2".to_string(), 0, 2), // Values with errors due to log conversion
+            (">seq1 ka:f:30".to_string(), String::from("file1Q"), 29),
+            (">seq2 ka:f:30".to_string(), String::from("file1Q"), 29),
+            (">seq3 ka:f:2".to_string(), String::from("file1Q"), 2), // Values with errors due to log conversion
         ];
 
         results.sort();
@@ -1845,9 +1846,9 @@ mod tests {
 
         let mut results = load_query_result_csv(query_results_path);
         let mut expected_results = [
-            (">seq1 ka:f:30".to_string(), 0, 29),
-            (">seq2 ka:f:30".to_string(), 0, 29),
-            (">seq3 ka:f:2".to_string(), 0, 2), // Values with errors due to log conversion
+            (">seq1 ka:f:30".to_string(), String::from("file1Q"), 29),
+            (">seq2 ka:f:30".to_string(), String::from("file1Q"), 29),
+            (">seq3 ka:f:2".to_string(), String::from("file1Q"), 2), // Values with errors due to log conversion
         ];
 
         results.sort();
@@ -1922,10 +1923,10 @@ mod tests {
         );
         let mut results = load_query_result_csv(query_results_path);
         let mut expected_results = [
-            (">seq1 ka:f:30".to_string(), 0, 29),
-            (">seq2 ka:f:30".to_string(), 0, 29),
-            (">seq3 ka:f:2".to_string(), 0, 2),
-            (">seq3 ka:f:2".to_string(), 1, 997),
+            (">seq1 ka:f:30".to_string(), String::from("file1Q"), 29),
+            (">seq2 ka:f:30".to_string(), String::from("file1Q"), 29),
+            (">seq3 ka:f:2".to_string(), String::from("file1Q"), 2),
+            (">seq3 ka:f:2".to_string(), String::from("file2Q"), 997),
         ];
         results.sort();
         expected_results.sort();
@@ -1999,10 +2000,10 @@ mod tests {
 
         let mut results = load_query_result_csv(query_results_path);
         let mut expected_results = [
-            (">seq1 ka:f:30".to_string(), 0, 29),
-            (">seq2 ka:f:30".to_string(), 0, 29),
-            (">seq3 ka:f:2".to_string(), 0, 2),
-            (">seq3 ka:f:2".to_string(), 1, 997),
+            (">seq1 ka:f:30".to_string(), String::from("file1Q"), 29),
+            (">seq2 ka:f:30".to_string(), String::from("file1Q"), 29),
+            (">seq3 ka:f:2".to_string(), String::from("file1Q"), 2),
+            (">seq3 ka:f:2".to_string(), String::from("file2Q"), 997),
         ];
 
         results.sort();
@@ -2074,7 +2075,7 @@ mod tests {
 
         // Validate the results written to the query results CSV file
         let mut results = load_query_result_csv(query_results_path);
-        let mut expected_results = [(">seq3 ka:f:1000".to_string(), 1, 997)];
+        let mut expected_results = [(">seq3 ka:f:1000".to_string(), String::from("file2Q"), 997)];
 
         results.sort();
         expected_results.sort();
@@ -2146,7 +2147,7 @@ mod tests {
 
         // Validate the results written to the query results CSV file
         let mut results = load_query_result_csv(query_results_path);
-        let mut expected_results = [(">seq3 ka:f:1000".to_string(), 1, 997)];
+        let mut expected_results = [(">seq3 ka:f:1000".to_string(), String::from("file2Q"), 997)];
 
         results.sort();
         expected_results.sort();
@@ -2223,8 +2224,8 @@ mod tests {
 
         let mut results = load_query_result_csv(query_results_path);
         let mut expected_results = [
-            (">seq4 ka:f:1000".to_string(), 1, 979),
-            (">seq5 ka:f:1000".to_string(), 1, 979),
+            (">seq4 ka:f:1000".to_string(), String::from("file2Q"), 979),
+            (">seq5 ka:f:1000".to_string(), String::from("file2Q"), 979),
         ];
 
         results.sort();
@@ -2301,8 +2302,8 @@ mod tests {
 
         let mut results = load_query_result_csv(query_results_path);
         let mut expected_results = [
-            (">seq4 ka:f:1000".to_string(), 1, 979),
-            (">seq5 ka:f:1000".to_string(), 1, 979),
+            (">seq4 ka:f:1000".to_string(), String::from("file2Q"), 979),
+            (">seq5 ka:f:1000".to_string(), String::from("file2Q"), 979),
         ];
 
         results.sort();
@@ -2378,10 +2379,10 @@ mod tests {
 
         let mut results = load_query_result_csv(query_results_path);
         let mut expected_results = [
-            (">seq1 ka:f:30".to_string(), 0, 30),
-            (">seq2 ka:f:30".to_string(), 0, 30),
-            (">seq3 ka:f:1500".to_string(), 0, 255), //because of abundance_max
-            (">seq3 ka:f:1500".to_string(), 1, 4),
+            (">seq1 ka:f:30".to_string(), String::from("file1Q"), 30),
+            (">seq2 ka:f:30".to_string(), String::from("file1Q"), 30),
+            (">seq3 ka:f:1500".to_string(), String::from("file1Q"), 255), //because of abundance_max
+            (">seq3 ka:f:1500".to_string(), String::from("file2Q"), 4),
         ];
 
         results.sort();
@@ -2457,10 +2458,10 @@ mod tests {
 
         let mut results = load_query_result_csv(query_results_path);
         let mut expected_results = [
-            (">seq1 ka:f:30".to_string(), 0, 30),
-            (">seq2 ka:f:30".to_string(), 0, 30),
-            (">seq3 ka:f:1500".to_string(), 0, 255), //because of abundance_max
-            (">seq3 ka:f:1500".to_string(), 1, 4),
+            (">seq1 ka:f:30".to_string(), String::from("file1Q"), 30),
+            (">seq2 ka:f:30".to_string(), String::from("file1Q"), 30),
+            (">seq3 ka:f:1500".to_string(), String::from("file1Q"), 255), //because of abundance_max
+            (">seq3 ka:f:1500".to_string(), String::from("file2Q"), 4),
         ];
 
         results.sort();
@@ -2536,10 +2537,10 @@ mod tests {
 
         let mut results = load_query_result_csv(query_results_path);
         let mut expected_results = [
-            (">seq1 ka:f:30".to_string(), 0, 30),
-            (">seq2 ka:f:30".to_string(), 0, 30),
-            (">seq3 ka:f:1500".to_string(), 0, 255), //because of abundance_max
-            (">seq3 ka:f:1500".to_string(), 1, 4),
+            (">seq1 ka:f:30".to_string(), String::from("file1Q"), 30),
+            (">seq2 ka:f:30".to_string(), String::from("file1Q"), 30),
+            (">seq3 ka:f:1500".to_string(), String::from("file1Q"), 255), //because of abundance_max
+            (">seq3 ka:f:1500".to_string(), String::from("file2Q"), 4),
         ];
 
         results.sort();
@@ -2615,10 +2616,10 @@ mod tests {
 
         let mut results = load_query_result_csv(query_results_path);
         let mut expected_results = [
-            (">seq1 ka:f:30".to_string(), 0, 30),
-            (">seq2 ka:f:30".to_string(), 0, 30),
-            (">seq3 ka:f:1500".to_string(), 0, 255), //because of abundance_max
-            (">seq3 ka:f:1500".to_string(), 1, 4),
+            (">seq1 ka:f:30".to_string(), String::from("file1Q"), 30),
+            (">seq2 ka:f:30".to_string(), String::from("file1Q"), 30),
+            (">seq3 ka:f:1500".to_string(), String::from("file1Q"), 255), //because of abundance_max
+            (">seq3 ka:f:1500".to_string(), String::from("file2Q"), 4),
         ];
 
         results.sort();
@@ -2690,8 +2691,8 @@ mod tests {
 
         let mut results = load_query_result_csv(query_results_path);
         let mut expected_results = [
-            (">seq1 ka:f:30".to_string(), 0, 29),
-            (">seq2 ka:f:8".to_string(), 0, 8),
+            (">seq1 ka:f:30".to_string(), String::from("file1Q"), 29),
+            (">seq2 ka:f:8".to_string(), String::from("file1Q"), 8),
         ];
 
         results.sort();
@@ -2763,8 +2764,8 @@ mod tests {
 
         let mut results = load_query_result_csv(query_results_path);
         let mut expected_results = [
-            (">seq1 ka:f:30".to_string(), 0, 29),
-            (">seq2 ka:f:8".to_string(), 0, 8),
+            (">seq1 ka:f:30".to_string(), String::from("file1Q"), 29),
+            (">seq2 ka:f:8".to_string(), String::from("file1Q"), 8),
         ];
 
         results.sort();
@@ -3084,7 +3085,7 @@ mod tests {
             create_build_query(parameters, chunks_size, threshold, file_paths, 0, test_dir);
 
         let mut results = load_query_result_csv(query_results_path);
-        let mut expected_results = [(">seq1 ka:f:30".to_string(), 0, 29)];
+        let mut expected_results = [(">seq1 ka:f:30".to_string(), String::from("file1Q"), 29)];
 
         results.sort();
         expected_results.sort();
@@ -3227,8 +3228,8 @@ mod tests {
 
         let mut results = load_query_result_csv(query_results_path);
         let mut expected_results = [
-            (">seq6 ka:f:4".to_string(), 2, 1476),
-            (">seq6 ka:f:4".to_string(), 5, 4),
+            (">seq6 ka:f:4".to_string(), String::from("file3Q"), 1476),
+            (">seq6 ka:f:4".to_string(), String::from("file6Q"), 4),
         ];
 
         results.sort();
@@ -3335,7 +3336,11 @@ mod tests {
             create_build_query(parameters, chunks_size, threshold, file_paths, 4, test_dir);
 
         let mut results = load_query_result_csv(query_results_path);
-        let mut expected_results = [(">seq5 ka:f:60000".to_string(), 4, 59149)];
+        let mut expected_results = [(
+            ">seq5 ka:f:60000".to_string(),
+            String::from("file5Q"),
+            59149,
+        )];
 
         results.sort();
         expected_results.sort();
@@ -3432,9 +3437,13 @@ mod tests {
 
         let mut results = load_query_result_csv(query_results_path);
         let mut expected_results = [
-            (">seq5 ka:f:60000".to_string(), 4, 59149),
-            (">seq6 ka:f:4".to_string(), 2, 1476),
-            (">seq6 ka:f:4".to_string(), 4, 4),
+            (
+                ">seq5 ka:f:60000".to_string(),
+                String::from("file5Q"),
+                59149,
+            ),
+            (">seq6 ka:f:4".to_string(), String::from("file3Q"), 1476),
+            (">seq6 ka:f:4".to_string(), String::from("file5Q"), 4),
         ];
 
         results.sort();
@@ -3632,7 +3641,7 @@ mod tests {
         let results = load_query_result_csv(query_results_path);
         let expected_results = [
             //("seq5".to_string(), 4, 57549),
-            (">seq2 ka:f:12".to_string(), 1, 12),
+            (">seq2 ka:f:12".to_string(), String::from("file2Q"), 12),
         ];
 
         for (expected, actual) in expected_results.iter().zip(results.iter()) {

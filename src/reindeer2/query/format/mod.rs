@@ -101,6 +101,7 @@ pub fn write_kmer_query(
     output_format: &EnrichedOutputFormat,
     coverage: f32,
     sequence_results: &[Vec<Vec<u16>>],
+    filenames: &[String],
     mut writer: &mut impl Write,
 ) -> io::Result<()> {
     match output_format {
@@ -113,9 +114,14 @@ pub fn write_kmer_query(
         EnrichedOutputFormat::AbundanceMatrix { format } => {
             write_abundance_matrix(sequence_results, batch, format, &mut writer)
         }
-        EnrichedOutputFormat::Median { normalized } => {
-            write_median_abundance(sequence_results, batch, normalized, coverage, &mut writer)
-        }
+        EnrichedOutputFormat::Median { normalized } => write_median_abundance(
+            sequence_results,
+            batch,
+            normalized,
+            coverage,
+            filenames,
+            &mut writer,
+        ),
     }?;
     writer.flush()?;
     Ok(())
