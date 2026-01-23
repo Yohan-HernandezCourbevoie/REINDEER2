@@ -10,7 +10,7 @@ use std::time::Instant;
 
 use cli::Cli;
 use cli::OutputFormatCli;
-use overflow_detection::check_number_of_partitions;
+use overflow_detection::{get_min_number_of_files, get_number_of_partitions};
 use reindeer2::reindeer2::{
     merge_multiple_indexes, read_fof_file, AbundanceMatrixFormat, BreakpointsNormalize,
     OutputFormat, Parameters, Reindeer2,
@@ -89,7 +89,7 @@ fn main() -> io::Result<()> {
             input,
             kmer,
             minimizer,
-            partitions,
+            nb_file_capacity,
             bloomfilter,
             abundance,
             abundance_min,
@@ -109,7 +109,6 @@ fn main() -> io::Result<()> {
 
             let bf_size = 1u64 << bloomfilter; // Bloom filter size as a power of 2
 
-            let partitions = check_number_of_partitions(&input, partitions, abundance, bf_size);
             // CHECKS
             if dense_option {
                 rayon::ThreadPoolBuilder::new()
@@ -177,6 +176,9 @@ fn main() -> io::Result<()> {
             // } else {
             // read the file of files  and extract file paths and color count
             let (file_paths, color_nb) = read_fof_file(&input)?;
+
+            let nb_files = get_min_number_of_files(&file_paths, nb_file_capacity);
+            let partitions = get_number_of_partitions(nb_files, abundance.get(), bf_size);
 
             // run the index construction process: build and fill BFs per partitions and in chunks, serialize, merge chunks
             let parameters = Parameters {

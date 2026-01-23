@@ -1,53 +1,34 @@
-use colored::Colorize;
-use std::{
-    fs::File,
-    io::{BufRead, BufReader},
-    path::Path,
-};
-fn count_lines<P: AsRef<Path>>(path: P) -> std::io::Result<usize> {
-    let mut count = 0;
-    for line in BufReader::new(File::open(path)?).lines() {
-        line?;
-        count += 1;
-    }
-    Ok(count)
+/// Returns the minimum number of partitions required to index `nb_files` files with `nb_abundance_level` abundance levels and filters of size `bf_size`.
+#[must_use]
+pub fn get_number_of_partitions(nb_files: usize, nb_abundance_level: usize, bf_size: u64) -> usize {
+    let max_size_roaring = 2u64.pow(32);
+    let nb_filters = usize::try_from(bf_size / max_size_roaring).expect("error in conversion");
+
+    nb_abundance_level * nb_files * nb_filters
 }
 
-/// Checks if the given number of partitions would lead to a crash at indexation time.
-/// Returns the number of partitions, or, in case of a crash, returns the minimum number of partition that is safe to use.
+/// If `requested_number_of_files` is enough to index files `files_paths`, returns `requested_number_of_files`. Returns `file_paths.len()` otherwise.
 #[must_use]
-pub fn check_number_of_partitions<P: AsRef<Path>>(
-    fof: P,
-    nb_partitions: usize,
-    nb_abundance_level: usize,
-    bf_size: u64,
+pub fn get_min_number_of_files<T>(
+    file_paths: &[T],
+    requested_number_of_files: Option<usize>,
 ) -> usize {
-    let nb_files = count_lines(&fof).unwrap_or_else(|_| {
-        panic!(
-            "should have been able to read {}",
-            fof.as_ref().to_str().unwrap()
-        )
-    });
-    let nb_min_partitions = nb_abundance_level
-        * nb_files
-        * usize::try_from(bf_size / 2u64.pow(32)).expect("error in conversion");
-
-    if nb_partitions < nb_min_partitions {
-        log::warn!(
-            "{}",
-            format!(
-                "Warning: the requested number of partition was {}. \
-                Keeping this value would lead to a crash. \
-                The minimum number of partitions is {}. \
-                Indexation will continue with this minimum number of partitions to prevent crash. \
-                Using the minimum number of partitions prevents adding datasets in the index in the future. \
-                If you want to be able to add more datasets, increase the number of partitions.",
-                nb_partitions, nb_min_partitions
-            )
-            .yellow()
-        );
-        nb_min_partitions
-    } else {
-        nb_partitions
+    let number_of_files = file_paths.len();
+    match requested_number_of_files {
+        Some(requested_number_of_files) => {
+            if requested_number_of_files < number_of_files {
+                let msg = format!(
+                "The requested number of file was {}, but there are {} files to index. Continuing with space for exactly {} files. \
+                If you want to be able to add more datasets, increase the number of requested files.",
+                requested_number_of_files, number_of_files, number_of_files
+            );
+                log::warn!("{msg}");
+                println!("{msg}");
+                number_of_files
+            } else {
+                requested_number_of_files
+            }
+        }
+        None => number_of_files,
     }
 }

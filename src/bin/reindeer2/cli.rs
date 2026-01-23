@@ -39,9 +39,10 @@ pub struct IndexArgs {
     #[arg(short, long, value_name = "MINSIZE", default_value_t = 15)]
     pub minimizer: usize,
 
-    /// Sets the number of partitions
-    #[arg(short, long, value_name = "PARTS", default_value_t = 512)]
-    pub partitions: usize,
+    // TODO better help
+    /// Capacity of the index (in number of files). Default: only reserve space for the indexed files.
+    #[arg(short, long, value_name = "NB_FILE_CAPACITY")]
+    pub nb_file_capacity: Option<usize>,
 
     /// Sets the Bloom filter size in log2 scale
     #[arg(short, long, value_name = "BF", default_value_t = 32)]
