@@ -1,7 +1,7 @@
 #!/bin/bash
 
 reindeer2="./target/debug/reindeer2"
-LOCAL_FOLDER="tests/integration/median"
+LOCAL_FOLDER="tests/system_testing/median"
 INPUT_FOF="$LOCAL_FOLDER/datasets/median.fof"
 QUERY_INPUT="$LOCAL_FOLDER/query.fa"
 QUERY_OUTPUT="$LOCAL_FOLDER/results.tsv"
