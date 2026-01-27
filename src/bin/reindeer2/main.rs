@@ -231,6 +231,10 @@ fn main() -> io::Result<()> {
                     OutputFormat::Colored { normalized: _ } => {
                         format!("{}_colored_graph.fa", index_dir)
                     }
+                    OutputFormat::Median { normalized: _ } => {
+                        format!("{}_query_results.csv", index_dir)
+                    }
+
                     _ => format!("{}_query_results.tsv", index_dir),
                 },
             };
