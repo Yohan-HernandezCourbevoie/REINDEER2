@@ -41,7 +41,7 @@ pub struct IndexArgs {
 
     // TODO better help
     /// Capacity of the index (in number of files). Default: only reserve space for the indexed files.
-    #[arg(short, long, value_name = "NB_FILE_CAPACITY")]
+    #[arg(long, value_name = "NB_FILE_CAPACITY")]
     pub nb_file_capacity: Option<usize>,
 
     /// Sets the Bloom filter size in log2 scale
