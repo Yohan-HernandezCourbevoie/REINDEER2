@@ -17,7 +17,7 @@ use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
 use std::num::NonZero;
 use std::panic;
 use std::path::Path;
-use std::sync::{atomic, Arc, Mutex};
+use std::sync::{Arc, Mutex, atomic};
 use thiserror::Error;
 
 pub use merge::merge_multiple_indexes;
@@ -37,7 +37,7 @@ pub enum BreakpointsNormalize {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub enum AbundanceMatrixFormat {
+pub enum MatrixFormat {
     Raw(
         /// None if not computing breakpoints nor normalization
         Option<BreakpointsNormalize>,
@@ -54,7 +54,7 @@ pub enum AbundanceMatrixFormat {
 pub enum OutputFormat {
     Colored { normalized: Option<u64> },
     Median { normalized: Option<u64> },
-    AbundanceMatrix { format: AbundanceMatrixFormat },
+    AbundanceMatrix { format: MatrixFormat },
 }
 
 /// Reindeer2 parameters
@@ -329,20 +329,24 @@ impl Reindeer2 {
         #[cfg(any(debug_assertions, test))]
         {
             // k-mers repartition between dense and sparse index
-            log::info!("The index contains {:?} 'dense' k-mers and {:?} 'sparse' k-mers (total k-mers: {:?})", 
-            atomic_dense_kmers_count.get_mut().separate_with_commas(),
-            atomic_sparse_kmers_count.get_mut().separate_with_commas(),
-            total_kmers.get_mut().separate_with_commas());
+            log::info!(
+                "The index contains {:?} 'dense' k-mers and {:?} 'sparse' k-mers (total k-mers: {:?})",
+                atomic_dense_kmers_count.get_mut().separate_with_commas(),
+                atomic_sparse_kmers_count.get_mut().separate_with_commas(),
+                total_kmers.get_mut().separate_with_commas()
+            );
 
             let ones = atomic_sparse_one_seen.get_mut();
             let silent = *atomic_sparse_kmers_count.get_mut() - *ones;
             let fp = atomic_sparse_fp_seen.get_mut();
             // k-mers indexed in the sparse index, FP silent and FP seen
-            log::info!("Among the {:?} k-mers added in the 'sparse' index, {:?} encountered hash collisions ({:?} silent and {:?} misleading).", 
-            atomic_sparse_kmers_count.get_mut().separate_with_commas(),
-            (silent+*fp).separate_with_commas(),
-            silent.separate_with_commas(),
-            fp.separate_with_commas());
+            log::info!(
+                "Among the {:?} k-mers added in the 'sparse' index, {:?} encountered hash collisions ({:?} silent and {:?} misleading).",
+                atomic_sparse_kmers_count.get_mut().separate_with_commas(),
+                (silent + *fp).separate_with_commas(),
+                silent.separate_with_commas(),
+                fp.separate_with_commas()
+            );
         }
 
         // Merge the chunk-based bloom filters, if needed
@@ -3463,7 +3467,7 @@ mod tests {
     #[test]
     fn test_merge_partition_bloom_filters() {
         use roaring::RoaringBitmap;
-        use std::fs::{create_dir_all, File};
+        use std::fs::{File, create_dir_all};
         use std::io::Write;
 
         let test_dir = "test_merge_partition_bloom_filters";
@@ -3784,7 +3788,7 @@ mod tests {
                 &index_dir,
                 &query_results_path,
                 OutputFormat::AbundanceMatrix {
-                    format: AbundanceMatrixFormat::Raw(None),
+                    format: MatrixFormat::Raw(None),
                 },
                 0.5,
             )
@@ -3848,7 +3852,7 @@ shared_revcomp_with_other_test_file\t0-19:3\t0-19:10",
                 &index_dir,
                 &query_results_path,
                 OutputFormat::AbundanceMatrix {
-                    format: AbundanceMatrixFormat::Raw(None),
+                    format: MatrixFormat::Raw(None),
                 },
                 0.5,
             )
@@ -3909,7 +3913,7 @@ header_0\t0-69:*\t0-69:1",
                 &index_dir,
                 &query_results_path,
                 OutputFormat::AbundanceMatrix {
-                    format: AbundanceMatrixFormat::Raw(None),
+                    format: MatrixFormat::Raw(None),
                 },
                 0.5,
             )

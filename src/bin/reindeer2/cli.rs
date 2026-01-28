@@ -83,15 +83,15 @@ pub struct IndexArgs {
 pub enum OutputFormatCli {
     Colored,
     Median,
-    AbundanceMatrixRaw,
-    AbundanceMatrixMedian,
-    AbundanceMatrixAverage,
+    MatrixRaw,
+    MatrixMedian,
+    MatrixAverage,
 }
 
 #[derive(Args, Debug)]
 pub struct QueryArgs {
     /// Path to the FASTA file containing query sequences
-    #[arg(short, long, value_name = "FILE")]
+    #[arg(short = 'q', long, value_name = "FILE")]
     pub fasta: String,
 
     /// Path to the directory containing the prebuilt index
@@ -99,7 +99,7 @@ pub struct QueryArgs {
     pub index: String,
 
     /// Precision of the format output
-    #[arg(long, value_enum, default_value_t = OutputFormatCli::Median)]
+    #[arg(short = 'f', long, value_enum, default_value_t = OutputFormatCli::Median)]
     pub output_format: OutputFormatCli,
 
     /// Normalize output (default: false)

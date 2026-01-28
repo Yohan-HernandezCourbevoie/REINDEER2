@@ -12,8 +12,8 @@ use cli::Cli;
 use cli::OutputFormatCli;
 use overflow_detection::{get_min_number_of_files, get_number_of_partitions};
 use reindeer2::reindeer2::{
-    merge_multiple_indexes, read_fof_file, AbundanceMatrixFormat, BreakpointsNormalize,
-    OutputFormat, Parameters, Reindeer2,
+    BreakpointsNormalize, MatrixFormat, OutputFormat, Parameters, Reindeer2,
+    merge_multiple_indexes, read_fof_file,
 };
 
 use crate::cli::{IndexArgs, MergeArgs, QueryArgs};
@@ -22,44 +22,32 @@ impl OutputFormatCli {
     fn to_output_format(self, normalized: Option<u64>, breakpoints: Option<f64>) -> OutputFormat {
         match (self, normalized, breakpoints) {
             // raw matrix
-            (OutputFormatCli::AbundanceMatrixRaw, Some(normalized), None) => {
-                OutputFormat::AbundanceMatrix {
-                    format: AbundanceMatrixFormat::Raw(Some(BreakpointsNormalize::Normalize(
-                        normalized,
-                    ))),
-                }
-            }
-            (OutputFormatCli::AbundanceMatrixRaw, None, Some(penalty)) => {
-                OutputFormat::AbundanceMatrix {
-                    format: AbundanceMatrixFormat::Raw(Some(BreakpointsNormalize::Breakpoints(
-                        penalty,
-                    ))),
-                }
-            }
-            (OutputFormatCli::AbundanceMatrixRaw, None, None) => OutputFormat::AbundanceMatrix {
-                format: AbundanceMatrixFormat::Raw(None),
+            (OutputFormatCli::MatrixRaw, Some(normalized), None) => OutputFormat::AbundanceMatrix {
+                format: MatrixFormat::Raw(Some(BreakpointsNormalize::Normalize(normalized))),
             },
-            (OutputFormatCli::AbundanceMatrixRaw, Some(_), Some(_)) => {
+            (OutputFormatCli::MatrixRaw, None, Some(penalty)) => OutputFormat::AbundanceMatrix {
+                format: MatrixFormat::Raw(Some(BreakpointsNormalize::Breakpoints(penalty))),
+            },
+            (OutputFormatCli::MatrixRaw, None, None) => OutputFormat::AbundanceMatrix {
+                format: MatrixFormat::Raw(None),
+            },
+            (OutputFormatCli::MatrixRaw, Some(_), Some(_)) => {
                 panic!("Cannot compute both breakpoints and normalized abundance.")
             }
 
             // matrix average
-            (OutputFormatCli::AbundanceMatrixAverage, normalized, None) => {
-                OutputFormat::AbundanceMatrix {
-                    format: AbundanceMatrixFormat::Average { normalized },
-                }
-            }
-            (OutputFormatCli::AbundanceMatrixAverage, _, Some(_)) => {
+            (OutputFormatCli::MatrixAverage, normalized, None) => OutputFormat::AbundanceMatrix {
+                format: MatrixFormat::Average { normalized },
+            },
+            (OutputFormatCli::MatrixAverage, _, Some(_)) => {
                 panic!("Cannot compute breakpoints from a matrix with mode average.")
             }
 
             // matrix median
-            (OutputFormatCli::AbundanceMatrixMedian, normalized, None) => {
-                OutputFormat::AbundanceMatrix {
-                    format: AbundanceMatrixFormat::Median { normalized },
-                }
-            }
-            (OutputFormatCli::AbundanceMatrixMedian, _normalized, Some(_)) => {
+            (OutputFormatCli::MatrixMedian, normalized, None) => OutputFormat::AbundanceMatrix {
+                format: MatrixFormat::Median { normalized },
+            },
+            (OutputFormatCli::MatrixMedian, _normalized, Some(_)) => {
                 panic!("Cannot compute breakpoints from a matrix with mode median.")
             }
 
@@ -116,7 +104,9 @@ fn main() -> io::Result<()> {
                     .build_global()
                     .unwrap();
                 if kmer > 32 {
-                    panic!("ERROR : With the '--dense' option set to 'true', the k-mer size must be <= 32.")
+                    panic!(
+                        "ERROR : With the '--dense' option set to 'true', the k-mer size must be <= 32."
+                    )
                 }
             } else {
                 rayon::ThreadPoolBuilder::new()
@@ -125,7 +115,9 @@ fn main() -> io::Result<()> {
                     .unwrap();
             }
             let abundance = if abundance > 255 && dense_option {
-                log::warn!("WARNING : the abundance granularity exceeds the requirements of the '--dense' (<256). The abundance granularity is now set to 255.");
+                log::warn!(
+                    "WARNING : the abundance granularity exceeds the requirements of the '--dense' (<256). The abundance granularity is now set to 255."
+                );
                 255
             } else {
                 abundance
@@ -142,7 +134,12 @@ fn main() -> io::Result<()> {
             );
 
             let minimizer = if kmer < minimizer {
-                log::warn!("WARNING : the minimizer size '{}' exceeds the k-mer size '{}'. The minimiser size is now set to '{}'", minimizer, kmer, kmer);
+                log::warn!(
+                    "WARNING : the minimizer size '{}' exceeds the k-mer size '{}'. The minimiser size is now set to '{}'",
+                    minimizer,
+                    kmer,
+                    kmer
+                );
                 kmer
             } else {
                 minimizer

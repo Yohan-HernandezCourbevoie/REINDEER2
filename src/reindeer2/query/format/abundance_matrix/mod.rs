@@ -23,7 +23,7 @@ use bio::io::fasta;
 
 use super::KmerCountsAndNormalizeValue;
 use crate::reindeer2::query::format::enriched_output_format::{
-    BreakpointsXorEnrichedNormalize, EnrichedAbundanceMatrixFormat,
+    BreakpointsXorEnrichedNormalize, EnrichedMatrixFormat,
 };
 
 use cell_computation::{
@@ -97,10 +97,10 @@ where
 pub fn write_abundance_matrix(
     sequence_results: &[Vec<Vec<u16>>],
     batch: &[fasta::Record],
-    format: &EnrichedAbundanceMatrixFormat,
+    format: &EnrichedMatrixFormat,
     writer: &mut impl Write,
 ) -> io::Result<()> {
-    use EnrichedAbundanceMatrixFormat as MatrixFormat;
+    use EnrichedMatrixFormat as MatrixFormat;
     match format {
         MatrixFormat::Average { normalized } => match normalized {
             Some(normalize) => write_normalized_matrix_content(

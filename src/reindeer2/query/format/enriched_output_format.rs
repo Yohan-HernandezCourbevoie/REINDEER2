@@ -1,5 +1,5 @@
 use super::super::load_kmer_counts_vector;
-use crate::reindeer2::{AbundanceMatrixFormat, BreakpointsNormalize, OutputFormat};
+use crate::reindeer2::{BreakpointsNormalize, MatrixFormat, OutputFormat};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct KmerCountsAndNormalizeValue {
@@ -26,8 +26,9 @@ impl BreakpointsNormalize {
     }
 }
 
+// TODO rename
 #[derive(Clone, Debug, PartialEq)]
-pub enum EnrichedAbundanceMatrixFormat {
+pub enum EnrichedMatrixFormat {
     Raw(
         /// None if not computing breakpoints nor normalize
         Option<BreakpointsXorEnrichedNormalize>,
@@ -40,16 +41,16 @@ pub enum EnrichedAbundanceMatrixFormat {
     },
 }
 
-impl EnrichedAbundanceMatrixFormat {
-    fn add_kmer_count(format_infos: AbundanceMatrixFormat, bf_dir: &str) -> Self {
+impl EnrichedMatrixFormat {
+    fn add_kmer_count(format_infos: MatrixFormat, bf_dir: &str) -> Self {
         match format_infos {
-            AbundanceMatrixFormat::Raw(raw_format_infos) => {
+            MatrixFormat::Raw(raw_format_infos) => {
                 Self::Raw(raw_format_infos.map(|x| x.enriched(bf_dir)))
             }
-            AbundanceMatrixFormat::Average { normalized } => Self::Average {
+            MatrixFormat::Average { normalized } => Self::Average {
                 normalized: load_kmer_count_from_option(normalized, bf_dir),
             },
-            AbundanceMatrixFormat::Median { normalized } => Self::Median {
+            MatrixFormat::Median { normalized } => Self::Median {
                 normalized: load_kmer_count_from_option(normalized, bf_dir),
             },
         }
@@ -65,7 +66,7 @@ pub enum EnrichedOutputFormat {
         normalized: Option<KmerCountsAndNormalizeValue>,
     },
     AbundanceMatrix {
-        format: EnrichedAbundanceMatrixFormat,
+        format: EnrichedMatrixFormat,
     },
 }
 
@@ -90,7 +91,7 @@ impl EnrichedOutputFormat {
     pub fn from_pub_output_format(pub_output_format: OutputFormat, bf_dir: &str) -> Self {
         match pub_output_format {
             OutputFormat::AbundanceMatrix { format } => Self::AbundanceMatrix {
-                format: EnrichedAbundanceMatrixFormat::add_kmer_count(format, bf_dir),
+                format: EnrichedMatrixFormat::add_kmer_count(format, bf_dir),
             },
             OutputFormat::Colored { normalized } => Self::Colored {
                 normalized: load_kmer_count_from_option(normalized, bf_dir),
