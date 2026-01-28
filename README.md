@@ -74,13 +74,13 @@ For **query** mode, the parameters are the FASTA file containing the sequence(s)
 
 `Reindeer2 query --fasta sequences_query.fa --index ~/index_directory`
 
-- `--output-format` allows to change the output format. Suported formats are:
+- `-f, --output-format` allows to change the output format. Suported formats are:
     - `median` (default): for each color, returns the median of k-mer abundance per read
     - `colored`: annotate the input file with abundances rather than producing the standard output file (as showed in the examples below)
-    - `abundance-matrix-raw`: for each color, for each queried sequence, write a tsv containing the abundance of each k-mer (similar to REINDEER 1).
-    - `abundance-matrix-median`: for each color, for each queried sequence, write a tsv containing the median of k-mers.
-    - `abundance-matrix-average`: for each color, for each queried sequence, write a tsv containing the average of k-mers.
-- `--breakpoints <penalty>`: Reindeer2 will apply the `PELT` algorithm to detect breakpoints in the abundances of k-mers. Reindeer will then reports the position of such breakpoints in the query. This option is only available if the output format is `abundance-matrix-raw`. **Warning:** using this options significantly slows down the query. 
+    - `matrix-raw`: for each color, for each queried sequence, write a tsv containing the abundance of each k-mer (similar to REINDEER 1).
+    - `matrix-median`: for each color, for each queried sequence, write a tsv containing the median of k-mers.
+    - `matrix-average`: for each color, for each queried sequence, write a tsv containing the average of k-mers.
+- `--breakpoints <penalty>`: Reindeer2 will apply the `PELT` algorithm to detect breakpoints in the abundances of k-mers. Reindeer will then reports the position of such breakpoints in the query. This option is only available if the output format is `matrix-raw`. **Warning:** using this options significantly slows down the query. 
 - `--normalize <N>`: normalize abundances based on sequencing depth estimates. The calculation is _normalized\_abundance = raw\_abundance / number\_of\_kmers\_in\_the\_dataset * N_. No normalization by default. If `--normalize` is passed without an argument, `N` defaults to 1\_000\_000 . This option is incompatible with `--breakpoints`.
 - `-C, --coverage-min` minimum proportion of kmers that must be present in the query sequence in order to propose an abundance value
 
