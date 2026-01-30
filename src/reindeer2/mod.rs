@@ -232,7 +232,7 @@ impl Reindeer2 {
             let bloom_filters = Filters::with_number_partition(
                 parameters.partition_number,
                 chunk.len(),
-                // TODO unit: is it in buts ?
+                // TODO unit: is it in bits ?
                 // TODO can I use usize here ?
                 parameters.bf_size as usize,
                 parameters.abundance_number.get(),
