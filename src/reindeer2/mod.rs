@@ -355,63 +355,97 @@ impl Reindeer2 {
     ) {
         let parameters = &self.parameters;
 
-        match std::fs::metadata(path) {
-            Ok(metadata) => {
-                if metadata.is_file() {
-                    let reader = match read_file(path) {
-                        Ok(r) => r,
-                        Err(e) => {
-                            log::error!("Failed to open file {}: {}", path, e);
-                            return;
-                        }
-                    };
-                    let fasta_reader = fasta::Reader::new(reader);
-                    let first_record = fasta_reader.records().next();
-
-                    if let Some(Ok(record)) = first_record {
-                        let header_option = record.desc();
-                        let header = header_option.unwrap_or("no header found");
-                        let h_type = match determine_header_type(header) {
-                            Ok(ht) => ht,
-                            Err(e) => {
-                                log::error!("Unsupported header type ({}): {}", path, e);
-                                return;
-                            }
-                        };
-
-                        if let Err(e) = index::process_fasta_file(
-                            path,
-                            maybe_dense_indexes,
-                            bloom_filters,
-                            parameters.k,
-                            parameters.m,
-                            parameters.partition_number,
-                            parameters.nb_color,
-                            threshold,
-                            parameters.abundance_min,
-                            parameters.abundance_max,
-                            path_num,
-                            path_num + chunk_i * color_chunks[0],
-                            base,
-                            chunk_i,
-                            h_type,
-                            1_000_000, // max size for flushing k-mers to bloom filter
-                            total_kmers,
-                            atomic_dense_kmers_count,
-                            atomic_sparse_kmers_count,
-                            kmer_counts_vector,
-                            parameters.canonical,
-                        ) {
-                            eprintln!("Error processing {}: {}", path, e);
-                        }
-                    } else {
-                        eprintln!("Failed to determine header type for {}", path);
-                    }
-                } else {
-                    eprintln!("Path {} exists but is not a file", path);
-                }
+        let metadata = match std::fs::metadata(path) {
+            Ok(metadata) => metadata,
+            Err(_) => {
+                log::warn!(
+                    "Tried to index path {} but it does not exists. File is skipped.",
+                    path
+                );
+                eprintln!(
+                    "Path {} from the file of file does not exist. It will not be indexed.",
+                    path
+                );
+                return;
             }
-            Err(_) => eprintln!("Path {} does not exist", path),
+        };
+
+        if !metadata.is_file() {
+            log::warn!(
+                "Tried to index path {} but it is not a file. File is skipped.",
+                path
+            );
+            eprintln!(
+                "Path {} from the file of file exists but is not a file. Entry skipped.",
+                path
+            );
+        }
+
+        let reader = match read_file(path) {
+            Ok(r) => r,
+            Err(e) => {
+                log::warn!(
+                    "Tried to open file {} but encountered en eror ({}). File is skipped.",
+                    path,
+                    e
+                );
+                log::error!("Failed to open file {}: {}", path, e);
+                return;
+            }
+        };
+
+        let fasta_reader = fasta::Reader::new(reader);
+        let first_record = fasta_reader.records().next();
+
+        let record = match first_record {
+            Some(Ok(record)) => record,
+            _ => {
+                log::warn!(
+                    "Failed to determine header type for {}. File is skipped.",
+                    path
+                );
+                eprintln!(
+                    "Failed to determine header type for {}. File is skipped.",
+                    path
+                );
+                return;
+            }
+        };
+        let header_option = record.desc();
+        let header = header_option.unwrap_or("no header found");
+        let h_type = match determine_header_type(header) {
+            Ok(ht) => ht,
+            Err(e) => {
+                log::error!("Unsupported header type ({}): {}. File is skipper", path, e);
+                eprintln!("Unsupported header type ({}): {}. File is skipper", path, e);
+                return;
+            }
+        };
+
+        if let Err(e) = index::process_fasta_file(
+            path,
+            maybe_dense_indexes,
+            bloom_filters,
+            parameters.k,
+            parameters.m,
+            parameters.partition_number,
+            parameters.nb_color,
+            threshold,
+            parameters.abundance_min,
+            parameters.abundance_max,
+            path_num,
+            path_num + chunk_i * color_chunks[0],
+            base,
+            chunk_i,
+            h_type,
+            1_000_000, // max size for flushing k-mers to bloom filter
+            total_kmers,
+            atomic_dense_kmers_count,
+            atomic_sparse_kmers_count,
+            kmer_counts_vector,
+            parameters.canonical,
+        ) {
+            eprintln!("Error processing {}: {}", path, e);
         }
     }
 
