@@ -241,64 +241,20 @@ impl Reindeer2 {
             // For each file in this chunk, process in *parallel* (soon)
             // TODO build the appropriate iterator to parallelize (or not) if dense is set
             chunk.par_iter().enumerate().for_each(|(path_num, path)| {
-                match std::fs::metadata(path) {
-                    Ok(metadata) => {
-                        if metadata.is_file() {
-                            let reader = match read_file(path) {
-                                Ok(r) => r,
-                                Err(e) => {
-                                    log::error!("Failed to open file {}: {}", path, e);
-                                    return;
-                                }
-                            };
-                            let fasta_reader = fasta::Reader::new(reader);
-                            let first_record = fasta_reader.records().next();
-
-                            if let Some(Ok(record)) = first_record {
-                                let header_option = record.desc();
-                                let header = header_option.unwrap_or("no header found");
-                                let h_type = match determine_header_type(header) {
-                                    Ok(ht) => ht,
-                                    Err(e) => {
-                                        log::error!("Unsupported header type ({}): {}", path, e);
-                                        return;
-                                    }
-                                };
-
-                                if let Err(e) = index::process_fasta_file(
-                                    path,
-                                    &maybe_dense_indexes,
-                                    &bloom_filters,
-                                    parameters.k,
-                                    parameters.m,
-                                    parameters.partition_number,
-                                    parameters.nb_color,
-                                    threshold,
-                                    parameters.abundance_min,
-                                    parameters.abundance_max,
-                                    path_num,
-                                    path_num + chunk_i * color_chunks[0],
-                                    base,
-                                    chunk_i,
-                                    h_type,
-                                    1_000_000, // max size for flushing k-mers to bloom filter
-                                    &total_kmers,
-                                    &atomic_dense_kmers_count,
-                                    &atomic_sparse_kmers_count,
-                                    &kmer_counts_vector,
-                                    parameters.canonical,
-                                ) {
-                                    eprintln!("Error processing {}: {}", path, e);
-                                }
-                            } else {
-                                eprintln!("Failed to determine header type for {}", path);
-                            }
-                        } else {
-                            eprintln!("Path {} exists but is not a file", path);
-                        }
-                    }
-                    Err(_) => eprintln!("Path {} does not exist", path),
-                }
+                self.index_a_file(
+                    path,
+                    &maybe_dense_indexes,
+                    &bloom_filters,
+                    threshold,
+                    path_num,
+                    base,
+                    chunk_i,
+                    &color_chunks,
+                    &total_kmers,
+                    &atomic_dense_kmers_count,
+                    &atomic_sparse_kmers_count,
+                    &kmer_counts_vector,
+                )
             });
             #[cfg(any(debug_assertions, test))]
             {
@@ -380,6 +336,83 @@ impl Reindeer2 {
         self.save_to_disk()?;
 
         Ok((file_paths, dir_path))
+    }
+
+    fn index_a_file(
+        &self,
+        path: &str,
+        maybe_dense_indexes: &Option<Arc<DenseIndex>>,
+        bloom_filters: &Filters,
+        threshold: usize,
+        path_num: usize,
+        base: f64,
+        chunk_i: usize,
+        color_chunks: &[usize],
+        total_kmers: &atomic::AtomicU64,
+        atomic_dense_kmers_count: &atomic::AtomicU64,
+        atomic_sparse_kmers_count: &atomic::AtomicU64,
+        kmer_counts_vector: &Arc<Mutex<Vec<usize>>>,
+    ) {
+        let parameters = &self.parameters;
+
+        match std::fs::metadata(path) {
+            Ok(metadata) => {
+                if metadata.is_file() {
+                    let reader = match read_file(path) {
+                        Ok(r) => r,
+                        Err(e) => {
+                            log::error!("Failed to open file {}: {}", path, e);
+                            return;
+                        }
+                    };
+                    let fasta_reader = fasta::Reader::new(reader);
+                    let first_record = fasta_reader.records().next();
+
+                    if let Some(Ok(record)) = first_record {
+                        let header_option = record.desc();
+                        let header = header_option.unwrap_or("no header found");
+                        let h_type = match determine_header_type(header) {
+                            Ok(ht) => ht,
+                            Err(e) => {
+                                log::error!("Unsupported header type ({}): {}", path, e);
+                                return;
+                            }
+                        };
+
+                        if let Err(e) = index::process_fasta_file(
+                            path,
+                            maybe_dense_indexes,
+                            bloom_filters,
+                            parameters.k,
+                            parameters.m,
+                            parameters.partition_number,
+                            parameters.nb_color,
+                            threshold,
+                            parameters.abundance_min,
+                            parameters.abundance_max,
+                            path_num,
+                            path_num + chunk_i * color_chunks[0],
+                            base,
+                            chunk_i,
+                            h_type,
+                            1_000_000, // max size for flushing k-mers to bloom filter
+                            total_kmers,
+                            atomic_dense_kmers_count,
+                            atomic_sparse_kmers_count,
+                            kmer_counts_vector,
+                            parameters.canonical,
+                        ) {
+                            eprintln!("Error processing {}: {}", path, e);
+                        }
+                    } else {
+                        eprintln!("Failed to determine header type for {}", path);
+                    }
+                } else {
+                    eprintln!("Path {} exists but is not a file", path);
+                }
+            }
+            Err(_) => eprintln!("Path {} does not exist", path),
+        }
     }
 
     // TODO store bf_dir in Reindeer2 ?
