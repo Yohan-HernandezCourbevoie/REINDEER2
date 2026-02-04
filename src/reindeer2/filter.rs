@@ -2,8 +2,8 @@ use itertools::Itertools;
 use roaring::RoaringBitmap;
 use std::{
     collections::HashMap,
-    fs::File,
-    io::{BufWriter, Write},
+    fs::{File, OpenOptions},
+    io::{BufReader, BufWriter, Read, Write},
     path::Path,
     sync::Mutex,
 };
@@ -119,22 +119,19 @@ impl Filters {
         */
     }
 
-    // TODO take a Write (or even better, implement a trait (Serialize ?)
-    pub fn write_to_disk(
+    pub fn write_to_disk_mutiple_files(
         &self,
         dir_path: &str,
         chunks: &[usize], //  number of colors for each chunk
-        partition_nb: usize,
         chunk_id: usize,
     ) -> std::io::Result<()> {
+        let chunk_colors = chunks[chunk_id];
+
         for (i, bitmap) in self.data.iter().enumerate() {
-            let p = i % partition_nb;
-            assert_eq!(p, i);
             let file_path = Path::new(dir_path)
-                .join(format!("partition_bloom_filters_c{}_p{}.bin", chunk_id, p));
+                .join(format!("partition_bloom_filters_c{}_p{}.bin", chunk_id, i));
             let file = File::create(&file_path)?;
             let mut writer = BufWriter::new(file);
-            let chunk_colors = chunks[chunk_id];
             // write the number of colors as a u64 to the file first
             writer.write_all(&chunk_colors.to_le_bytes())?;
             // serialize the bitmap into the file
@@ -145,6 +142,68 @@ impl Filters {
 
         Ok(())
     }
+
+    // TODO take a Write (or even better, implement a trait (Serialize ?)
+    pub fn write_to_disk_one_big_file(self, dir_path: &str) -> std::io::Result<()> {
+        let path = Path::new(dir_path).join("partition_bloom_filters.bin");
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .unwrap();
+        let mut writer = BufWriter::new(file);
+        let len = u64::try_from(self.data.len()).unwrap(); // TODO expect
+        tar_get::reserve_capacity(&mut writer, len).unwrap(); // TODO expect
+
+        let mut file = writer.into_inner().unwrap();
+        for bitmap in self.data {
+            let mut bitmap = bitmap.lock().unwrap();
+            tar_get::append_element(&mut file, &bitmap, |writer, bitmap| {
+                bitmap.serialize_into(writer)
+            })
+            .unwrap();
+            bitmap.clear();
+        }
+        Ok(())
+    }
+}
+
+/// Loads a Bloom filter from disk.
+pub fn load_bloom_filter_from_big_file(
+    file_path: &str,
+    partition_id: u64,
+) -> std::io::Result<RoaringBitmap> {
+    let file = File::open(file_path)?;
+    let reader = BufReader::new(file);
+    let deserializer = |reader: Vec<u8>| {
+        let slice: &[u8] = &reader;
+        RoaringBitmap::deserialize_from(slice)
+    };
+    let bitmap = tar_get::deserialize(reader, partition_id, deserializer).unwrap(); // TODO expact
+    Ok(bitmap)
+}
+
+/// Loads a raw Bloom filter from disk
+pub fn load_raw_bloom_filter(file_path: &str) -> std::io::Result<(RoaringBitmap, usize)> {
+    let file = File::open(file_path)?;
+    let mut reader = BufReader::new(file);
+
+    // read the first 8 bytes as a u64 to get the number of colors
+    let mut color_buffer = [0u8; 8];
+    reader.read_exact(&mut color_buffer)?;
+    let local_color_nb = u64::from_le_bytes(color_buffer) as usize;
+
+    // Rread the rest of the file to deserialize the Bloom filter
+    let mut buffer = Vec::new();
+    reader.read_to_end(&mut buffer)?;
+    let bitmap = RoaringBitmap::deserialize_from(&buffer[..]).map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "Failed to deserialize bitmap",
+        )
+    })?;
+    Ok((bitmap, local_color_nb))
 }
 
 #[cfg(any(debug_assertions, test))]

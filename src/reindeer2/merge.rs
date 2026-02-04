@@ -1,12 +1,14 @@
 use rayon::prelude::*;
 use roaring::RoaringBitmap;
 use std::{
-    fs::{self, File},
+    fs::{self, File, OpenOptions},
     io::{self, BufRead, BufReader, BufWriter, Write},
+    path::Path,
+    sync::{Arc, Mutex},
     time::Instant,
 };
 
-use crate::reindeer2::{load_bloom_filter, Parameters, Reindeer2};
+use crate::reindeer2::{filter::load_raw_bloom_filter, Parameters, Reindeer2};
 
 // merge an arbitrary number of indexes  listed in a fof
 // each line of the fof is expected to he path to one index dir
@@ -82,6 +84,21 @@ pub fn merge_multiple_indexes(indexes_fof: &str, output_dir: &str) -> io::Result
     let partitioned_bf_size =
         (index_ref.parameters.bf_size as usize) / index_ref.parameters.partition_number;
 
+    let path = Path::new(output_dir).join("partition_bloom_filters.bin");
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .unwrap();
+    let mut writer = BufWriter::new(file);
+    let len = u64::try_from(index_ref.parameters.partition_number).unwrap(); // TODO expect
+    tar_get::reserve_capacity(&mut writer, len).unwrap(); // TODO expect
+
+    let file = writer.into_inner().unwrap();
+
+    let file = Arc::new(Mutex::new(file));
+
     // for each partition, merge the corresponding bfs for every index
     for partition_idx in 0..index_ref.parameters.partition_number {
         // for each index, build the file name for the given partition
@@ -100,16 +117,12 @@ pub fn merge_multiple_indexes(indexes_fof: &str, output_dir: &str) -> io::Result
         let color_counts: Vec<usize> = indexes_metadata.iter().map(|(_, count)| *count).collect();
 
         //merge
-        let mut merged_bf = RoaringBitmap::new();
         merge_partition_bloom_filters(
-            chunk_files,
-            partition_idx,
+            &chunk_files,
             partitioned_bf_size,
             index_ref.parameters.abundance_number.get(),
             &color_counts,
-            &mut merged_bf,
-            output_dir,
-            new_color_number,
+            &file,
         )?;
     }
     let parameters = Parameters {
@@ -140,18 +153,31 @@ pub fn merge_all_partitions(
     abundance_number: usize,
     color_counts_per_chunk: Vec<usize>, // number of colors in each chunk
     num_partitions: usize,
-    total_nb_colors: usize,
 ) -> io::Result<()> {
     let start_time = Instant::now();
+
+    let path = Path::new(output_dir).join("partition_bloom_filters.bin");
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .unwrap();
+    let mut writer = BufWriter::new(file);
+    let len = u64::try_from(num_partitions).expect("should have less than u64::MAX partitions");
+    tar_get::reserve_capacity(&mut writer, len).expect("should have been able to write on disk");
+
+    let file = writer.into_inner().unwrap();
+    let file = Arc::new(Mutex::new(file));
+
+    let nb_chunk = color_counts_per_chunk.len();
     // for each partition in parallel
     (0..num_partitions)
-        .into_par_iter()
+        // .into_par_iter() // TODO
         .try_for_each(|partition_idx| {
             // collect chunk files for the current partition
-            let chunk_files_for_partition: Vec<String> = color_counts_per_chunk
-                .iter()
-                .enumerate()
-                .map(|(chunk_idx, _)| {
+            let chunk_files_for_partition: Vec<String> = (0..nb_chunk)
+                .map(|chunk_idx| {
                     format!(
                         "{}/partition_bloom_filters_c{}_p{}.bin",
                         chunk_files_dir, chunk_idx, partition_idx
@@ -159,19 +185,13 @@ pub fn merge_all_partitions(
                 })
                 .collect();
 
-            // bf for this partition
-            let mut partition_bf = RoaringBitmap::new();
-
             // merge all chunks for the current partition + serialize
             merge_partition_bloom_filters(
-                chunk_files_for_partition,
-                partition_idx,
+                &chunk_files_for_partition,
                 partitioned_bf_size,
                 abundance_number,
                 &color_counts_per_chunk,
-                &mut partition_bf,
-                output_dir,
-                total_nb_colors,
+                &file,
             )?;
 
             Ok::<(), io::Error>(())
@@ -187,15 +207,12 @@ pub fn merge_all_partitions(
 }
 
 pub fn merge_partition_bloom_filters(
-    chunk_files: Vec<String>,
-    partition_idx: usize,
+    chunk_files: &[String],
     partitioned_bf_size: usize,
     abundance_number: usize,
     color_counts: &[usize], // number of colors for each chunk
-    bloom_filter: &mut RoaringBitmap,
-    output_dir: &str,
-    total_nb_colors: usize,
-) -> io::Result<()> {
+    output_file: &Mutex<File>,
+) -> io::Result<RoaringBitmap> {
     if chunk_files.is_empty() || chunk_files.len() != color_counts.len() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -205,23 +222,18 @@ pub fn merge_partition_bloom_filters(
 
     // write all slices in the right order in a  larger filter
     let final_bf = merge_partition_slices_interleaved(
-        &chunk_files,
+        chunk_files,
         partitioned_bf_size,
         abundance_number,
         color_counts,
     );
-    let output_file_path = format!(
-        "{}/partition_bloom_filters_p{}.bin",
-        output_dir, partition_idx
-    );
-    let output_file = File::create(&output_file_path)?;
-    let mut writer = BufWriter::new(output_file);
-    writer.write_all(&total_nb_colors.to_le_bytes())?;
-    final_bf.serialize_into(&mut writer)?;
-    // update the bloom filter for the partition
-    *bloom_filter = final_bf;
 
-    Ok(())
+    let serializer =
+        |writer: &mut BufWriter<&mut File>, bitmap: &RoaringBitmap| bitmap.serialize_into(writer);
+    let mut output_file = output_file.lock().unwrap();
+    tar_get::append_element(&mut output_file, &final_bf, serializer).unwrap();
+    output_file.flush().unwrap();
+    Ok(final_bf)
 }
 
 /* example for build_new_bitset_with_gaps_from_merged + interleave_slices_with_zero_runs
@@ -249,10 +261,12 @@ fn merge_partition_slices_interleaved(
     color_counts: &[usize], // number of colors in each chunk
 ) -> RoaringBitmap {
     // preload all Bfs
+
+    // OPTIMIZE we may be able to laod only one filter at a time
     let loaded_bfs: Vec<Option<(RoaringBitmap, usize)>> = chunk_files
         .iter()
         .map(|chunk_file| {
-            match load_bloom_filter(chunk_file) {
+            match load_raw_bloom_filter(chunk_file) {
                 Ok(bf) => Some(bf),
                 Err(e) => {
                     log::error!("Failed to load Bloom filter {}: {}", chunk_file, e);
@@ -298,4 +312,102 @@ fn merge_partition_slices_interleaved(
     }
     RoaringBitmap::from_sorted_iter(final_positions)
         .expect("Attempt to merge with unsorted positions")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_merge_partition_bloom_filters() {
+        use roaring::RoaringBitmap;
+        use std::fs::{create_dir_all, File};
+        use std::io::Write;
+
+        let test_dir = "test_merge_partition_bloom_filters";
+        create_dir_all(test_dir).expect("Failed to create test directory");
+
+        let chunk1_path = format!("{}/chunk1_p0.bin", test_dir);
+        let chunk2_path = format!("{}/chunk2_p0.bin", test_dir);
+        let chunk3_path = format!("{}/chunk3_p0.bin", test_dir);
+
+        let partitioned_bf_size = 2;
+        let abundance_number = 3;
+        // test Bloom filters
+        let mut bf1 = RoaringBitmap::new();
+        bf1.insert(1);
+        bf1.insert(2); //011000 000000
+        let mut bf2 = RoaringBitmap::new();
+        bf2.insert(3);
+        bf2.insert(4); // 000110 000000
+        let mut bf3 = RoaringBitmap::new();
+        bf3.insert(5); // 000 001
+
+        //expected
+        // 011000000110000 000000000000001 [1,2,9,10,29]
+
+        let chunk_files = vec![
+            chunk1_path.clone(),
+            chunk2_path.clone(),
+            chunk3_path.clone(),
+        ];
+        let color_counts = vec![2, 2, 1]; //nb of colors for each chunk
+
+        for (chunk_path, (bf, colors)) in chunk_files.iter().zip(vec![(bf1, 2), (bf2, 2), (bf3, 1)])
+        {
+            let mut file = File::create(chunk_path).expect("Failed to create test chunk file");
+            file.write_all(&(colors as u64).to_le_bytes())
+                .expect("Failed to write color count");
+            bf.serialize_into(&mut file)
+                .expect("Failed to serialize Bloom filter");
+        }
+
+        let path = Path::new(test_dir).join("partition_bloom_filters.bin");
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .unwrap();
+        let mut writer = BufWriter::new(file);
+        let len = 1;
+        tar_get::reserve_capacity(&mut writer, len).unwrap(); // TODO expect
+
+        let file = writer.into_inner().unwrap();
+
+        let file = Arc::new(Mutex::new(file));
+
+        // Call the modified function
+        let merged_bf = merge_partition_bloom_filters(
+            &chunk_files,
+            partitioned_bf_size,
+            abundance_number,
+            &color_counts,
+            &file,
+        )
+        .expect("Failed to merge partition Bloom filters");
+
+        // check the merged Bloom filter
+        // let merged_bf = merged_bloom_filter.lock().unwrap();
+
+        //let final_output_path = format!("{}/partition_bloom_filters_p{}.bin", output_dir, partition_idx);
+        //let (merged_bf, color_nb) = load_bloom_filter(&final_output_path).expect("Failed to load merged Bloom filter");
+
+        //assert_eq!(
+        //    color_nb, 5,
+        //    "Expected the merged Bloom filter to represent 5 colors, but got {}",
+        //    color_nb
+        //);
+
+        let expected_elements: Vec<u32> = vec![1, 2, 9, 10, 29];
+        for elem in expected_elements {
+            assert!(
+                merged_bf.contains(elem),
+                "Expected element {} not found in the merged Bloom filter",
+                elem
+            );
+        }
+
+        fs::remove_dir_all(test_dir).expect("Failed to clean up test directory");
+    }
 }

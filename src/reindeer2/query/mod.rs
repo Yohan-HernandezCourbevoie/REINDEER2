@@ -7,7 +7,7 @@ use std::path::Path;
 
 use super::{
     approximate_value, compute_base_position, dense_index::DenseIndexPartition,
-    kmer_minimizers_seq_level, load_bloom_filter,
+    filter::load_bloom_filter_from_big_file, kmer_minimizers_seq_level,
 };
 use bio::io::fasta;
 pub use format::{write_header, write_kmer_query, EnrichedOutputFormat};
@@ -51,13 +51,10 @@ pub fn fold_into_hashmap(
     is_dense: bool,
 ) -> HashMap<usize, Vec<Vec<(usize, u16)>>> {
     // Load the partition's Bloom filter
-    let path_bf = format!(
-        "{}/partition_bloom_filters_p{}.bin",
-        bf_dir, partition_index
-    );
-    let maybe_bf = load_bloom_filter(&path_bf);
+    let path_bf = format!("{}/partition_bloom_filters.bin", bf_dir);
+    let maybe_bf = load_bloom_filter_from_big_file(&path_bf, partition_index as u64); // TODO conversion error, expect
 
-    if let Ok((bitmap, _maybe_aux_data)) = maybe_bf {
+    if let Ok(bitmap) = maybe_bf {
         let hashmap: DenseIndexPartition = if is_dense {
             let path_dense_index =
                 format!("{}/partition_dense_index_p{}.bin", bf_dir, partition_index);

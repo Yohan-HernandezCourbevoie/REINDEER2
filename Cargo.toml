@@ -28,6 +28,8 @@ libc = "0.2.176"
 pelt = { git = "https://github.com/lrobidou/pelt.git", rev = "db7f8f85dac8bbc7da3f41b3c9e97d6befb17d9f" }
 log = "0.4"
 env_logger = "0.11.8"
+tar-get = { git = "https://github.com/lrobidou/tar-get.git", rev = "44391c03624d54f765f4beeb4adbff5f3df34531" }
+
 
 # [dev-dependencies]
 itertools = "0.14.0"

@@ -9,7 +9,6 @@ use flate2::read::GzDecoder;
 use itertools::Itertools;
 use nthash::{NtHashForwardIterator, NtHashIterator};
 use rayon::prelude::*;
-use roaring::RoaringBitmap;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::fs::{self, File};
@@ -17,7 +16,7 @@ use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
 use std::num::NonZero;
 use std::panic;
 use std::path::Path;
-use std::sync::{Arc, Mutex, atomic};
+use std::sync::{atomic, Arc, Mutex};
 use thiserror::Error;
 
 pub use merge::merge_multiple_indexes;
@@ -264,13 +263,17 @@ impl Reindeer2 {
                     parameters.abundance_number.get(),
                 )?;
             }
-            if let Err(e) = bloom_filters.write_to_disk(
-                &dir_path,
-                &color_chunks,
-                parameters.partition_number,
-                chunk_i,
-            ) {
-                eprintln!("Error writing Bloom filters for chunk {}: {}", chunk_i, e);
+            if chunks.len() > 1 {
+                if let Err(e) =
+                    bloom_filters.write_to_disk_mutiple_files(&dir_path, &color_chunks, chunk_i)
+                {
+                    eprintln!("Error writing Bloom filters for chunk {}: {}", chunk_i, e);
+                }
+            } else {
+                // If there is only one chunk, write the final file directly
+                if let Err(e) = bloom_filters.write_to_disk_one_big_file(&dir_path) {
+                    eprintln!("Error writing Bloom filters for chunk {}: {}", chunk_i, e);
+                }
             }
             log::trace!("Chunk {} done", chunk_i);
         }
@@ -314,21 +317,7 @@ impl Reindeer2 {
                 parameters.abundance_number.get(),
                 color_chunks,
                 parameters.partition_number,
-                parameters.nb_color,
             )?;
-        } else {
-            // If there was only one chunk, rename files directly
-            for partition_idx in 0..parameters.partition_number {
-                let input_path = format!(
-                    "{}/partition_bloom_filters_c0_p{}.bin",
-                    dir_path, partition_idx
-                );
-                let output_path = format!(
-                    "{}/partition_bloom_filters_p{}.bin",
-                    dir_path, partition_idx
-                );
-                std::fs::rename(&input_path, &output_path)?;
-            }
         }
 
         // write metadata info to disk
@@ -954,25 +943,6 @@ fn write_kmer_counts_to_disk(
     writer.write_all(&binary_encoded)?;
     locked_vector.clear();
     Ok(())
-}
-
-// --- LOAD FROM DISK ---
-
-/// load a Bloom filter from disk
-fn load_bloom_filter(file_path: &str) -> io::Result<(RoaringBitmap, usize)> {
-    let mut file = File::open(file_path)?;
-
-    // read the first 8 bytes as a u64 to get the number of colors
-    let mut color_buffer = [0u8; 8];
-    file.read_exact(&mut color_buffer)?;
-    let local_color_nb = u64::from_le_bytes(color_buffer) as usize;
-
-    // Rread the rest of the file to deserialize the Bloom filter
-    let mut buffer = Vec::new();
-    file.read_to_end(&mut buffer)?;
-    let bitmap = RoaringBitmap::deserialize_from(&buffer[..])
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "Failed to deserialize bitmap"))?;
-    Ok((bitmap, local_color_nb))
 }
 
 // /// Rload index metadata from the CSV.
@@ -2617,13 +2587,7 @@ mod tests {
         results.sort();
         expected_results.sort();
 
-        for (expected, actual) in expected_results.iter().zip(results.iter()) {
-            assert_eq!(
-                expected, actual,
-                "Mismatch: expected {:?}, got {:?}",
-                expected, actual
-            );
-        }
+        assert_eq!(results, expected_results);
         fs::remove_dir_all(test_dir).expect("Failed to clean up test directory");
     }
 
@@ -3531,90 +3495,6 @@ mod tests {
         fs::remove_dir_all(test_dir).expect("Failed to clean up test directory");
     }
 
-    #[test]
-    fn test_merge_partition_bloom_filters() {
-        use roaring::RoaringBitmap;
-        use std::fs::{File, create_dir_all};
-        use std::io::Write;
-
-        let test_dir = "test_merge_partition_bloom_filters";
-        create_dir_all(test_dir).expect("Failed to create test directory");
-
-        let chunk1_path = format!("{}/chunk1_p0.bin", test_dir);
-        let chunk2_path = format!("{}/chunk2_p0.bin", test_dir);
-        let chunk3_path = format!("{}/chunk3_p0.bin", test_dir);
-
-        let partition_idx = 0;
-        let partitioned_bf_size = 2;
-        let abundance_number = 3;
-        // test Bloom filters
-        let mut bf1 = RoaringBitmap::new();
-        bf1.insert(1);
-        bf1.insert(2); //011000 000000
-        let mut bf2 = RoaringBitmap::new();
-        bf2.insert(3);
-        bf2.insert(4); // 000110 000000
-        let mut bf3 = RoaringBitmap::new();
-        bf3.insert(5); // 000 001
-
-        //expected
-        // 011000000110000 000000000000001 [1,2,9,10,29]
-
-        let chunk_files = vec![
-            chunk1_path.clone(),
-            chunk2_path.clone(),
-            chunk3_path.clone(),
-        ];
-        let color_counts = vec![2, 2, 1]; //nb of colors for each chunk
-
-        for (chunk_path, (bf, colors)) in chunk_files.iter().zip(vec![(bf1, 2), (bf2, 2), (bf3, 1)])
-        {
-            let mut file = File::create(chunk_path).expect("Failed to create test chunk file");
-            file.write_all(&(colors as u64).to_le_bytes())
-                .expect("Failed to write color count");
-            bf.serialize_into(&mut file)
-                .expect("Failed to serialize Bloom filter");
-        }
-
-        let mut merged_bf = RoaringBitmap::new();
-
-        // Call the modified function
-        merge::merge_partition_bloom_filters(
-            chunk_files.clone(),
-            partition_idx,
-            partitioned_bf_size,
-            abundance_number,
-            &color_counts,
-            &mut merged_bf,
-            "test_merge_partition_bloom_filters",
-            5,
-        )
-        .expect("Failed to merge partition Bloom filters");
-
-        // check the merged Bloom filter
-        // let merged_bf = merged_bloom_filter.lock().unwrap();
-
-        //let final_output_path = format!("{}/partition_bloom_filters_p{}.bin", output_dir, partition_idx);
-        //let (merged_bf, color_nb) = load_bloom_filter(&final_output_path).expect("Failed to load merged Bloom filter");
-
-        //assert_eq!(
-        //    color_nb, 5,
-        //    "Expected the merged Bloom filter to represent 5 colors, but got {}",
-        //    color_nb
-        //);
-
-        let expected_elements: Vec<u32> = vec![1, 2, 9, 10, 29];
-        for elem in expected_elements {
-            assert!(
-                merged_bf.contains(elem),
-                "Expected element {} not found in the merged Bloom filter",
-                elem
-            );
-        }
-
-        fs::remove_dir_all(test_dir).expect("Failed to clean up test directory");
-    }
-
     //#[ignore]
     #[test]
     fn test_build_and_query_index_with_chunks_and_merge_longseq() {
@@ -4090,19 +3970,13 @@ shared_revcomp_with_other_test_file\t0-19:*\t0-19:10",
         );
 
         // check that each partition file in the merged index exists
-        for partition in 0..parameters.partition_number {
-            let part_path = format!(
-                "{}/partition_bloom_filters_p{}.bin",
-                merged_index_dir, partition
-            );
-            assert!(
-                Path::new(&part_path).exists(),
-                "Merged partition file {} does not exist",
-                part_path
-            );
-        }
+        let path = format!("{}/partition_bloom_filters.bin", merged_index.index_dir);
+        let file = File::open(path).unwrap();
+        let mut reader = BufReader::new(file);
+        let metadata = tar_get::get_metadata(&mut reader).unwrap();
+        assert_eq!(metadata.get_capacity(), parameters.partition_number as u64);
 
-        fs::remove_dir_all(base_dir)?;
+        fs::remove_dir_all(base_dir).unwrap();
 
         Ok(())
     }
