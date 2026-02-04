@@ -6,8 +6,8 @@ use std::io::{self, Read};
 use std::path::Path;
 
 use super::{
-    approximate_value, compute_base_position, dense_index::DenseIndexPartition,
-    kmer_minimizers_seq_level, load_bloom_filter,
+    approximate_value, compute_base_position, dense_index::DenseIndexPartition, load_bloom_filter,
+    minmizer_iter::kmer_minimizers_seq_level,
 };
 use bio::io::fasta;
 pub use format::{write_header, write_kmer_query, EnrichedOutputFormat};

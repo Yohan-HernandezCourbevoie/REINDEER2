@@ -6,8 +6,9 @@ use std::sync::atomic::Ordering;
 use std::sync::{atomic, Arc, Mutex};
 
 use crate::reindeer2::{
-    compute_log_abundance, extract_count, kmer_minimizers_seq_level, process_fasta_in_batches,
-    read_file, HeaderType, KmerMinimizerIteratorError,
+    compute_log_abundance, extract_count,
+    minmizer_iter::{kmer_minimizers_seq_level, KmerMinimizerIteratorError},
+    process_fasta_in_batches, read_file, HeaderType,
 };
 use crate::reindeer2::{dense_index::DenseIndex, filter::Filters};
 
