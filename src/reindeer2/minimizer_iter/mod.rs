@@ -1,6 +1,10 @@
+mod samplers;
+
 use nthash::{NtHashForwardIterator, NtHashIterator};
 use std::collections::VecDeque;
 use thiserror::Error;
+
+pub use samplers::{MinimizerSampler, NoSampler, Sampler};
 
 // ///  Iterator over (k-mer, minimizer) pairs for a given sequence
 // pub struct KmerMinimizerIterator<'a> {
@@ -33,7 +37,7 @@ pub enum KmerMinimizerIteratorError {
 }
 
 // returns an iterator over (k-mer, minimizer) pairs from sequence input
-pub fn kmer_minimizers_seq_level<'a>(
+pub fn unfiltered_kmer_minimizers_seq_level<'a>(
     seq: &'a [u8],
     k: usize,
     m: usize,
@@ -171,8 +175,26 @@ pub fn kmer_minimizers_seq_level<'a>(
 //     );
 // }
 
+pub fn kmer_minimizers_seq_level<'a, S>(
+    seq: &'a [u8],
+    k: usize,
+    m: usize,
+    canonical: bool,
+    sampler: &'a S,
+) -> Result<impl Iterator<Item = (u64, u64)> + 'a, KmerMinimizerIteratorError>
+where
+    S: Sampler,
+{
+    let filtered = unfiltered_kmer_minimizers_seq_level(seq, k, m, canonical)?
+        .filter(|kmer_minimizer| sampler.filter(*kmer_minimizer));
+    Ok(filtered)
+}
+
 #[cfg(test)]
 mod tests {
+
+    use crate::reindeer2::minimizer_iter::samplers::MinimizerSampler;
+
     use super::*;
 
     #[test]
@@ -184,11 +206,44 @@ mod tests {
         let m = 3;
         let canonical = true;
 
-        let actual_count = kmer_minimizers_seq_level(seq_bytes, k, m, canonical)
-            .unwrap()
-            .count();
+        let no_sample_builder = NoSampler::new();
+
+        let actual_count =
+            kmer_minimizers_seq_level(seq_bytes, k, m, canonical, &no_sample_builder)
+                .unwrap()
+                .count();
 
         // there should be seq.len() - k + 1 pairs.
         assert_eq!(actual_count, seq_bytes.len() - k + 1);
+    }
+
+    #[test]
+    fn test_minimizer_sampling() {
+        let seq_str = "CTTAATATCGTCCGAAAGAGTCACAGATGTAAAAGGGCGCAGTACCTAACAGGGATTGACCGACGGAACA\
+        CCCTGGTCGACGCCTCAAGGCGGTAACGCCCAGTCCAATAGAGCACAATATTAGAATGCCGTCCGGCATCGCTACAGTAATTGGTGACTCG\
+        TATATTACATAGGCTGTATCGACCCTGATCTTAGACGAGGTGGATTAGAAACCCAGCTCCATCGCAAGTACTAAGGTTCCGGTAACAGAAC\
+        AGGCCTAGACTGAATGGTGACCATGTGCCTACCGAATTCTGGAACGTTGGGTGGCGCTTGGCTTTAGCTGCTACCATCTACCATACGGTAT\
+        AACGTGGGGGTACAGCCAAAGGCAATGACCTAACGGGGCTTTTAAAGGGGGTAGATGTGCCTCGGTTGGACGGGATATGGGGGCTGTTTGT\
+        CTGCCCGTGCTCATCTGCGTCTTTTTTGTATCCTTAAAATCAGTCCTGACTGCGGGGTGGCCACCGTCCACCAACGTCAGTTCTTGACTTT\
+        CAAGGCCAACAGCAAGGCCTTTTGTTGGCGCTTAAGAGGAATTGGAAAGGTCTTAAACACTGCCACGGTCCACCG";
+        let len = seq_str.len();
+        let seq_bytes = seq_str.as_bytes();
+
+        let k = 7;
+        let m = 3;
+        let canonical = true;
+
+        let minimizer_sample_builder = MinimizerSampler::new(2);
+
+        let actual_count =
+            kmer_minimizers_seq_level(seq_bytes, k, m, canonical, &minimizer_sample_builder)
+                .unwrap()
+                .count();
+
+        // there should be seq.len() - k + 1 pairs if not sampling
+        // let's check we get a quarter of that, +/- 5%
+        let original_expectation = seq_bytes.len() - k + 1;
+        assert!(actual_count < (original_expectation / 4) + (len * 5) / 100);
+        assert!(actual_count > (original_expectation / 4) - (len * 5) / 100);
     }
 }

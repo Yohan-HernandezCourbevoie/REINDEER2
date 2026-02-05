@@ -25,6 +25,11 @@ pub enum Command {
     Merge(MergeArgs),
 }
 
+#[derive(Copy, Clone, Debug, PartialEq, ValueEnum)]
+pub enum SamplingStrategyCli {
+    NoSampling,
+}
+
 #[derive(Args, Debug)]
 pub struct IndexArgs {
     /// A file of files where each line is the path to a multi-FASTA file of unitigs (Logan format).
@@ -77,6 +82,10 @@ pub struct IndexArgs {
     /// Use non-canonical version of k-mers (default: false)
     #[arg(long, default_value_t = false)]
     pub stranded: bool,
+
+    /// k-mer sampling strategy
+    #[arg(long, value_enum, default_value_t = SamplingStrategyCli::NoSampling)]
+    pub sampling: SamplingStrategyCli,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, ValueEnum)]

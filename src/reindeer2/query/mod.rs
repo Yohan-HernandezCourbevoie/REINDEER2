@@ -6,23 +6,29 @@ use std::io::{self, Read};
 use std::path::Path;
 
 use super::{
-    approximate_value, compute_base_position, dense_index::DenseIndexPartition, load_bloom_filter,
-    minmizer_iter::kmer_minimizers_seq_level,
+    approximate_value, compute_base_position,
+    dense_index::DenseIndexPartition,
+    load_bloom_filter,
+    minimizer_iter::{kmer_minimizers_seq_level, Sampler},
 };
 use bio::io::fasta;
 pub use format::{write_header, write_kmer_query, EnrichedOutputFormat};
 
 /// Builds a map from partition_index -> Vec of (sequence_id, position_kmer_in_sequence, kmer_hash).
-pub fn build_partitions_kmers(
+pub fn build_partitions_kmers<S>(
     batch: &[fasta::Record],
     k: usize,
     m: usize,
     partition_number: u64,
     canonical: bool,
-) -> HashMap<usize, Vec<(usize, usize, u64)>> {
+    sampler: &S,
+) -> HashMap<usize, Vec<(usize, usize, u64)>>
+where
+    S: Sampler,
+{
     let mut partition_kmers: HashMap<usize, Vec<(usize, usize, u64)>> = HashMap::new();
     for (record_id, record) in batch.iter().enumerate() {
-        let kmer_minimizers = kmer_minimizers_seq_level(record.seq(), k, m, canonical)
+        let kmer_minimizers = kmer_minimizers_seq_level(record.seq(), k, m, canonical, sampler)
             .expect("should have been able to iterate over kmers");
 
         for (position, (kmer_hash, minimizer)) in kmer_minimizers.enumerate() {

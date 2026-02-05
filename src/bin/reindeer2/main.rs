@@ -12,11 +12,19 @@ use cli::Cli;
 use cli::OutputFormatCli;
 use overflow_detection::{get_min_number_of_files, get_number_of_partitions};
 use reindeer2::reindeer2::{
-    BreakpointsNormalize, MatrixFormat, OutputFormat, Parameters, Reindeer2,
-    merge_multiple_indexes, read_fof_file,
+    merge_multiple_indexes, read_fof_file, BreakpointsNormalize, MatrixFormat, OutputFormat,
+    Parameters, Reindeer2, SamplingStrategy,
 };
 
-use crate::cli::{IndexArgs, MergeArgs, QueryArgs};
+use crate::cli::{IndexArgs, MergeArgs, QueryArgs, SamplingStrategyCli};
+
+impl SamplingStrategyCli {
+    fn to_sampling_strategy(self) -> SamplingStrategy {
+        match self {
+            Self::NoSampling => SamplingStrategy::NoSampling,
+        }
+    }
+}
 
 impl OutputFormatCli {
     fn to_output_format(self, normalized: Option<u64>, breakpoints: Option<f64>) -> OutputFormat {
@@ -86,6 +94,7 @@ fn main() -> io::Result<()> {
             dense,
             stranded,
             output_dir,
+            sampling,
         }) => {
             let dense_option = dense;
             let canonical = !stranded;
@@ -189,6 +198,7 @@ fn main() -> io::Result<()> {
                 abundance_max,
                 dense_option,
                 canonical,
+                sampling_strategy: sampling.to_sampling_strategy(),
             };
             let mut index = Reindeer2::new(parameters, output_dir);
             index.build(file_paths, chunks_size, tolerated_number_of_zeros)?;

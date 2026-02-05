@@ -2,7 +2,7 @@ mod dense_index;
 mod filter;
 mod index;
 mod merge;
-mod minmizer_iter;
+mod minimizer_iter;
 mod query;
 
 use bio::io::fasta;
@@ -28,6 +28,7 @@ use zstd::stream::decode_all;
 
 use crate::reindeer2::dense_index::DenseIndex;
 use crate::reindeer2::filter::Filters;
+use crate::reindeer2::minimizer_iter::{MinimizerSampler, NoSampler, Sampler};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum BreakpointsNormalize {
@@ -70,6 +71,14 @@ pub struct Parameters {
     pub abundance_max: NonZero<u16>,
     pub dense_option: bool,
     pub canonical: bool,
+    pub sampling_strategy: SamplingStrategy,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[cfg_attr(any(test, debug_assertions), derive(PartialEq))]
+pub enum SamplingStrategy {
+    NoSampling,
+    MinimizerSampling { last_bits_to_zero: u64 },
 }
 
 impl Parameters {
@@ -85,6 +94,7 @@ impl Parameters {
         // TODO rename is_dense
         dense_option: bool,
         canonical: bool,
+        sampling_strategy: SamplingStrategy,
     ) -> Self {
         Self {
             bf_size,
@@ -97,6 +107,7 @@ impl Parameters {
             abundance_max,
             dense_option,
             canonical,
+            sampling_strategy,
         }
     }
 
@@ -109,6 +120,7 @@ impl Parameters {
             && self.abundance_max == parameters2.abundance_max
             && self.dense_option == parameters2.dense_option
             && self.canonical == parameters2.canonical
+            && self.sampling_strategy == parameters2.sampling_strategy
     }
 }
 
@@ -264,29 +276,62 @@ impl Reindeer2 {
                                     }
                                 };
 
-                                if let Err(e) = index::process_fasta_file(
-                                    path,
-                                    &maybe_dense_indexes,
-                                    &bloom_filters,
-                                    parameters.k,
-                                    parameters.m,
-                                    parameters.partition_number,
-                                    parameters.nb_color,
-                                    threshold,
-                                    parameters.abundance_min,
-                                    parameters.abundance_max,
-                                    path_num,
-                                    path_num + chunk_i * color_chunks[0],
-                                    base,
-                                    chunk_i,
-                                    h_type,
-                                    1_000_000, // max size for flushing k-mers to bloom filter
-                                    &total_kmers,
-                                    &atomic_dense_kmers_count,
-                                    &atomic_sparse_kmers_count,
-                                    &kmer_counts_vector,
-                                    parameters.canonical,
-                                ) {
+                                if let Err(e) = match &parameters.sampling_strategy {
+                                    SamplingStrategy::NoSampling => {
+                                        let sampler = NoSampler::new();
+                                        index::process_fasta_file::<NoSampler>(
+                                            path,
+                                            &maybe_dense_indexes,
+                                            &bloom_filters,
+                                            parameters.k,
+                                            parameters.m,
+                                            parameters.partition_number,
+                                            parameters.nb_color,
+                                            threshold,
+                                            parameters.abundance_min,
+                                            parameters.abundance_max,
+                                            path_num,
+                                            path_num + chunk_i * color_chunks[0],
+                                            base,
+                                            chunk_i,
+                                            h_type,
+                                            1_000_000, // max size for flushing k-mers to bloom filter
+                                            &total_kmers,
+                                            &atomic_dense_kmers_count,
+                                            &atomic_sparse_kmers_count,
+                                            &kmer_counts_vector,
+                                            parameters.canonical,
+                                            &sampler,
+                                        )
+                                    }
+                                    SamplingStrategy::MinimizerSampling { last_bits_to_zero } => {
+                                        let sampler = MinimizerSampler::new(*last_bits_to_zero);
+                                        index::process_fasta_file::<MinimizerSampler>(
+                                            path,
+                                            &maybe_dense_indexes,
+                                            &bloom_filters,
+                                            parameters.k,
+                                            parameters.m,
+                                            parameters.partition_number,
+                                            parameters.nb_color,
+                                            threshold,
+                                            parameters.abundance_min,
+                                            parameters.abundance_max,
+                                            path_num,
+                                            path_num + chunk_i * color_chunks[0],
+                                            base,
+                                            chunk_i,
+                                            h_type,
+                                            1_000_000, // max size for flushing k-mers to bloom filter
+                                            &total_kmers,
+                                            &atomic_dense_kmers_count,
+                                            &atomic_sparse_kmers_count,
+                                            &kmer_counts_vector,
+                                            parameters.canonical,
+                                            &sampler,
+                                        )
+                                    }
+                                } {
                                     eprintln!("Error processing {}: {}", path, e);
                                 }
                             } else {
@@ -390,6 +435,7 @@ impl Reindeer2 {
         output_format: OutputFormat,
         coverage: f32,
     ) -> io::Result<()> {
+        let sampler = NoSampler::new();
         let reader = read_file(fasta_file)?;
         let mut writer = BufWriter::new(File::create(output_file)?);
         let output_format =
@@ -403,7 +449,7 @@ impl Reindeer2 {
 
         // Process FASTA in chunks of 10 000 000 records
         process_fasta_in_batches(reader, 10_000_000, |batch| {
-            let sequence_results = self.query_single_fasta_batch(bf_dir, base, batch);
+            let sequence_results = self.query_single_fasta_batch(bf_dir, base, batch, &sampler);
             // Now `sequence_results` has the combined data for this batch.
             // Let's compute the output in the requested format.
             query::write_kmer_query(
@@ -422,12 +468,16 @@ impl Reindeer2 {
     }
 
     // TODO use compile time to decide wether to sort the output or not
-    fn query_single_fasta_batch(
+    fn query_single_fasta_batch<S>(
         &self,
         bf_dir: &str,
         base: f64,
         batch: &[fasta::Record],
-    ) -> Vec<Vec<Vec<u16>>> {
+        sampler: &S,
+    ) -> Vec<Vec<Vec<u16>>>
+    where
+        S: Sampler,
+    {
         let parameters = &self.parameters;
         let partition_kmers = query::build_partitions_kmers(
             batch,
@@ -435,6 +485,7 @@ impl Reindeer2 {
             parameters.m,
             parameters.partition_number as u64,
             parameters.canonical,
+            sampler,
         );
 
         // --- PARALLEL PHASE: process each partition's k-mers in parallel ---
@@ -1473,6 +1524,7 @@ mod tests {
             abundance_max: NonZero::new(512).unwrap(),
             dense_option: false,
             canonical: false,
+            sampling_strategy: SamplingStrategy::NoSampling,
         };
         let indexed_file_names = vec![String::from("a"), String::from("b")];
 
@@ -1567,6 +1619,7 @@ mod tests {
             abundance_max: NonZero::new(65535).unwrap(),
             dense_option: false,
             canonical: false,
+            sampling_strategy: SamplingStrategy::NoSampling,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -1645,6 +1698,7 @@ mod tests {
             abundance_max: NonZero::new(65535).unwrap(),
             dense_option: true,
             canonical: true,
+            sampling_strategy: SamplingStrategy::NoSampling,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -1723,6 +1777,7 @@ mod tests {
             abundance_max: NonZero::new(65535).unwrap(),
             dense_option: false,
             canonical: true,
+            sampling_strategy: SamplingStrategy::NoSampling,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -1799,6 +1854,7 @@ mod tests {
             abundance_max: NonZero::new(65535).unwrap(),
             dense_option: true,
             canonical: true,
+            sampling_strategy: SamplingStrategy::NoSampling,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -1874,6 +1930,7 @@ mod tests {
             abundance_max: NonZero::new(65535).unwrap(),
             dense_option: false,
             canonical: true,
+            sampling_strategy: SamplingStrategy::NoSampling,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -1946,6 +2003,7 @@ mod tests {
             abundance_max: NonZero::new(65535).unwrap(),
             dense_option: true,
             canonical: true,
+            sampling_strategy: SamplingStrategy::NoSampling,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -2023,6 +2081,7 @@ mod tests {
             abundance_max: NonZero::new(65535).unwrap(),
             dense_option: false,
             canonical: true,
+            sampling_strategy: SamplingStrategy::NoSampling,
         };
         let chunks_size = 128;
         let threshold = 1;
@@ -2101,6 +2160,7 @@ mod tests {
             abundance_max: NonZero::new(65535).unwrap(),
             dense_option: true,
             canonical: true,
+            sampling_strategy: SamplingStrategy::NoSampling,
         };
         let chunks_size = 128;
         let threshold = 1;
@@ -2178,6 +2238,7 @@ mod tests {
             abundance_max: NonZero::new(255).unwrap(),
             dense_option: false,
             canonical: true,
+            sampling_strategy: SamplingStrategy::NoSampling,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -2257,6 +2318,7 @@ mod tests {
             abundance_max: NonZero::new(255).unwrap(),
             dense_option: true,
             canonical: true,
+            sampling_strategy: SamplingStrategy::NoSampling,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -2336,6 +2398,7 @@ mod tests {
             abundance_max: NonZero::new(255).unwrap(),
             dense_option: false,
             canonical: true,
+            sampling_strategy: SamplingStrategy::NoSampling,
         };
         let chunks_size = 1;
         let threshold = parameters.nb_color;
@@ -2415,6 +2478,7 @@ mod tests {
             abundance_max: NonZero::new(255).unwrap(),
             dense_option: true,
             canonical: true,
+            sampling_strategy: SamplingStrategy::NoSampling,
         };
         let chunks_size = 1;
         let threshold = parameters.nb_color;
@@ -2490,6 +2554,7 @@ mod tests {
             abundance_max: NonZero::new(65535).unwrap(),
             dense_option: false,
             canonical: true,
+            sampling_strategy: SamplingStrategy::NoSampling,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -2563,6 +2628,7 @@ mod tests {
             abundance_max: NonZero::new(65535).unwrap(),
             dense_option: true,
             canonical: true,
+            sampling_strategy: SamplingStrategy::NoSampling,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -2881,6 +2947,7 @@ mod tests {
             abundance_max: NonZero::new(65535).unwrap(),
             dense_option: false,
             canonical: true,
+            sampling_strategy: SamplingStrategy::NoSampling,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -3025,6 +3092,7 @@ mod tests {
             abundance_max: NonZero::new(65535).unwrap(),
             dense_option: false,
             canonical: true,
+            sampling_strategy: SamplingStrategy::NoSampling,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -3131,6 +3199,7 @@ mod tests {
             abundance_max: NonZero::new(65535).unwrap(),
             dense_option: false,
             canonical: true,
+            sampling_strategy: SamplingStrategy::NoSampling,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -3235,6 +3304,7 @@ mod tests {
             abundance_max: NonZero::new(65535).unwrap(),
             dense_option: false,
             canonical: true,
+            sampling_strategy: SamplingStrategy::NoSampling,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -3434,6 +3504,7 @@ mod tests {
             abundance_max: NonZero::new(65535).unwrap(),
             dense_option: false,
             canonical: true,
+            sampling_strategy: SamplingStrategy::NoSampling,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -3497,6 +3568,7 @@ mod tests {
             abundance_max: NonZero::new(65535).unwrap(),
             dense_option: false,
             canonical: false,
+            sampling_strategy: SamplingStrategy::NoSampling,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -3580,6 +3652,7 @@ mod tests {
             abundance_max: NonZero::new(65535).unwrap(),
             dense_option: false,
             canonical: true,
+            sampling_strategy: SamplingStrategy::NoSampling,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -3644,6 +3717,7 @@ shared_revcomp_with_other_test_file\t0-19:3\t0-19:10",
             abundance_max: NonZero::new(65535).unwrap(),
             dense_option: false,
             canonical: true,
+            sampling_strategy: SamplingStrategy::NoSampling,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -3705,6 +3779,7 @@ header_0\t0-69:*\t0-69:1",
             abundance_max: NonZero::new(65535).unwrap(),
             dense_option: false,
             canonical: false,
+            sampling_strategy: SamplingStrategy::NoSampling,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -3794,6 +3869,7 @@ shared_revcomp_with_other_test_file\t0-19:*\t0-19:10",
             abundance_max: NonZero::new(65535).unwrap(),
             dense_option: false,
             canonical: true,
+            sampling_strategy: SamplingStrategy::NoSampling,
         };
 
         let chunks_size = 128;
