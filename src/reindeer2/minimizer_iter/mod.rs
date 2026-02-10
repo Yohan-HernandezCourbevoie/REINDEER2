@@ -259,7 +259,6 @@ mod tests {
             kmer_minimizers_sampled(seq_bytes, k, m, canonical, &minimizer_sample_builder)
                 .unwrap()
                 .count();
-        dbg!(actual_count);
 
         // there should be seq.len() - k + 1 pairs if not sampling
         // let's check we get a quarter of that, +/- 5%

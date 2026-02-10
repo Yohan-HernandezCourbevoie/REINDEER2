@@ -1224,7 +1224,7 @@ fn compute_base(abundance_number: NonZero<usize>, abundance_max: NonZero<u16>) -
 #[cfg(test)]
 mod tests {
 
-    use crate::reindeer2::{merge::merge_multiple_indexes, query::LogAbundance};
+    use crate::reindeer2::merge::merge_multiple_indexes;
 
     use super::*;
     use bio::io::fasta;
@@ -2746,9 +2746,9 @@ mod tests {
             .collect_vec();
 
         let expected_results = vec![
-            (0, LogAbundance::from_u8(log_abundance as u8)),
-            (1, LogAbundance::from_u8(0)),
-            (2, LogAbundance::from_u8(0)),
+            (0, ApproxAbundance::from_dense(log_abundance as u8, base)),
+            (1, ApproxAbundance::from_dense(0, base)),
+            (2, ApproxAbundance::from_dense(0, base)),
         ]; // expect color 0 with abundance level 1
 
         assert_eq!(results, expected_results);

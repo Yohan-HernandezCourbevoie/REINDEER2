@@ -139,7 +139,7 @@ pub fn cell_compute_breakpoints(abund_values: &[ApproxAbundance], penalty: f64) 
     // TODO make it impossible to trigger this from the command line
     #[cfg(debug_assertions)]
     {
-        let not_queried = abund_values.iter().filter(|x| x.is_not_queried()).count();
+        let not_queried = abund_values.iter().filter(|x| !x.is_queried()).count();
         assert!(
             not_queried == 0,
             "Cannot compute breakpoints if not querying all k-mers. Please disable sampling."
@@ -165,7 +165,6 @@ mod tests {
     use super::ApproxAbundance as Approx;
 
     fn assert_almost_eq(a: f64, b: f64, e: f64) {
-        dbg!(a, b, e);
         assert!((a - b).abs() < e);
     }
 

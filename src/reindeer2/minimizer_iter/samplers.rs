@@ -35,7 +35,6 @@ impl MinimizerSampler {
 
 impl Sampler for MinimizerSampler {
     fn filter(&self, kmer_and_minimizer: (u64, u64)) -> bool {
-        dbg!(kmer_and_minimizer);
         kmer_and_minimizer.1 & self.minimizer_mask == 0
     }
 }
