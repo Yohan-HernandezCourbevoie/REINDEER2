@@ -7,7 +7,7 @@ use std::sync::{atomic, Arc, Mutex};
 
 use crate::reindeer2::{
     compute_log_abundance, extract_count,
-    minimizer_iter::{kmer_minimizers_seq_level, KmerMinimizerIteratorError, Sampler},
+    minimizer_iter::{kmer_minimizers_sampled, KmerMinimizerIteratorError, Sampler},
     process_fasta_in_batches, read_file, HeaderType,
 };
 use crate::reindeer2::{dense_index::DenseIndex, filter::Filters};
@@ -61,7 +61,7 @@ where
                         atomic_record_count.fetch_add(1, Ordering::Relaxed);
                         let seq_str = std::str::from_utf8(&seq).expect("Invalid UTF-8 sequence");
 
-                        let kmer_minimizers = match kmer_minimizers_seq_level(
+                        let kmer_minimizers = match kmer_minimizers_sampled(
                             seq_str.as_bytes(),
                             k,
                             m,

@@ -29,6 +29,7 @@ use zstd::stream::decode_all;
 use crate::reindeer2::dense_index::DenseIndex;
 use crate::reindeer2::filter::Filters;
 use crate::reindeer2::minimizer_iter::{MinimizerSampler, NoSampler, Sampler};
+use crate::reindeer2::query::ApproxAbundance;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum BreakpointsNormalize {
@@ -474,7 +475,7 @@ impl Reindeer2 {
         base: f64,
         batch: &[fasta::Record],
         sampler: &S,
-    ) -> Vec<Vec<Vec<u16>>>
+    ) -> Vec<Vec<Vec<ApproxAbundance>>>
     where
         S: Sampler,
     {
@@ -491,35 +492,36 @@ impl Reindeer2 {
         // --- PARALLEL PHASE: process each partition's k-mers in parallel ---
         // This will store final results for *all* sequences in this batch.
         // Key: sequence header; Value: vector of vector of abundances
-        let result_with_positions: HashMap<usize, Vec<Vec<(usize, u16)>>> = partition_kmers
-            .into_par_iter()
-            // 1) Create a local HashMap in each thread
-            .fold(
-                // OPTIMIZE use compile time monomorphization to get rid of this (usize, u16)
-                // (I expect to go from 128 per element in the vector to 16)
-                // (I needed this extra usize to get the correct order of kmer in the output)
-                HashMap::<usize, Vec<Vec<(usize, u16)>>>::new,
-                |local_results: HashMap<usize, Vec<Vec<(usize, u16)>>>,
-                 (partition_index, kmers)| {
-                    query::fold_into_hashmap(
-                        local_results,
-                        partition_index,
-                        kmers,
-                        base,
-                        bf_dir,
-                        parameters.bf_size,
-                        parameters.partition_number,
-                        parameters.nb_color,
-                        parameters.abundance_number.get(),
-                        parameters.dense_option,
-                    )
-                },
-            )
-            // 2) Reduce all local HashMaps into a single HashMap
-            .reduce(
-                HashMap::<usize, Vec<Vec<(usize, u16)>>>::new,
-                query::merge_results,
-            );
+        let result_with_positions: HashMap<usize, Vec<Vec<(u32, ApproxAbundance)>>> =
+            partition_kmers
+                .into_par_iter()
+                // 1) Create a local HashMap in each thread
+                .fold(
+                    // OPTIMIZE use compile time monomorphization to get rid of this (usize, u16)
+                    // (I expect to go from 128 per element in the vector to 16)
+                    // (I needed this extra usize to get the correct order of kmer in the output)
+                    HashMap::<usize, Vec<Vec<(u32, ApproxAbundance)>>>::new,
+                    |local_results: HashMap<usize, Vec<Vec<(u32, ApproxAbundance)>>>,
+                     (partition_index, kmers)| {
+                        query::fold_into_hashmap(
+                            local_results,
+                            partition_index,
+                            kmers,
+                            base,
+                            bf_dir,
+                            parameters.bf_size,
+                            parameters.partition_number,
+                            parameters.nb_color,
+                            parameters.abundance_number.get(),
+                            parameters.dense_option,
+                        )
+                    },
+                )
+                // 2) Reduce all local HashMaps into a single HashMap
+                .reduce(
+                    HashMap::<usize, Vec<Vec<(u32, ApproxAbundance)>>>::new,
+                    query::merge_results,
+                );
 
         let size = result_with_positions.len();
 
@@ -530,7 +532,12 @@ impl Reindeer2 {
             .for_each(|(header, color_vectors)| {
                 res[header] = color_vectors
                     .into_iter()
-                    .map(query::sort_abundance_vec)
+                    .map(|x| {
+                        query::sort_abundance_vec(
+                            x,
+                            batch[header].seq().len() - self.parameters.k + 1,
+                        )
+                    })
                     .collect();
             });
         res
@@ -1163,14 +1170,14 @@ fn compute_log_abundance(value: NonZero<u16>, base: f64, max: NonZero<u16>) -> u
     }
 }
 
-fn approximate_value(log_value: usize, base: f64) -> u16 {
+fn approximate_value(log_value: u16, base: f64) -> u16 {
     if base <= 0.0 {
         panic!("base must be greater than 0");
     }
     let threshold = 1.0 / (base - 1.0);
     let logf = log_value as f64;
     if logf < threshold {
-        (log_value + 1) as u16
+        log_value + 1
     } else {
         (base.powf((logf + 1.0) - threshold) * threshold) as u16
     }
@@ -1217,7 +1224,7 @@ fn compute_base(abundance_number: NonZero<usize>, abundance_max: NonZero<u16>) -
 #[cfg(test)]
 mod tests {
 
-    use crate::reindeer2::merge::merge_multiple_indexes;
+    use crate::reindeer2::{merge::merge_multiple_indexes, query::LogAbundance};
 
     use super::*;
     use bio::io::fasta;
@@ -2024,13 +2031,7 @@ mod tests {
         results.sort();
         expected_results.sort();
 
-        for (expected, actual) in expected_results.iter().zip(results.iter()) {
-            assert_eq!(
-                expected, actual,
-                "Mismatch: expected {:?}, got {:?}",
-                expected, actual
-            );
-        }
+        assert_eq!(results, expected_results);
 
         fs::remove_dir_all(test_dir).expect("Failed to clean up test directory");
     }
@@ -2675,6 +2676,7 @@ mod tests {
         let path_color_number = 0;
         let abundance_number = 2;
         let log_abundance = 1;
+        let base = 2.0;
 
         let mut bloom_filters: Vec<RoaringBitmap> = vec![RoaringBitmap::new(); partition_number];
 
@@ -2726,11 +2728,12 @@ mod tests {
                 color_number,
                 abundance_number,
                 0,
+                base,
                 &mut color_abundances,
             );
         }
 
-        let results: Vec<(usize, usize)> = color_abundances
+        let results = color_abundances
             .into_iter()
             .enumerate()
             .filter_map(|(color, abundances)| {
@@ -2740,15 +2743,15 @@ mod tests {
                     .min();
                 min_abundance.map(|abundance| (color, abundance))
             })
-            .collect();
+            .collect_vec();
 
-        let expected_results = vec![(0, log_abundance as usize), (1, 0), (2, 0)]; // expect color 0 with abundance level 1
+        let expected_results = vec![
+            (0, LogAbundance::from_u8(log_abundance as u8)),
+            (1, LogAbundance::from_u8(0)),
+            (2, LogAbundance::from_u8(0)),
+        ]; // expect color 0 with abundance level 1
 
-        assert_eq!(
-            results, expected_results,
-            "Mismatch in query results: expected {:?}, got {:?}",
-            expected_results, results
-        );
+        assert_eq!(results, expected_results);
     }
 
     #[test]

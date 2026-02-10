@@ -13,8 +13,10 @@ use median_abundance::write_median_abundance;
 
 pub use abundance_matrix::SEPARATOR as MATRIX_SEPARATOR;
 
+use crate::reindeer2::query::ApproxAbundance;
+
 fn count_to_string_with_star_normalized(
-    count: u16,
+    count: ApproxAbundance,
     normalize: &KmerCountsAndNormalizeValue,
     color_id: usize,
 ) -> String {
@@ -22,21 +24,38 @@ fn count_to_string_with_star_normalized(
         kmer_counts,
         normalize_value,
     } = normalize;
-    let normalized_count = count as f64 / kmer_counts[color_id] as f64 * (*normalize_value as f64);
-    if normalized_count == 0.0 {
-        String::from("*")
+
+    if let Some(value) = count.to_value() {
+        if value == 0 {
+            String::from("*")
+        } else {
+            let normalized_count =
+                value as f64 / kmer_counts[color_id] as f64 * (*normalize_value as f64);
+            // TODO discuss: might be zero, but only after normlization
+            normalized_count.to_string()
+        }
     } else {
-        normalized_count.to_string()
+        if count.is_not_queried() {
+            String::from("/")
+        } else {
+            String::from("/") // TODO discuss
+        }
     }
 }
 
-fn count_to_string_with_star(count: u16) -> String {
-    if count == 0 {
-        // not normalized and 0
-        String::from("*")
+fn count_to_string_with_star(count: ApproxAbundance) -> String {
+    if let Some(value) = count.to_value() {
+        if value == 0 {
+            String::from("*")
+        } else {
+            value.to_string()
+        }
     } else {
-        // not normalized and not 0
-        count.to_string()
+        if count.is_not_queried() {
+            String::from("/")
+        } else {
+            String::from("/") // TODO discuss
+        }
     }
 }
 
@@ -55,18 +74,28 @@ fn count_to_string_witout_star_maybe_normalized(
 }
 
 fn compute_median(values: &[u16]) -> f64 {
-    let mut abund_sorted = values.to_vec();
-    abund_sorted.sort_unstable();
-    if abund_sorted.iter().all(|&x| x == 0) {
+    compute_median_vec(values.to_vec())
+}
+
+// Like `compute_median`, but more efficient if you alread have a vec
+fn compute_median_vec(mut values: Vec<u16>) -> f64 {
+    if values.is_empty() {
+        return f64::NAN;
+    }
+    if values.len() == 1 {
+        return values[0] as f64;
+    }
+
+    values.sort_unstable();
+
+    if values.iter().all(|&x| x == 0) {
         0.0
-    } else if abund_sorted.len() == 1 {
-        abund_sorted[0] as f64
     } else {
-        let mid = abund_sorted.len() / 2;
-        if abund_sorted.len() % 2 == 1 {
-            abund_sorted[mid] as f64
+        let mid = values.len() / 2;
+        if values.len() % 2 == 1 {
+            values[mid] as f64
         } else {
-            (abund_sorted[mid - 1] as f64 + abund_sorted[mid] as f64) / 2.0
+            (values[mid - 1] as f64 + values[mid] as f64) / 2.0
         }
     }
 }
@@ -100,7 +129,7 @@ pub fn write_kmer_query(
     batch: &[fasta::Record],
     output_format: &EnrichedOutputFormat,
     coverage: f32,
-    sequence_results: &[Vec<Vec<u16>>],
+    sequence_results: &[Vec<Vec<ApproxAbundance>>],
     filenames: &[String],
     mut writer: &mut impl Write,
 ) -> io::Result<()> {

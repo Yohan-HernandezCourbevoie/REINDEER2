@@ -34,8 +34,9 @@ impl MinimizerSampler {
 }
 
 impl Sampler for MinimizerSampler {
-    fn filter(&self, minimizer_and_kmer: (u64, u64)) -> bool {
-        minimizer_and_kmer.0 & self.minimizer_mask == 0
+    fn filter(&self, kmer_and_minimizer: (u64, u64)) -> bool {
+        dbg!(kmer_and_minimizer);
+        kmer_and_minimizer.1 & self.minimizer_mask == 0
     }
 }
 
@@ -53,7 +54,7 @@ impl KmerSampler {
 }
 
 impl Sampler for KmerSampler {
-    fn filter(&self, minimizer_and_kmer: (u64, u64)) -> bool {
-        minimizer_and_kmer.1 & self.kmer_mask == 0
+    fn filter(&self, kmer_and_minimizer: (u64, u64)) -> bool {
+        kmer_and_minimizer.0 & self.kmer_mask == 0
     }
 }
