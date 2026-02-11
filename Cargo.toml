@@ -17,7 +17,6 @@ rand = "0.9"
 clap = { version = "4.1", features = ["derive"] }
 zstd = "0.11"
 roaring = "0.10.9"
-nthash = "0.5.1"
 num-format = "0.4"
 csv = "1.1"
 rayon = "1.7"
@@ -28,6 +27,8 @@ libc = "0.2.176"
 pelt = { git = "https://github.com/lrobidou/pelt.git", rev = "db7f8f85dac8bbc7da3f41b3c9e97d6befb17d9f" }
 log = "0.4"
 env_logger = "0.11.8"
+simd-minimizers = "2.3.0"
+xxhash-rust = { version = "0.8.12", features = ["xxh3", "const_xxh3"] }
 
 # [dev-dependencies]
 itertools = "0.14.0"

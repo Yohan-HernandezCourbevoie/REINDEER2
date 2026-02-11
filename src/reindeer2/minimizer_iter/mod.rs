@@ -1,34 +1,43 @@
 mod samplers;
+mod sequence_utils;
 
-use nthash::{NtHashForwardIterator, NtHashIterator};
-use std::collections::VecDeque;
-use thiserror::Error;
-
+use itertools::Itertools;
 pub use samplers::{MinimizerSampler, NoSampler, Sampler};
+use sequence_utils::{is_canonical, new_sk_iterator, reverse_complement, SKInfos};
 
-// ///  Iterator over (k-mer, minimizer) pairs for a given sequence
-// pub struct KmerMinimizerIterator<'a> {
-//     seq: &'a [u8],
-//     minima: Vec<u64>, // minimizers per starting position of kmers
-//     current: usize,   // current k-mer start position
-//     k: usize,
-// }
+use thiserror::Error;
+use xxhash_rust::xxh3;
 
-// impl<'a> Iterator for KmerMinimizerIterator<'a> {
-//     type Item = (&'a [u8], u64); // (kmer, iterator)
+pub fn get_hash<const CANONICAL: bool>(seq: &[u8]) -> u64 {
+    if CANONICAL {
+        if is_canonical(seq) {
+            xxh3::xxh3_64(seq)
+        } else {
+            let revcomp = reverse_complement(seq).collect_vec();
+            xxh3::xxh3_64(&revcomp)
+        }
+    } else {
+        xxh3::xxh3_64(seq)
+    }
+}
 
-//     fn next(&mut self) -> Option<Self::Item> {
-//         if self.current <= self.seq.len().saturating_sub(self.k) {
-//             // below or equal to the last valid starting index
-//             let kmer = &self.seq[self.current..self.current + self.k];
-//             let minimizer = self.minima[self.current];
-//             self.current += 1;
-//             Some((kmer, minimizer))
-//         } else {
-//             None
-//         }
-//     }
-// }
+pub fn get_all_minimizers_and_kmers<const CANONICAL: bool, T: Iterator<Item = SKInfos>>(
+    superkmers: T,
+    seq: &[u8],
+    k: usize,
+    m: usize,
+) -> impl Iterator<Item = (u64, u64)> + use<'_, CANONICAL, T> {
+    superkmers.flat_map(move |sk| {
+        let minimizer = &seq[sk.minimizer_start..sk.minimizer_start + m];
+        let minimizer = get_hash::<CANONICAL>(minimizer);
+
+        (sk.superkmer_start..(sk.superkmer_end - k + 1)).map(move |kmer_start| {
+            let kmer = &seq[kmer_start..kmer_start + k];
+            let kmer = get_hash::<CANONICAL>(kmer);
+            (kmer, minimizer)
+        })
+    })
+}
 
 #[derive(Debug, Error)]
 pub enum KmerMinimizerIteratorError {
@@ -46,119 +55,17 @@ fn kmer_minimizers_all<'a>(
     if seq.len() < k {
         return Err(KmerMinimizerIteratorError::SequenceTooSmall { k });
     }
-
-    assert!(k >= m, "k must be greater than or equal to m");
-
-    //  collects the hash of every m-mer in the sequence w/ rolling hash
-    let m_hashes: Vec<u64> = if canonical {
-        NtHashIterator::new(seq, m)
-            .expect("should have been able to create canonical hash iterator")
-            .collect()
+    let width = (k - m + 1) as u16;
+    let kmer_hash_iter: Box<dyn Iterator<Item = (u64, u64)>> = if canonical {
+        let iterator = new_sk_iterator::<true>(seq, m, width);
+        Box::new(get_all_minimizers_and_kmers::<true, _>(iterator, seq, k, m))
     } else {
-        NtHashForwardIterator::new(seq, m)
-            .expect("should have been able to create hash iterator")
-            .collect()
+        let iterator = new_sk_iterator::<false>(seq, m, width);
+        Box::new(get_all_minimizers_and_kmers::<false, _>(
+            iterator, seq, k, m,
+        ))
     };
-
-    // compute sliding window to find minimums over m-mer hashes
-    // for each k-mer starting at position i, the m-mers inside it are:
-    //   m_hashes[i .. i + (k - m + 1)]
-    let window_size = k - m + 1;
-    // number of k-mers is seq.len() - k + 1; we select 1 minimizer per kmer, so there are m_hashes.len() - window_size + 1 minimizers
-    let minimizers = m_hashes.len().saturating_sub(window_size) + 1;
-    let mut minima = Vec::with_capacity(minimizers);
-    let mut deque: VecDeque<usize> = VecDeque::new();
-
-    // process the first window: indices from 0 .. window_size
-    for i in 0..window_size {
-        // positions in the window
-        while let Some(&back) = deque.back() {
-            // if there's a value at the back of the queue -> back is the last position P recorded in the queue
-            if m_hashes[back] > m_hashes[i] {
-                // if the minimizer list at position P is greater than what it is at the current position => remove from the queue
-                deque.pop_back(); // remove large values from the back
-            } else {
-                break;
-            }
-        }
-        deque.push_back(i); // current position i becomes a candidate for being a minimizer
-    }
-    // ===> the minimum for the first window has its position recorded at the front of the deque
-
-    /* example
-    window_size = 5
-    m_hashes = [4, 2, 5, 1, 3]       hash values for positions 0 through 4.
-    for i = 0
-        deque init : [] -> deque.push_back(0) // [0]
-    for i = 1
-        m_hashes[0] = 4, with m_hashes[1] = 2
-        4 > 2, pop index 0 from the deque
-        deque.push_back(1) // [1]
-    i = 2
-        m_hashes[1] = 2 h m_hashes[2] = 5
-        2 < 5 => break
-        deque.push_back(2) // [1,2]
-    i=3
-        m_hashes[2] = 5 m_hashes[3] = 1
-        5 > 3, pop index 2 from deque// [1]
-        m_hashes[1] = 2, m_hashes[3] = 1
-        2 > 1, pop index 1 // []
-        deque.push_back(3) //[3]
-    i=4
-        m_hashes[3] = 1 m_hashes[4] = 3
-        1 < 3 , break
-        deque.push_back(4) //[3,4]
-    => minimizer at pos 0 of deque
-
-
-    */
-
-    if let Some(&front) = deque.front() {
-        minima.push(m_hashes[front]);
-    }
-    // then the idea carries on, we just have to remove the leftmost index that is no longer in the window each time
-
-    //process the rest of the windows
-    for i in window_size..m_hashes.len() {
-        // remove indices that are now outside the current window
-        while let Some(&front) = deque.front() {
-            if front <= i - window_size {
-                deque.pop_front();
-            } else {
-                break;
-            }
-        }
-        // remove elements that are larger than the current element
-        while let Some(&back) = deque.back() {
-            if m_hashes[back] > m_hashes[i] {
-                deque.pop_back();
-            } else {
-                break;
-            }
-        }
-        deque.push_back(i);
-        if let Some(&front) = deque.front() {
-            minima.push(m_hashes[front]);
-        }
-    }
-
-    // the number of minima should equal the number of k-mers
-    debug_assert_eq!(minima.len(), seq.len() - k + 1);
-
-    let kmer_hash_iter: Box<dyn Iterator<Item = u64>> = if canonical {
-        Box::new(
-            NtHashIterator::new(seq, k)
-                .expect("should have been able to create canonical hash iterator"),
-        )
-    } else {
-        Box::new(
-            NtHashForwardIterator::new(seq, k)
-                .expect("should have been able to create hash iterator"),
-        )
-    };
-
-    // return an iterator over (hashed k-mers,corresponding minimizers)
-    Ok(kmer_hash_iter.zip(minima))
+    Ok(kmer_hash_iter)
 }
 
 // --- MISC ---
@@ -175,6 +82,7 @@ fn kmer_minimizers_all<'a>(
 //     );
 // }
 
+// OPTIMIZE we might be more efficient if we filtered the minimizer at the superkmer level
 /// Iterates over the (kmer, minimizer) of a sequence
 pub fn kmer_minimizers_sampled<'a, S>(
     seq: &'a [u8],
@@ -190,26 +98,6 @@ where
         .filter(|kmer_minimizer| sampler.filter(*kmer_minimizer));
     Ok(filtered)
 }
-
-// pub fn kmer_minimizers_sampled_marked<'a, S>(
-//     seq: &'a [u8],
-//     k: usize,
-//     m: usize,
-//     canonical: bool,
-//     sampler: &'a S,
-// ) -> Result<impl Iterator<Item = Option<(u64, u64)>> + 'a, KmerMinimizerIteratorError>
-// where
-//     S: Sampler,
-// {
-//     let filtered = kmer_minimizers_all(seq, k, m, canonical)?.map(|kmer_minimizer| {
-//         if sampler.filter(kmer_minimizer) {
-//             Some(kmer_minimizer)
-//         } else {
-//             None
-//         }
-//     });
-//     Ok(filtered)
-// }
 
 #[cfg(test)]
 mod tests {
@@ -237,74 +125,79 @@ mod tests {
         assert_eq!(actual_count, seq_bytes.len() - k + 1);
     }
 
+    use rand::seq::IndexedRandom;
+
+    pub fn random_dna_read(len: usize) -> Vec<u8> {
+        const ALPHABET: [u8; 4] = [b'A', b'C', b'G', b'T'];
+        let mut rng = rand::rng();
+
+        let mut read = Vec::with_capacity(len);
+        for _ in 0..len {
+            read.push(*ALPHABET.choose(&mut rng).unwrap());
+        }
+        read
+    }
+
     #[test]
-    fn test_minimizer_sampling() {
-        let seq_str = "CTTAATATCGTCCGAAAGAGTCACAGATGTAAAAGGGCGCAGTACCTAACAGGGATTGACCGACGGAACA\
-        CCCTGGTCGACGCCTCAAGGCGGTAACGCCCAGTCCAATAGAGCACAATATTAGAATGCCGTCCGGCATCGCTACAGTAATTGGTGACTCG\
-        TATATTACATAGGCTGTATCGACCCTGATCTTAGACGAGGTGGATTAGAAACCCAGCTCCATCGCAAGTACTAAGGTTCCGGTAACAGAAC\
-        AGGCCTAGACTGAATGGTGACCATGTGCCTACCGAATTCTGGAACGTTGGGTGGCGCTTGGCTTTAGCTGCTACCATCTACCATACGGTAT\
-        AACGTGGGGGTACAGCCAAAGGCAATGACCTAACGGGGCTTTTAAAGGGGGTAGATGTGCCTCGGTTGGACGGGATATGGGGGCTGTTTGT\
-        CTGCCCGTGCTCATCTGCGTCTTTTTTGTATCCTTAAAATCAGTCCTGACTGCGGGGTGGCCACCGTCCACCAACGTCAGTTCTTGACTTT\
-        CAAGGCCAACAGCAAGGCCTTTTGTTGGCGCTTAAGAGGAATTGGAAAGGTCTTAAACACTGCCACGGTCCACCG";
-        let len = seq_str.len();
-        let seq_bytes = seq_str.as_bytes();
+    fn test_kmer_sampling() {
+        let seq = random_dna_read(100000);
 
-        let k = 7;
-        let m = 3;
+        let k = 31;
+        let m = 15;
         let canonical = true;
+        for i in 0..5 {
+            dbg!(i);
+            let kmer_sample_builder = KmerSampler::new(i);
 
-        let minimizer_sample_builder = KmerSampler::new(2);
-
-        let actual_count =
-            kmer_minimizers_sampled(seq_bytes, k, m, canonical, &minimizer_sample_builder)
+            let actual_count = kmer_minimizers_sampled(&seq, k, m, canonical, &kmer_sample_builder)
                 .unwrap()
                 .count();
 
-        // there should be seq.len() - k + 1 pairs if not sampling
-        // let's check we get a quarter of that, +/- 5%
-        let original_expectation = seq_bytes.len() - k + 1;
-        assert!(actual_count < (original_expectation / 4) + (len * 5) / 100);
-        assert!(actual_count > (original_expectation / 4) - (len * 5) / 100);
+            // there should be seq.len() - k + 1 pairs if not sampling
+            // let's check we get a quarter of that, +/- 5%
+            let original_expectation = seq.len() - k + 1;
+            let expectation = original_expectation / 2usize.pow(i as u32);
+            dbg!(expectation, actual_count);
+
+            dbg!(kmer_sample_builder);
+            assert!(actual_count < expectation + (expectation * 5) / 100);
+            assert!(actual_count > expectation - (expectation * 5) / 100);
+        }
     }
 
-    // #[test]
-    // fn test_minimizer_marked() {
-    //     let seq_str = "CTTAATATCGTCCGAAAGAGTCACAGATGTAAAAGGGCGCAGTACCTAACAGGGATTGACCGACGGAACA\
-    //     CCCTGGTCGACGCCTCAAGGCGGTAACGCCCAGTCCAATAGAGCACAATATTAGAATGCCGTCCGGCATCGCTACAGTAATTGGTGACTCG\
-    //     TATATTACATAGGCTGTATCGACCCTGATCTTAGACGAGGTGGATTAGAAACCCAGCTCCATCGCAAGTACTAAGGTTCCGGTAACAGAAC\
-    //     AGGCCTAGACTGAATGGTGACCATGTGCCTACCGAATTCTGGAACGTTGGGTGGCGCTTGGCTTTAGCTGCTACCATCTACCATACGGTAT\
-    //     AACGTGGGGGTACAGCCAAAGGCAATGACCTAACGGGGCTTTTAAAGGGGGTAGATGTGCCTCGGTTGGACGGGATATGGGGGCTGTTTGT\
-    //     CTGCCCGTGCTCATCTGCGTCTTTTTTGTATCCTTAAAATCAGTCCTGACTGCGGGGTGGCCACCGTCCACCAACGTCAGTTCTTGACTTT\
-    //     CAAGGCCAACAGCAAGGCCTTTTGTTGGCGCTTAAGAGGAATTGGAAAGGTCTTAAACACTGCCACGGTCCACCG";
-    //     let seq_bytes = seq_str.as_bytes();
+    #[test]
+    fn test_minimizer_sampling() {
+        let seq = random_dna_read(3000000);
 
-    //     let k = 7;
-    //     let m = 3;
-    //     let canonical = true;
+        let k = 31;
+        let m = 15;
+        let canonical = true;
+        for i in 1..10 {
+            let minimizer_sampler = MinimizerSampler::new(i);
 
-    //     let minimizer_sample_builder = MinimizerSampler::new(2);
+            let actual_count = kmer_minimizers_sampled(&seq, k, m, canonical, &minimizer_sampler)
+                .unwrap()
+                .count();
 
-    //     let kmers_minis_marked =
-    //         kmer_minimizers_sampled_marked(seq_bytes, k, m, canonical, &minimizer_sample_builder)
-    //             .unwrap();
-    //     let count = kmers_minis_marked.count();
+            // there should be seq.len() - k + 1 pairs if not sampling
+            // let's check we get a fraction of that, +/- 5%
+            let original_expectation = seq.len() - k + 1;
+            let expectation = original_expectation / 2usize.pow(i as u32);
+            dbg!(expectation, actual_count);
 
-    //     let kmers_minis_marked =
-    //         kmer_minimizers_sampled_marked(seq_bytes, k, m, canonical, &minimizer_sample_builder)
-    //             .unwrap();
-    //     let present = kmers_minis_marked.flatten().count();
+            dbg!(minimizer_sampler);
+            assert!(actual_count < expectation + (expectation * 20) / 100);
+            assert!(actual_count > expectation - (expectation * 20) / 100);
+        }
+    }
 
-    //     let present_sampled =
-    //         kmer_minimizers_sampled(seq_bytes, k, m, canonical, &minimizer_sample_builder)
-    //             .unwrap()
-    //             .count();
+    #[test]
+    fn test_get_hash() {
+        let seq = "TCGAGCTCCTAACGCGCAGGTTTTTTCCCGTAACGTACGTGAGAGTATCATACACACGCAAACGGAAGTGAGCGTCAGTGTTCGAACTCGCTCTCATCTG";
+        let revcomp = "CAGATGAGAGCGAGTTCGAACACTGACGCTCACTTCCGTTTGCGTGTGTATGATACTCTCACGTACGTTACGGGAAAAAACCTGCGCGTTAGGAGCTCGA";
+        let seq = seq.as_bytes();
+        let revcomp = revcomp.as_bytes();
 
-    //     // there should be seq.len() - k + 1 pairs if not sampling
-    //     // let's check we get a quarter of that, +/- 5%
-    //     let original_expectation = seq_bytes.len() - k + 1;
-
-    //     assert_eq!(count, original_expectation);
-
-    //     assert_eq!(present, present_sampled);
-    // }
+        assert_eq!(get_hash::<true>(seq), get_hash::<true>(revcomp));
+    }
 }

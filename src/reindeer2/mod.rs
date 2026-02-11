@@ -3087,7 +3087,7 @@ mod tests {
         let parameters = Parameters {
             k: 31,
             m: 15,
-            bf_size: 8,
+            bf_size: 1024,
             partition_number: 2,
             nb_color: 6,
             abundance_number: NonZero::new(255).unwrap(),
