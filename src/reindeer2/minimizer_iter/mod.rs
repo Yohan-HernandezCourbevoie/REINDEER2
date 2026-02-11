@@ -146,7 +146,6 @@ mod tests {
         let m = 15;
         let canonical = true;
         for i in 0..5 {
-            dbg!(i);
             let kmer_sample_builder = KmerSampler::new(i);
 
             let actual_count = kmer_minimizers_sampled(&seq, k, m, canonical, &kmer_sample_builder)
@@ -157,9 +156,7 @@ mod tests {
             // let's check we get a quarter of that, +/- 5%
             let original_expectation = seq.len() - k + 1;
             let expectation = original_expectation / 2usize.pow(i as u32);
-            dbg!(expectation, actual_count);
 
-            dbg!(kmer_sample_builder);
             assert!(actual_count < expectation + (expectation * 5) / 100);
             assert!(actual_count > expectation - (expectation * 5) / 100);
         }
@@ -183,9 +180,7 @@ mod tests {
             // let's check we get a fraction of that, +/- 5%
             let original_expectation = seq.len() - k + 1;
             let expectation = original_expectation / 2usize.pow(i as u32);
-            dbg!(expectation, actual_count);
 
-            dbg!(minimizer_sampler);
             assert!(actual_count < expectation + (expectation * 20) / 100);
             assert!(actual_count > expectation - (expectation * 20) / 100);
         }

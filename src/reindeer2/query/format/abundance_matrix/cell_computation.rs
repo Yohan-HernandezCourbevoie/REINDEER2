@@ -148,8 +148,7 @@ pub fn cell_compute_breakpoints(abund_values: &[ApproxAbundance], penalty: f64) 
     let abund_values = abund_values
         .iter()
         .copied()
-        // TODO the possibility of having an error in the abundance is a PITA
-        .filter_map(|x| x.to_value().map(u64::from))
+        .map(|x| x.to_value().map(u64::from).unwrap()) // TODO collect all valid values before
         .collect_vec();
     let breakpoints = pelt(&abund_values, pelt::score, penalty);
     let breakpoints = breakpoints.iter().map(usize::to_string).join(",");

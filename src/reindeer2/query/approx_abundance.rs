@@ -1,5 +1,3 @@
-use std::cmp::min;
-
 use crate::reindeer2::approximate_value;
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]

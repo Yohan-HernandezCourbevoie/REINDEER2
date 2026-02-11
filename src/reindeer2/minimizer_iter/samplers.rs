@@ -4,7 +4,7 @@ pub trait Sampler {
     fn filter(&self, minimizer_and_kmer: (u64, u64)) -> bool;
 }
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize)]
 #[cfg_attr(any(test, debug_assertions), derive(PartialEq, Debug))]
 pub struct NoSampler {}
 
@@ -20,8 +20,8 @@ impl Sampler for NoSampler {
     }
 }
 
-#[derive(Serialize, Deserialize, Clone)]
-#[cfg_attr(any(test, debug_assertions), derive(PartialEq, Debug))]
+#[derive(Serialize, Deserialize)]
+#[cfg_attr(any(test, debug_assertions), derive(Debug))]
 pub struct MinimizerSampler {
     minimizer_mask: u64,
 }

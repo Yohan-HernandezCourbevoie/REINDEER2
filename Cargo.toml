@@ -54,3 +54,7 @@ codegen-units = 1
 incremental = false
 panic = "abort"
 overflow-checks = false
+
+[features]
+default = []
+nightly = []
