@@ -39,13 +39,17 @@ pub fn cell_compute_average_normalized(
 }
 
 /// Computes a single cell of the matrix when we want the median of elements.
-pub fn cell_compute_median(abund_values: &[ApproxAbundance]) -> f64 {
+pub fn cell_compute_median(abund_values: &[ApproxAbundance]) -> String {
     // TODO discuss do we cast in f64, just as when normalizing ?
     let valid_values = abund_values
         .iter()
         .filter_map(|value| value.to_value())
         .collect_vec();
-    compute_median(&valid_values)
+    if !abund_values.is_empty() && valid_values.is_empty() {
+        // we used to have values, but they are all gone due to the filtration :(
+        return "/".to_string();
+    }
+    compute_median(&valid_values).to_string()
 }
 
 /// Computes a single cell of the matrix when we want the *normalized* median of elements.
@@ -53,19 +57,23 @@ pub fn cell_compute_median_normalized(
     abund_values: &[ApproxAbundance],
     normalize: &KmerCountsAndNormalizeValue,
     color_id: usize,
-) -> f64 {
+) -> String {
     let valid_values = abund_values
         .iter()
         .filter_map(|value| value.to_value())
         .collect_vec();
     let median = compute_median(&valid_values);
+    if !abund_values.is_empty() && valid_values.is_empty() {
+        // we used to have values, but they are all gone due to the filtration :(
+        return "/".to_string();
+    }
     // TODO discuss if normalizing before or after median
     // TODO discuss if we convert to f64 even if no normalization
     let KmerCountsAndNormalizeValue {
         kmer_counts,
         normalize_value,
     } = normalize;
-    median / kmer_counts[color_id] as f64 * (*normalize_value as f64)
+    (median / kmer_counts[color_id] as f64 * (*normalize_value as f64)).to_string()
 }
 
 /// Computes a single cell of the matrix when we want an output like RD1.
@@ -216,21 +224,15 @@ mod tests {
 
     #[test]
     fn test_cell_compute_median() {
-        assert_almost_eq(cell_compute_median(&[Approx::new(1)]), 1.0, 1e-10);
-        assert_almost_eq(
+        assert_eq!(cell_compute_median(&[Approx::new(1)]), "1");
+        assert_eq!(
             cell_compute_median(&[Approx::new(1), Approx::new(2)]),
-            1.5,
-            1e-10,
+            "1.5",
         );
-        assert_almost_eq(
-            cell_compute_median(&[Approx::new(1), Approx::new(9)]),
-            5.0,
-            1e-10,
-        );
-        assert_almost_eq(
+        assert_eq!(cell_compute_median(&[Approx::new(1), Approx::new(9)]), "5",);
+        assert_eq!(
             cell_compute_median(&(0..100).map(Approx::new).collect_vec()),
-            49.5,
-            1e-10,
+            "49.5",
         );
     }
 
@@ -240,25 +242,21 @@ mod tests {
             kmer_counts: vec![10, 5],
             normalize_value: 100,
         };
-        assert_almost_eq(
+        assert_eq!(
             cell_compute_median_normalized(&[Approx::new(1)], &normalize, 0),
-            10.0,
-            1e-10,
+            "10",
         );
-        assert_almost_eq(
+        assert_eq!(
             cell_compute_median_normalized(&[Approx::new(1), Approx::new(2)], &normalize, 1),
-            30.0,
-            1e-10,
+            "30",
         );
-        assert_almost_eq(
+        assert_eq!(
             cell_compute_median_normalized(&[Approx::new(1), Approx::new(9)], &normalize, 0),
-            50.0,
-            1e-10,
+            "50",
         );
-        assert_almost_eq(
+        assert_eq!(
             cell_compute_median_normalized(&(0..100).map(Approx::new).collect_vec(), &normalize, 0),
-            495.0,
-            1e-10,
+            "495",
         );
     }
 

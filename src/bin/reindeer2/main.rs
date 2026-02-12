@@ -16,15 +16,7 @@ use reindeer2::reindeer2::{
     Parameters, Reindeer2, SamplingStrategy,
 };
 
-use crate::cli::{IndexArgs, MergeArgs, QueryArgs, SamplingStrategyCli};
-
-impl SamplingStrategyCli {
-    fn to_sampling_strategy(self) -> SamplingStrategy {
-        match self {
-            Self::NoSampling => SamplingStrategy::NoSampling,
-        }
-    }
-}
+use crate::cli::{IndexArgs, MergeArgs, QueryArgs};
 
 impl OutputFormatCli {
     fn to_output_format(self, normalized: Option<u64>, breakpoints: Option<f64>) -> OutputFormat {
@@ -74,6 +66,23 @@ impl OutputFormatCli {
     }
 }
 
+fn validate_sampling_strategy(
+    kmer_sampling: Option<u64>,
+    minimizer_sampling: Option<u64>,
+) -> Option<SamplingStrategy> {
+    match (kmer_sampling, minimizer_sampling) {
+        (Some(_), Some(_)) => {
+            panic!("cannot compute sampling from both kmer sampling and minimizer sampling");
+        }
+        (Some(kmer_sampling_factor), None) => Some(SamplingStrategy::KmerSampling {
+            last_bits_to_zero: kmer_sampling_factor,
+        }),
+        (None, Some(minimizer_sampling_factor)) => Some(SamplingStrategy::MinimizerSampling {
+            last_bits_to_zero: minimizer_sampling_factor,
+        }),
+        (None, None) => None,
+    }
+}
 fn main() -> io::Result<()> {
     let args = Cli::parse();
     let env = env_logger::Env::default().default_filter_or("trace");
@@ -94,7 +103,8 @@ fn main() -> io::Result<()> {
             dense,
             stranded,
             output_dir,
-            sampling,
+            kmer_sampling,
+            minimizer_sampling,
         }) => {
             let dense_option = dense;
             let canonical = !stranded;
@@ -198,7 +208,7 @@ fn main() -> io::Result<()> {
                 abundance_max,
                 dense_option,
                 canonical,
-                sampling_strategy: sampling.to_sampling_strategy(),
+                sampling_strategy: validate_sampling_strategy(kmer_sampling, minimizer_sampling),
             };
             let mut index = Reindeer2::new(parameters, output_dir);
             index.build(file_paths, chunks_size, tolerated_number_of_zeros)?;

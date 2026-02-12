@@ -25,10 +25,11 @@ pub enum Command {
     Merge(MergeArgs),
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, ValueEnum)]
-pub enum SamplingStrategyCli {
-    NoSampling,
-}
+// #[derive(Copy, Clone, Debug, PartialEq, ValueEnum)]
+// pub enum SamplingStrategyCli {
+//     MinimizerSampling { e: usize },
+//     KmerSampling,
+// }
 
 #[derive(Args, Debug)]
 pub struct IndexArgs {
@@ -84,8 +85,12 @@ pub struct IndexArgs {
     pub stranded: bool,
 
     /// k-mer sampling strategy
-    #[arg(long, value_enum, default_value_t = SamplingStrategyCli::NoSampling)]
-    pub sampling: SamplingStrategyCli,
+    #[arg(long)]
+    pub kmer_sampling: Option<u64>,
+
+    /// k-mer sampling strategy
+    #[arg(long)]
+    pub minimizer_sampling: Option<u64>,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, ValueEnum)]

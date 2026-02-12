@@ -2,7 +2,7 @@ mod samplers;
 mod sequence_utils;
 
 use itertools::Itertools;
-pub use samplers::{MinimizerSampler, NoSampler, Sampler};
+pub use samplers::{KmerSampler, MinimizerSampler, NoSampler, Sampler};
 use sequence_utils::{is_canonical, new_sk_iterator, reverse_complement, SKInfos};
 
 use thiserror::Error;
@@ -46,7 +46,7 @@ pub enum KmerMinimizerIteratorError {
 }
 
 // returns an iterator over all the (k-mer, minimizer) from sequence input
-fn kmer_minimizers_all<'a>(
+pub fn kmer_minimizers_all<'a>(
     seq: &'a [u8],
     k: usize,
     m: usize,
@@ -140,12 +140,12 @@ mod tests {
 
     #[test]
     fn test_kmer_sampling() {
-        let seq = random_dna_read(100000);
+        let seq = random_dna_read(3000000);
 
         let k = 31;
         let m = 15;
         let canonical = true;
-        for i in 0..5 {
+        for i in 0..10 {
             let kmer_sample_builder = KmerSampler::new(i);
 
             let actual_count = kmer_minimizers_sampled(&seq, k, m, canonical, &kmer_sample_builder)

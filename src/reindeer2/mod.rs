@@ -28,7 +28,7 @@ use zstd::stream::decode_all;
 
 use crate::reindeer2::dense_index::DenseIndex;
 use crate::reindeer2::filter::Filters;
-use crate::reindeer2::minimizer_iter::{MinimizerSampler, NoSampler, Sampler};
+use crate::reindeer2::minimizer_iter::{KmerSampler, MinimizerSampler, NoSampler, Sampler};
 use crate::reindeer2::query::ApproxAbundance;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -72,14 +72,13 @@ pub struct Parameters {
     pub abundance_max: NonZero<u16>,
     pub dense_option: bool,
     pub canonical: bool,
-    pub sampling_strategy: SamplingStrategy,
+    pub sampling_strategy: Option<SamplingStrategy>,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
-#[cfg_attr(any(test, debug_assertions), derive(PartialEq))]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub enum SamplingStrategy {
-    NoSampling,
     MinimizerSampling { last_bits_to_zero: u64 },
+    KmerSampling { last_bits_to_zero: u64 },
 }
 
 impl Parameters {
@@ -95,7 +94,7 @@ impl Parameters {
         // TODO rename is_dense
         dense_option: bool,
         canonical: bool,
-        sampling_strategy: SamplingStrategy,
+        sampling_strategy: Option<SamplingStrategy>,
     ) -> Self {
         Self {
             bf_size,
@@ -278,7 +277,7 @@ impl Reindeer2 {
                                 };
 
                                 if let Err(e) = match &parameters.sampling_strategy {
-                                    SamplingStrategy::NoSampling => {
+                                    None => {
                                         let sampler = NoSampler::new();
                                         index::process_fasta_file::<NoSampler>(
                                             path,
@@ -305,9 +304,38 @@ impl Reindeer2 {
                                             &sampler,
                                         )
                                     }
-                                    SamplingStrategy::MinimizerSampling { last_bits_to_zero } => {
+                                    Some(SamplingStrategy::MinimizerSampling {
+                                        last_bits_to_zero,
+                                    }) => {
                                         let sampler = MinimizerSampler::new(*last_bits_to_zero);
                                         index::process_fasta_file::<MinimizerSampler>(
+                                            path,
+                                            &maybe_dense_indexes,
+                                            &bloom_filters,
+                                            parameters.k,
+                                            parameters.m,
+                                            parameters.partition_number,
+                                            parameters.nb_color,
+                                            threshold,
+                                            parameters.abundance_min,
+                                            parameters.abundance_max,
+                                            path_num,
+                                            path_num + chunk_i * color_chunks[0],
+                                            base,
+                                            chunk_i,
+                                            h_type,
+                                            1_000_000, // max size for flushing k-mers to bloom filter
+                                            &total_kmers,
+                                            &atomic_dense_kmers_count,
+                                            &atomic_sparse_kmers_count,
+                                            &kmer_counts_vector,
+                                            parameters.canonical,
+                                            &sampler,
+                                        )
+                                    }
+                                    Some(SamplingStrategy::KmerSampling { last_bits_to_zero }) => {
+                                        let sampler = KmerSampler::new(*last_bits_to_zero);
+                                        index::process_fasta_file::<KmerSampler>(
                                             path,
                                             &maybe_dense_indexes,
                                             &bloom_filters,
@@ -436,7 +464,8 @@ impl Reindeer2 {
         output_format: OutputFormat,
         coverage: f32,
     ) -> io::Result<()> {
-        let sampler = NoSampler::new();
+        // let sampler = NoSampler::new();
+        let sampler = &self.parameters.sampling_strategy;
         let reader = read_file(fasta_file)?;
         let mut writer = BufWriter::new(File::create(output_file)?);
         let output_format =
@@ -450,7 +479,23 @@ impl Reindeer2 {
 
         // Process FASTA in chunks of 10 000 000 records
         process_fasta_in_batches(reader, 10_000_000, |batch| {
-            let sequence_results = self.query_single_fasta_batch(bf_dir, base, batch, &sampler);
+            let sequence_results = match sampler {
+                None => self.query_single_fasta_batch(bf_dir, base, batch, &NoSampler::new()),
+                Some(SamplingStrategy::KmerSampling { last_bits_to_zero }) => self
+                    .query_single_fasta_batch(
+                        bf_dir,
+                        base,
+                        batch,
+                        &KmerSampler::new(*last_bits_to_zero),
+                    ),
+                Some(SamplingStrategy::MinimizerSampling { last_bits_to_zero }) => self
+                    .query_single_fasta_batch(
+                        bf_dir,
+                        base,
+                        batch,
+                        &MinimizerSampler::new(*last_bits_to_zero),
+                    ),
+            };
             // Now `sequence_results` has the combined data for this batch.
             // Let's compute the output in the requested format.
             query::write_kmer_query(
@@ -523,19 +568,24 @@ impl Reindeer2 {
                     query::merge_results,
                 );
 
-        let size = result_with_positions.len();
-
-        let mut res = vec![vec![]; size];
-
-        result_with_positions
-            .into_iter()
+        let mut res = vec![vec![]; batch.len()];
+        let empty = vec![vec![]; self.parameters.nb_color];
+        (0..res.len())
+            .map(|header_id| {
+                (
+                    header_id,
+                    result_with_positions.get(&header_id).unwrap_or(&empty),
+                )
+            })
             .for_each(|(header, color_vectors)| {
                 res[header] = color_vectors
-                    .into_iter()
+                    .iter()
                     .map(|x| {
                         query::sort_abundance_vec(
                             x,
                             batch[header].seq().len() - self.parameters.k + 1,
+                            #[cfg(any(debug_assertions, test))]
+                            self.parameters.k,
                         )
                     })
                     .collect();
@@ -1218,18 +1268,12 @@ fn compute_base(abundance_number: NonZero<usize>, abundance_max: NonZero<u16>) -
     (lower_bound + upper_bound) / 2.0
 }
 
-/* TESTS */
-
-#[allow(unused_imports)]
 #[cfg(test)]
 mod tests {
 
     use crate::reindeer2::merge::merge_multiple_indexes;
 
     use super::*;
-    use bio::io::fasta;
-    use serde::de::value;
-    use std::io::Cursor;
 
     use itertools::Itertools;
 
@@ -1531,7 +1575,7 @@ mod tests {
             abundance_max: NonZero::new(512).unwrap(),
             dense_option: false,
             canonical: false,
-            sampling_strategy: SamplingStrategy::NoSampling,
+            sampling_strategy: None,
         };
         let indexed_file_names = vec![String::from("a"), String::from("b")];
 
@@ -1626,7 +1670,7 @@ mod tests {
             abundance_max: NonZero::new(65535).unwrap(),
             dense_option: false,
             canonical: false,
-            sampling_strategy: SamplingStrategy::NoSampling,
+            sampling_strategy: None,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -1705,7 +1749,7 @@ mod tests {
             abundance_max: NonZero::new(65535).unwrap(),
             dense_option: true,
             canonical: true,
-            sampling_strategy: SamplingStrategy::NoSampling,
+            sampling_strategy: None,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -1784,7 +1828,7 @@ mod tests {
             abundance_max: NonZero::new(65535).unwrap(),
             dense_option: false,
             canonical: true,
-            sampling_strategy: SamplingStrategy::NoSampling,
+            sampling_strategy: None,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -1861,7 +1905,7 @@ mod tests {
             abundance_max: NonZero::new(65535).unwrap(),
             dense_option: true,
             canonical: true,
-            sampling_strategy: SamplingStrategy::NoSampling,
+            sampling_strategy: None,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -1937,7 +1981,7 @@ mod tests {
             abundance_max: NonZero::new(65535).unwrap(),
             dense_option: false,
             canonical: true,
-            sampling_strategy: SamplingStrategy::NoSampling,
+            sampling_strategy: None,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -2010,7 +2054,7 @@ mod tests {
             abundance_max: NonZero::new(65535).unwrap(),
             dense_option: true,
             canonical: true,
-            sampling_strategy: SamplingStrategy::NoSampling,
+            sampling_strategy: None,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -2082,7 +2126,7 @@ mod tests {
             abundance_max: NonZero::new(65535).unwrap(),
             dense_option: false,
             canonical: true,
-            sampling_strategy: SamplingStrategy::NoSampling,
+            sampling_strategy: None,
         };
         let chunks_size = 128;
         let threshold = 1;
@@ -2161,7 +2205,7 @@ mod tests {
             abundance_max: NonZero::new(65535).unwrap(),
             dense_option: true,
             canonical: true,
-            sampling_strategy: SamplingStrategy::NoSampling,
+            sampling_strategy: None,
         };
         let chunks_size = 128;
         let threshold = 1;
@@ -2239,7 +2283,7 @@ mod tests {
             abundance_max: NonZero::new(255).unwrap(),
             dense_option: false,
             canonical: true,
-            sampling_strategy: SamplingStrategy::NoSampling,
+            sampling_strategy: None,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -2319,7 +2363,7 @@ mod tests {
             abundance_max: NonZero::new(255).unwrap(),
             dense_option: true,
             canonical: true,
-            sampling_strategy: SamplingStrategy::NoSampling,
+            sampling_strategy: None,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -2399,7 +2443,7 @@ mod tests {
             abundance_max: NonZero::new(255).unwrap(),
             dense_option: false,
             canonical: true,
-            sampling_strategy: SamplingStrategy::NoSampling,
+            sampling_strategy: None,
         };
         let chunks_size = 1;
         let threshold = parameters.nb_color;
@@ -2479,7 +2523,7 @@ mod tests {
             abundance_max: NonZero::new(255).unwrap(),
             dense_option: true,
             canonical: true,
-            sampling_strategy: SamplingStrategy::NoSampling,
+            sampling_strategy: None,
         };
         let chunks_size = 1;
         let threshold = parameters.nb_color;
@@ -2555,7 +2599,7 @@ mod tests {
             abundance_max: NonZero::new(65535).unwrap(),
             dense_option: false,
             canonical: true,
-            sampling_strategy: SamplingStrategy::NoSampling,
+            sampling_strategy: None,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -2629,7 +2673,7 @@ mod tests {
             abundance_max: NonZero::new(65535).unwrap(),
             dense_option: true,
             canonical: true,
-            sampling_strategy: SamplingStrategy::NoSampling,
+            sampling_strategy: None,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -2950,7 +2994,7 @@ mod tests {
             abundance_max: NonZero::new(65535).unwrap(),
             dense_option: false,
             canonical: true,
-            sampling_strategy: SamplingStrategy::NoSampling,
+            sampling_strategy: None,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -3095,7 +3139,7 @@ mod tests {
             abundance_max: NonZero::new(65535).unwrap(),
             dense_option: false,
             canonical: true,
-            sampling_strategy: SamplingStrategy::NoSampling,
+            sampling_strategy: None,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -3202,7 +3246,7 @@ mod tests {
             abundance_max: NonZero::new(65535).unwrap(),
             dense_option: false,
             canonical: true,
-            sampling_strategy: SamplingStrategy::NoSampling,
+            sampling_strategy: None,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -3307,7 +3351,7 @@ mod tests {
             abundance_max: NonZero::new(65535).unwrap(),
             dense_option: false,
             canonical: true,
-            sampling_strategy: SamplingStrategy::NoSampling,
+            sampling_strategy: None,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -3507,7 +3551,7 @@ mod tests {
             abundance_max: NonZero::new(65535).unwrap(),
             dense_option: false,
             canonical: true,
-            sampling_strategy: SamplingStrategy::NoSampling,
+            sampling_strategy: None,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -3571,7 +3615,7 @@ mod tests {
             abundance_max: NonZero::new(65535).unwrap(),
             dense_option: false,
             canonical: false,
-            sampling_strategy: SamplingStrategy::NoSampling,
+            sampling_strategy: None,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -3655,7 +3699,7 @@ mod tests {
             abundance_max: NonZero::new(65535).unwrap(),
             dense_option: false,
             canonical: true,
-            sampling_strategy: SamplingStrategy::NoSampling,
+            sampling_strategy: None,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -3720,7 +3764,7 @@ shared_revcomp_with_other_test_file\t0-19:3\t0-19:10",
             abundance_max: NonZero::new(65535).unwrap(),
             dense_option: false,
             canonical: true,
-            sampling_strategy: SamplingStrategy::NoSampling,
+            sampling_strategy: None,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -3782,7 +3826,7 @@ header_0\t0-69:*\t0-69:1",
             abundance_max: NonZero::new(65535).unwrap(),
             dense_option: false,
             canonical: false,
-            sampling_strategy: SamplingStrategy::NoSampling,
+            sampling_strategy: None,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -3872,7 +3916,7 @@ shared_revcomp_with_other_test_file\t0-19:*\t0-19:10",
             abundance_max: NonZero::new(65535).unwrap(),
             dense_option: false,
             canonical: true,
-            sampling_strategy: SamplingStrategy::NoSampling,
+            sampling_strategy: None,
         };
 
         let chunks_size = 128;

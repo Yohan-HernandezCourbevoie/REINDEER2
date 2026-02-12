@@ -35,11 +35,7 @@ fn count_to_string_with_star_normalized(
             normalized_count.to_string()
         }
     } else {
-        if !count.is_queried() {
-            String::from("/")
-        } else {
-            String::from("/") // TODO discuss
-        }
+        String::from("/") // TODO discuss
     }
 }
 
@@ -51,11 +47,7 @@ fn count_to_string_with_star(count: ApproxAbundance) -> String {
             value.to_string()
         }
     } else {
-        if !count.is_queried() {
-            String::from("/")
-        } else {
-            String::from("/") // TODO discuss
-        }
+        String::from("/") // TODO discuss
     }
 }
 

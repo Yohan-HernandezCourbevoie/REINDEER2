@@ -10,7 +10,7 @@ use super::{
     compute_base_position,
     dense_index::DenseIndexPartition,
     load_bloom_filter,
-    minimizer_iter::{kmer_minimizers_sampled, Sampler},
+    minimizer_iter::{kmer_minimizers_all, Sampler},
 };
 use bio::io::fasta;
 pub use format::{write_header, write_kmer_query, EnrichedOutputFormat};
@@ -42,16 +42,18 @@ where
             (sequence.len() as u32) < u32::MAX,
             "queried sequence length should be smaller than 2^32"
         );
-        let kmer_minimizers = kmer_minimizers_sampled(sequence, k, m, canonical, sampler)
+        let kmer_minimizers = kmer_minimizers_all(sequence, k, m, canonical)
             .expect("should have been able to iterate over kmers");
 
         for (position, (kmer_hash, minimizer)) in kmer_minimizers.enumerate() {
-            let partition_index = (minimizer % partition_number) as usize;
-            partition_kmers.entry(partition_index).or_default().push((
-                record_id,
-                position as u32,
-                kmer_hash,
-            ));
+            if sampler.filter((kmer_hash, minimizer)) {
+                let partition_index = (minimizer % partition_number) as usize;
+                partition_kmers.entry(partition_index).or_default().push((
+                    record_id,
+                    position as u32,
+                    kmer_hash,
+                ));
+            }
         }
     }
 
@@ -214,8 +216,9 @@ fn load_kmer_counts_vector(dir_path: &str) -> io::Result<Vec<usize>> {
 // }
 
 pub fn sort_abundance_vec(
-    abund_values: Vec<(u32, ApproxAbundance)>,
+    abund_values: &Vec<(u32, ApproxAbundance)>,
     nb_kmer_in_query: usize,
+    #[cfg(any(debug_assertions, test))] k: usize,
 ) -> Vec<ApproxAbundance> {
     #[cfg(debug_assertions)]
     {
@@ -230,17 +233,13 @@ pub fn sort_abundance_vec(
         // all positions are in the range of possible positions
         // FIXME what if usize is less than 32 bits ?
         if let Some(max) = set_positions.iter().max() {
-            debug_assert!((**max as usize) < set_positions.len());
+            debug_assert!((**max as usize) < nb_kmer_in_query + k - 1);
         }
-        debug_assert_eq!(
-            **set_positions.iter().max().unwrap() as usize,
-            abund_values.len() - 1
-        );
     }
 
     let mut abund_values_ordered = vec![ApproxAbundance::new_not_queried(); nb_kmer_in_query];
     for (kmer_pos, abundance) in abund_values {
-        abund_values_ordered[kmer_pos as usize] = abundance;
+        abund_values_ordered[*kmer_pos as usize] = *abundance;
     }
 
     abund_values_ordered
