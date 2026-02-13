@@ -1,3 +1,4 @@
+mod approx_abundance;
 mod format;
 
 use std::collections::HashMap;
@@ -6,42 +7,65 @@ use std::io::{self, Read};
 use std::path::Path;
 
 use super::{
-    approximate_value, compute_base_position, dense_index::DenseIndexPartition,
-    kmer_minimizers_seq_level, load_bloom_filter,
+    compute_base_position,
+    dense_index::DenseIndexPartition,
+    load_bloom_filter,
+    minimizer_iter::{kmer_minimizers_all, Sampler},
 };
 use bio::io::fasta;
 pub use format::{write_header, write_kmer_query, EnrichedOutputFormat};
 
+pub use approx_abundance::ApproxAbundance;
+
 /// Builds a map from partition_index -> Vec of (sequence_id, position_kmer_in_sequence, kmer_hash).
-pub fn build_partitions_kmers(
+pub fn build_partitions_kmers<S>(
     batch: &[fasta::Record],
     k: usize,
     m: usize,
     partition_number: u64,
     canonical: bool,
-) -> HashMap<usize, Vec<(usize, usize, u64)>> {
-    let mut partition_kmers: HashMap<usize, Vec<(usize, usize, u64)>> = HashMap::new();
+    sampler: &S,
+) -> HashMap<usize, Vec<(usize, u32, u64)>>
+where
+    S: Sampler,
+{
+    let mut partition_kmers: HashMap<usize, Vec<(usize, u32, u64)>> = HashMap::new();
     for (record_id, record) in batch.iter().enumerate() {
-        let kmer_minimizers = kmer_minimizers_seq_level(record.seq(), k, m, canonical)
+        let sequence = record.seq();
+        // covers the case "usize is more than 64 bits"
+        assert!(
+            sequence.len() < (u32::MAX as usize),
+            "queried sequence length should be smaller than 2^32"
+        );
+        // covers the case "usize is less than 64 bits"
+        assert!(
+            (sequence.len() as u32) < u32::MAX,
+            "queried sequence length should be smaller than 2^32"
+        );
+        let kmer_minimizers = kmer_minimizers_all(sequence, k, m, canonical)
             .expect("should have been able to iterate over kmers");
 
         for (position, (kmer_hash, minimizer)) in kmer_minimizers.enumerate() {
-            let partition_index = (minimizer % partition_number) as usize;
-            partition_kmers
-                .entry(partition_index)
-                .or_default()
-                .push((record_id, position, kmer_hash));
+            if sampler.filter((kmer_hash, minimizer)) {
+                let partition_index = (minimizer % partition_number) as usize;
+                partition_kmers.entry(partition_index).or_default().push((
+                    record_id,
+                    position as u32,
+                    kmer_hash,
+                ));
+            }
         }
     }
+
     partition_kmers
 }
 
 // TODO rename
 /// parameter `kmers` is Vec<(read_id, pos_in_read, hash)>
 pub fn fold_into_hashmap(
-    mut local_results: HashMap<usize, Vec<Vec<(usize, u16)>>>,
+    mut local_results: HashMap<usize, Vec<Vec<(u32, ApproxAbundance)>>>,
     partition_index: usize,
-    kmers: Vec<(usize, usize, u64)>,
+    kmers: Vec<(usize, u32, u64)>,
     base: f64,
     bf_dir: &str,
     bf_size: u64,
@@ -49,7 +73,7 @@ pub fn fold_into_hashmap(
     color_number: usize,
     abundance_number: usize,
     is_dense: bool,
-) -> HashMap<usize, Vec<Vec<(usize, u16)>>> {
+) -> HashMap<usize, Vec<Vec<(u32, ApproxAbundance)>>> {
     // Load the partition's Bloom filter
     let path_bf = format!(
         "{}/partition_bloom_filters_p{}.bin",
@@ -70,21 +94,19 @@ pub fn fold_into_hashmap(
         };
         //  For each k-mer in this partition
         for (sequence_id, kmer_position, kmer_hash) in kmers {
-            let color_abundances = if hashmap.contains_key(&kmer_hash) {
+            let approximate_counts = if hashmap.contains_key(&kmer_hash) {
                 let log_abundance_vector = hashmap
                     .get_abundance(&kmer_hash)
                     .expect("failed to read the hashmap");
-                let mut color_abundances = vec![Vec::new(); color_number];
+                // OPTIMIZE use only a vector instead of a vec of vec
+                let mut approximate_counts = vec![Vec::new(); color_number];
                 for (color, log_abundance) in log_abundance_vector.iter().enumerate() {
-                    if *log_abundance == 0 {
-                        // TODO discuss weird value
-                        color_abundances[color].push((kmer_position, 666));
-                    } else {
-                        color_abundances[color]
-                            .push((kmer_position, (*log_abundance - 1) as usize));
-                    }
+                    approximate_counts[color].push((
+                        kmer_position,
+                        ApproxAbundance::from_dense(*log_abundance, base),
+                    ));
                 }
-                color_abundances
+                approximate_counts
             } else {
                 // Compute base position
                 let base_position = compute_base_position(
@@ -95,7 +117,7 @@ pub fn fold_into_hashmap(
                 );
 
                 // color_abundances[color] -> Vec of (log) counts for that color
-                let mut color_abundances = vec![Vec::new(); color_number];
+                let mut approximate_counts = vec![Vec::new(); color_number];
                 // TODO this function could have a better name
                 update_color_abundances(
                     &bitmap,
@@ -103,38 +125,21 @@ pub fn fold_into_hashmap(
                     color_number,
                     abundance_number,
                     kmer_position,
-                    &mut color_abundances,
+                    base,
+                    &mut approximate_counts,
                 );
-                color_abundances
+                approximate_counts
             };
-
-            // Convert log abundances to approximate integer counts
-            let approximate_counts: Vec<Vec<(usize, u16)>> = color_abundances
-                .into_iter()
-                .map(|abunds_for_color| {
-                    abunds_for_color
-                        .into_iter()
-                        .map(|(kmer_pos, log_abund)| {
-                            let approx_count = if log_abund == 666 {
-                                0
-                            } else {
-                                approximate_value(log_abund, base)
-                            };
-                            (kmer_pos, approx_count)
-                        })
-                        .collect()
-                })
-                .collect();
 
             // Accumulate results in local_results
             let entry = local_results
                 .entry(sequence_id)
                 .or_insert_with(|| vec![Vec::new(); color_number]);
+            // FIXME: remove, maybe replace by something else ?
             for (color_idx, approx_values) in approximate_counts.into_iter().enumerate() {
                 entry[color_idx].push(
-                    *approx_values
-                        .iter()
-                        .min()
+                    // FIXME: don't we take one the smallest first element ?
+                    *ApproxAbundance::select_abundance_from_candidates(&approx_values)
                         .expect("An abundance vector returned empty"),
                 );
             }
@@ -157,9 +162,12 @@ pub fn update_color_abundances(
     base_position: u64,
     color_number: usize,
     abundance_number: usize,
-    kmer_position: usize,
-    color_abundances: &mut [Vec<(usize, usize)>],
+    kmer_position: u32,
+    base: f64,
+    color_abundances: &mut [Vec<(u32, ApproxAbundance)>],
 ) {
+    debug_assert!(abundance_number < u16::MAX as usize); // TODO make this check before ?
+    let abundance_number = abundance_number as u16; // TODO take u16 as parameter ?
     for color in 0..color_number {
         let mut insert = false;
         for abundance in 0..abundance_number {
@@ -167,14 +175,16 @@ pub fn update_color_abundances(
                 base_position + (color as u64) * (abundance_number as u64) + (abundance as u64);
 
             if bitmap.contains(position_to_check as u32) {
-                color_abundances[color].push((kmer_position, abundance));
+                color_abundances[color].push((
+                    kmer_position,
+                    ApproxAbundance::from_position_of_hit_in_the_filter(abundance, base),
+                ));
                 insert = true;
                 break; // keep the minimum
             }
         }
         if !insert {
-            // TODO weird discuss value
-            color_abundances[color].push((kmer_position, 666)); // important to record absent k-mers, to compute the median value, also, todo test
+            color_abundances[color].push((kmer_position, ApproxAbundance::new_absent()));
         }
     }
 }
@@ -205,35 +215,40 @@ fn load_kmer_counts_vector(dir_path: &str) -> io::Result<Vec<usize>> {
 //     stripped.split(' ').next().unwrap()
 // }
 
-pub fn sort_abundance_vec(abund_values: Vec<(usize, u16)>) -> Vec<u16> {
-    use itertools::Itertools;
-
+pub fn sort_abundance_vec(
+    abund_values: &Vec<(u32, ApproxAbundance)>,
+    nb_kmer_in_query: usize,
+    #[cfg(any(debug_assertions, test))] k: usize,
+) -> Vec<ApproxAbundance> {
     #[cfg(debug_assertions)]
     {
         use std::collections::HashSet;
 
-        let set_positions: HashSet<&usize> = abund_values
+        let set_positions: HashSet<&u32> = abund_values
             .iter()
             .map(|(kmer_pos, _abundance)| kmer_pos)
             .collect();
+        // there are no duplicates in the positions of abund_values
         debug_assert_eq!(set_positions.len(), abund_values.len());
-        debug_assert_eq!(
-            **set_positions.iter().max().unwrap(),
-            abund_values.len() - 1
-        );
-        debug_assert_eq!(**set_positions.iter().min().unwrap(), 0);
+        // all positions are in the range of possible positions
+        // FIXME what if usize is less than 32 bits ?
+        if let Some(max) = set_positions.iter().max() {
+            debug_assert!((**max as usize) < nb_kmer_in_query + k - 1);
+        }
     }
-    abund_values
-        .into_iter()
-        .sorted_by_key(|(kmer_pos, _abundance)| *kmer_pos)
-        .map(|(_kmer_pos, abundance)| abundance)
-        .collect()
+
+    let mut abund_values_ordered = vec![ApproxAbundance::new_not_queried(); nb_kmer_in_query];
+    for (kmer_pos, abundance) in abund_values {
+        abund_values_ordered[*kmer_pos as usize] = *abundance;
+    }
+
+    abund_values_ordered
 }
 
 pub fn merge_results(
-    mut acc: HashMap<usize, Vec<Vec<(usize, u16)>>>,
-    local: HashMap<usize, Vec<Vec<(usize, u16)>>>,
-) -> HashMap<usize, Vec<Vec<(usize, u16)>>> {
+    mut acc: HashMap<usize, Vec<Vec<(u32, ApproxAbundance)>>>,
+    local: HashMap<usize, Vec<Vec<(u32, ApproxAbundance)>>>,
+) -> HashMap<usize, Vec<Vec<(u32, ApproxAbundance)>>> {
     for (seq_id, color_vecs) in local {
         let entry = acc
             .entry(seq_id)
@@ -260,6 +275,7 @@ mod tests {
         let base_position = 100;
         let color_number = 3;
         let abundance_number = 2;
+        let base = 2.0;
 
         bitmap.insert((base_position + 0) as u32); // color 0, abundance 0
         bitmap.insert((base_position + 1) as u32); // color 0, abundance 1
@@ -273,13 +289,14 @@ mod tests {
             color_number,
             abundance_number,
             0,
+            base,
             &mut color_abundances,
         );
 
         let expected_color_abundances = vec![
-            vec![(0, 0)],   // color 0 has abundance levels 0 and 1 -> will keep the min
-            vec![(0, 0)],   // color 1 has abundance level 0
-            vec![(0, 666)], // color 2 has no abundance, set to 666 instead (handle later in the pipeline)
+            vec![(0, ApproxAbundance::from_dense(1, base))], // color 0 has abundance levels 0 and 1 -> will keep the min
+            vec![(0, ApproxAbundance::from_dense(1, base))], // color 1 has abundance level 0
+            vec![(0, ApproxAbundance::new_absent())], // color 2 has no abundance, set to QUERIED_BUT_ERROR instead (handle later in the pipeline)
         ];
 
         assert_eq!(

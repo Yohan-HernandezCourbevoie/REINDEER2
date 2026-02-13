@@ -25,6 +25,7 @@ use super::KmerCountsAndNormalizeValue;
 use crate::reindeer2::query::format::enriched_output_format::{
     BreakpointsXorEnrichedNormalize, EnrichedMatrixFormat,
 };
+use crate::reindeer2::query::ApproxAbundance;
 
 use cell_computation::{
     cell_compute_average, cell_compute_average_normalized, cell_compute_breakpoints,
@@ -48,13 +49,13 @@ pub fn write_header_matrix(
 
 /// Write the matrix to the writer according to some function.
 fn write_matrix_content<F, W, R>(
-    sequence_results: &[Vec<Vec<u16>>],
+    sequence_results: &[Vec<Vec<ApproxAbundance>>],
     batch: &[fasta::Record],
     cell_computation: F,
     writer: &mut W,
 ) -> io::Result<()>
 where
-    F: Fn(&[u16]) -> R,
+    F: Fn(&[ApproxAbundance]) -> R,
     W: Write,
     R: Display,
 {
@@ -71,14 +72,14 @@ where
 
 /// Write the *normalized* matrix to the writer according to some function.
 fn write_normalized_matrix_content<F, W, R>(
-    sequence_results: &[Vec<Vec<u16>>],
+    sequence_results: &[Vec<Vec<ApproxAbundance>>],
     batch: &[fasta::Record],
     normalize: &KmerCountsAndNormalizeValue,
     cell_computation: F,
     writer: &mut W,
 ) -> io::Result<()>
 where
-    F: Fn(&[u16], &KmerCountsAndNormalizeValue, usize) -> R,
+    F: Fn(&[ApproxAbundance], &KmerCountsAndNormalizeValue, usize) -> R,
     W: Write,
     R: Display,
 {
@@ -95,7 +96,7 @@ where
 
 // Write abundance matrix to the writer.
 pub fn write_abundance_matrix(
-    sequence_results: &[Vec<Vec<u16>>],
+    sequence_results: &[Vec<Vec<ApproxAbundance>>],
     batch: &[fasta::Record],
     format: &EnrichedMatrixFormat,
     writer: &mut impl Write,
@@ -118,8 +119,9 @@ pub fn write_abundance_matrix(
                     // Here, we would like to use `cell_compute_breakpoints` as an argument of `write_matrix_content`.
                     // Unfortunately, its signature doesn't match what `write_matrix_content` accepts.
                     // Therefore, we use a lambda that captures `penalty` and ignore the parameters we are not interested in.
-                    let cell_compute =
-                        |abund_values: &[u16]| cell_compute_breakpoints(abund_values, *penalty);
+                    let cell_compute = |abund_values: &[ApproxAbundance]| {
+                        cell_compute_breakpoints(abund_values, *penalty)
+                    };
                     // we can now pass the lambda to `write_matrix_content`
                     write_matrix_content(sequence_results, batch, cell_compute, writer)
                 }

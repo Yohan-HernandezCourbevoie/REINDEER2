@@ -2,23 +2,22 @@ mod dense_index;
 mod filter;
 mod index;
 mod merge;
+mod minimizer_iter;
 mod query;
 
 use bio::io::fasta;
 use flate2::read::GzDecoder;
 use itertools::Itertools;
-use nthash::{NtHashForwardIterator, NtHashIterator};
 use rayon::prelude::*;
 use roaring::RoaringBitmap;
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
 use std::num::NonZero;
 use std::panic;
 use std::path::Path;
-use std::sync::{Arc, Mutex, atomic};
-use thiserror::Error;
+use std::sync::{atomic, Arc, Mutex};
 
 pub use merge::merge_multiple_indexes;
 
@@ -29,6 +28,8 @@ use zstd::stream::decode_all;
 
 use crate::reindeer2::dense_index::DenseIndex;
 use crate::reindeer2::filter::Filters;
+use crate::reindeer2::minimizer_iter::{KmerSampler, MinimizerSampler, NoSampler, Sampler};
+use crate::reindeer2::query::ApproxAbundance;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum BreakpointsNormalize {
@@ -71,6 +72,13 @@ pub struct Parameters {
     pub abundance_max: NonZero<u16>,
     pub dense_option: bool,
     pub canonical: bool,
+    pub sampling_strategy: Option<SamplingStrategy>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub enum SamplingStrategy {
+    MinimizerSampling { last_bits_to_zero: u64 },
+    KmerSampling { last_bits_to_zero: u64 },
 }
 
 impl Parameters {
@@ -86,6 +94,7 @@ impl Parameters {
         // TODO rename is_dense
         dense_option: bool,
         canonical: bool,
+        sampling_strategy: Option<SamplingStrategy>,
     ) -> Self {
         Self {
             bf_size,
@@ -98,6 +107,7 @@ impl Parameters {
             abundance_max,
             dense_option,
             canonical,
+            sampling_strategy,
         }
     }
 
@@ -110,6 +120,7 @@ impl Parameters {
             && self.abundance_max == parameters2.abundance_max
             && self.dense_option == parameters2.dense_option
             && self.canonical == parameters2.canonical
+            && self.sampling_strategy == parameters2.sampling_strategy
     }
 }
 
@@ -265,29 +276,91 @@ impl Reindeer2 {
                                     }
                                 };
 
-                                if let Err(e) = index::process_fasta_file(
-                                    path,
-                                    &maybe_dense_indexes,
-                                    &bloom_filters,
-                                    parameters.k,
-                                    parameters.m,
-                                    parameters.partition_number,
-                                    parameters.nb_color,
-                                    threshold,
-                                    parameters.abundance_min,
-                                    parameters.abundance_max,
-                                    path_num,
-                                    path_num + chunk_i * color_chunks[0],
-                                    base,
-                                    chunk_i,
-                                    h_type,
-                                    1_000_000, // max size for flushing k-mers to bloom filter
-                                    &total_kmers,
-                                    &atomic_dense_kmers_count,
-                                    &atomic_sparse_kmers_count,
-                                    &kmer_counts_vector,
-                                    parameters.canonical,
-                                ) {
+                                if let Err(e) = match &parameters.sampling_strategy {
+                                    None => {
+                                        let sampler = NoSampler::new();
+                                        index::process_fasta_file::<NoSampler>(
+                                            path,
+                                            &maybe_dense_indexes,
+                                            &bloom_filters,
+                                            parameters.k,
+                                            parameters.m,
+                                            parameters.partition_number,
+                                            parameters.nb_color,
+                                            threshold,
+                                            parameters.abundance_min,
+                                            parameters.abundance_max,
+                                            path_num,
+                                            path_num + chunk_i * color_chunks[0],
+                                            base,
+                                            chunk_i,
+                                            h_type,
+                                            1_000_000, // max size for flushing k-mers to bloom filter
+                                            &total_kmers,
+                                            &atomic_dense_kmers_count,
+                                            &atomic_sparse_kmers_count,
+                                            &kmer_counts_vector,
+                                            parameters.canonical,
+                                            &sampler,
+                                        )
+                                    }
+                                    Some(SamplingStrategy::MinimizerSampling {
+                                        last_bits_to_zero,
+                                    }) => {
+                                        let sampler = MinimizerSampler::new(*last_bits_to_zero);
+                                        index::process_fasta_file::<MinimizerSampler>(
+                                            path,
+                                            &maybe_dense_indexes,
+                                            &bloom_filters,
+                                            parameters.k,
+                                            parameters.m,
+                                            parameters.partition_number,
+                                            parameters.nb_color,
+                                            threshold,
+                                            parameters.abundance_min,
+                                            parameters.abundance_max,
+                                            path_num,
+                                            path_num + chunk_i * color_chunks[0],
+                                            base,
+                                            chunk_i,
+                                            h_type,
+                                            1_000_000, // max size for flushing k-mers to bloom filter
+                                            &total_kmers,
+                                            &atomic_dense_kmers_count,
+                                            &atomic_sparse_kmers_count,
+                                            &kmer_counts_vector,
+                                            parameters.canonical,
+                                            &sampler,
+                                        )
+                                    }
+                                    Some(SamplingStrategy::KmerSampling { last_bits_to_zero }) => {
+                                        let sampler = KmerSampler::new(*last_bits_to_zero);
+                                        index::process_fasta_file::<KmerSampler>(
+                                            path,
+                                            &maybe_dense_indexes,
+                                            &bloom_filters,
+                                            parameters.k,
+                                            parameters.m,
+                                            parameters.partition_number,
+                                            parameters.nb_color,
+                                            threshold,
+                                            parameters.abundance_min,
+                                            parameters.abundance_max,
+                                            path_num,
+                                            path_num + chunk_i * color_chunks[0],
+                                            base,
+                                            chunk_i,
+                                            h_type,
+                                            1_000_000, // max size for flushing k-mers to bloom filter
+                                            &total_kmers,
+                                            &atomic_dense_kmers_count,
+                                            &atomic_sparse_kmers_count,
+                                            &kmer_counts_vector,
+                                            parameters.canonical,
+                                            &sampler,
+                                        )
+                                    }
+                                } {
                                     eprintln!("Error processing {}: {}", path, e);
                                 }
                             } else {
@@ -391,6 +464,8 @@ impl Reindeer2 {
         output_format: OutputFormat,
         coverage: f32,
     ) -> io::Result<()> {
+        // let sampler = NoSampler::new();
+        let sampler = &self.parameters.sampling_strategy;
         let reader = read_file(fasta_file)?;
         let mut writer = BufWriter::new(File::create(output_file)?);
         let output_format =
@@ -404,7 +479,23 @@ impl Reindeer2 {
 
         // Process FASTA in chunks of 10 000 000 records
         process_fasta_in_batches(reader, 10_000_000, |batch| {
-            let sequence_results = self.query_single_fasta_batch(bf_dir, base, batch);
+            let sequence_results = match sampler {
+                None => self.query_single_fasta_batch(bf_dir, base, batch, &NoSampler::new()),
+                Some(SamplingStrategy::KmerSampling { last_bits_to_zero }) => self
+                    .query_single_fasta_batch(
+                        bf_dir,
+                        base,
+                        batch,
+                        &KmerSampler::new(*last_bits_to_zero),
+                    ),
+                Some(SamplingStrategy::MinimizerSampling { last_bits_to_zero }) => self
+                    .query_single_fasta_batch(
+                        bf_dir,
+                        base,
+                        batch,
+                        &MinimizerSampler::new(*last_bits_to_zero),
+                    ),
+            };
             // Now `sequence_results` has the combined data for this batch.
             // Let's compute the output in the requested format.
             query::write_kmer_query(
@@ -423,12 +514,16 @@ impl Reindeer2 {
     }
 
     // TODO use compile time to decide wether to sort the output or not
-    fn query_single_fasta_batch(
+    fn query_single_fasta_batch<S>(
         &self,
         bf_dir: &str,
         base: f64,
         batch: &[fasta::Record],
-    ) -> Vec<Vec<Vec<u16>>> {
+        sampler: &S,
+    ) -> Vec<Vec<Vec<ApproxAbundance>>>
+    where
+        S: Sampler,
+    {
         let parameters = &self.parameters;
         let partition_kmers = query::build_partitions_kmers(
             batch,
@@ -436,51 +531,63 @@ impl Reindeer2 {
             parameters.m,
             parameters.partition_number as u64,
             parameters.canonical,
+            sampler,
         );
 
         // --- PARALLEL PHASE: process each partition's k-mers in parallel ---
         // This will store final results for *all* sequences in this batch.
         // Key: sequence header; Value: vector of vector of abundances
-        let result_with_positions: HashMap<usize, Vec<Vec<(usize, u16)>>> = partition_kmers
-            .into_par_iter()
-            // 1) Create a local HashMap in each thread
-            .fold(
-                // OPTIMIZE use compile time monomorphization to get rid of this (usize, u16)
-                // (I expect to go from 128 per element in the vector to 16)
-                // (I needed this extra usize to get the correct order of kmer in the output)
-                HashMap::<usize, Vec<Vec<(usize, u16)>>>::new,
-                |local_results: HashMap<usize, Vec<Vec<(usize, u16)>>>,
-                 (partition_index, kmers)| {
-                    query::fold_into_hashmap(
-                        local_results,
-                        partition_index,
-                        kmers,
-                        base,
-                        bf_dir,
-                        parameters.bf_size,
-                        parameters.partition_number,
-                        parameters.nb_color,
-                        parameters.abundance_number.get(),
-                        parameters.dense_option,
-                    )
-                },
-            )
-            // 2) Reduce all local HashMaps into a single HashMap
-            .reduce(
-                HashMap::<usize, Vec<Vec<(usize, u16)>>>::new,
-                query::merge_results,
-            );
+        let result_with_positions: HashMap<usize, Vec<Vec<(u32, ApproxAbundance)>>> =
+            partition_kmers
+                .into_par_iter()
+                // 1) Create a local HashMap in each thread
+                .fold(
+                    // OPTIMIZE use compile time monomorphization to get rid of this (usize, u16)
+                    // (I expect to go from 128 per element in the vector to 16)
+                    // (I needed this extra usize to get the correct order of kmer in the output)
+                    HashMap::<usize, Vec<Vec<(u32, ApproxAbundance)>>>::new,
+                    |local_results: HashMap<usize, Vec<Vec<(u32, ApproxAbundance)>>>,
+                     (partition_index, kmers)| {
+                        query::fold_into_hashmap(
+                            local_results,
+                            partition_index,
+                            kmers,
+                            base,
+                            bf_dir,
+                            parameters.bf_size,
+                            parameters.partition_number,
+                            parameters.nb_color,
+                            parameters.abundance_number.get(),
+                            parameters.dense_option,
+                        )
+                    },
+                )
+                // 2) Reduce all local HashMaps into a single HashMap
+                .reduce(
+                    HashMap::<usize, Vec<Vec<(u32, ApproxAbundance)>>>::new,
+                    query::merge_results,
+                );
 
-        let size = result_with_positions.len();
-
-        let mut res = vec![vec![]; size];
-
-        result_with_positions
-            .into_iter()
+        let mut res = vec![vec![]; batch.len()];
+        let empty = vec![vec![]; self.parameters.nb_color];
+        (0..res.len())
+            .map(|header_id| {
+                (
+                    header_id,
+                    result_with_positions.get(&header_id).unwrap_or(&empty),
+                )
+            })
             .for_each(|(header, color_vectors)| {
                 res[header] = color_vectors
-                    .into_iter()
-                    .map(query::sort_abundance_vec)
+                    .iter()
+                    .map(|x| {
+                        query::sort_abundance_vec(
+                            x,
+                            batch[header].seq().len() - self.parameters.k + 1,
+                            #[cfg(any(debug_assertions, test))]
+                            self.parameters.k,
+                        )
+                    })
                     .collect();
             });
         res
@@ -1113,14 +1220,14 @@ fn compute_log_abundance(value: NonZero<u16>, base: f64, max: NonZero<u16>) -> u
     }
 }
 
-fn approximate_value(log_value: usize, base: f64) -> u16 {
+fn approximate_value(log_value: u16, base: f64) -> u16 {
     if base <= 0.0 {
         panic!("base must be greater than 0");
     }
     let threshold = 1.0 / (base - 1.0);
     let logf = log_value as f64;
     if logf < threshold {
-        (log_value + 1) as u16
+        log_value + 1
     } else {
         (base.powf((logf + 1.0) - threshold) * threshold) as u16
     }
@@ -1161,190 +1268,12 @@ fn compute_base(abundance_number: NonZero<usize>, abundance_max: NonZero<u16>) -
     (lower_bound + upper_bound) / 2.0
 }
 
-// --- MINIMIZER ---
-
-///  Iterator over (k-mer, minimizer) pairs for a given sequence
-pub struct KmerMinimizerIterator<'a> {
-    seq: &'a [u8],
-    minima: Vec<u64>, // minimizers per starting position of kmers
-    current: usize,   // current k-mer start position
-    k: usize,
-}
-
-impl<'a> Iterator for KmerMinimizerIterator<'a> {
-    type Item = (&'a [u8], u64); // (kmer, iterator)
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.current <= self.seq.len().saturating_sub(self.k) {
-            // below or equal to the last valid starting index
-            let kmer = &self.seq[self.current..self.current + self.k];
-            let minimizer = self.minima[self.current];
-            self.current += 1;
-            Some((kmer, minimizer))
-        } else {
-            None
-        }
-    }
-}
-
-#[derive(Debug, Error)]
-pub enum KmerMinimizerIteratorError {
-    #[error("Sequence must be at least k (= {k}) bases long")]
-    SequenceTooSmall { k: usize },
-}
-
-// minimisers things
-// returns an iterator over (k-mer, minimizer) pairs from sequence input
-fn kmer_minimizers_seq_level<'a>(
-    seq: &'a [u8],
-    k: usize,
-    m: usize,
-    canonical: bool,
-) -> Result<impl Iterator<Item = (u64, u64)> + 'a, KmerMinimizerIteratorError> {
-    if seq.len() < k {
-        return Err(KmerMinimizerIteratorError::SequenceTooSmall { k });
-    }
-
-    assert!(k >= m, "k must be greater than or equal to m");
-
-    //  collects the hash of every m-mer in the sequence w/ rolling hash
-    let m_hashes: Vec<u64> = if canonical {
-        NtHashIterator::new(seq, m)
-            .expect("should have been able to create canonical hash iterator")
-            .collect()
-    } else {
-        NtHashForwardIterator::new(seq, m)
-            .expect("should have been able to create hash iterator")
-            .collect()
-    };
-
-    // compute sliding window to find minimums over m-mer hashes
-    // for each k-mer starting at position i, the m-mers inside it are:
-    //   m_hashes[i .. i + (k - m + 1)]
-    let window_size = k - m + 1;
-    // number of k-mers is seq.len() - k + 1; we select 1 minimizer per kmer, so there are m_hashes.len() - window_size + 1 minimizers
-    let minimizers = m_hashes.len().saturating_sub(window_size) + 1;
-    let mut minima = Vec::with_capacity(minimizers);
-    let mut deque: VecDeque<usize> = VecDeque::new();
-
-    // process the first window: indices from 0 .. window_size
-    for i in 0..window_size {
-        // positions in the window
-        while let Some(&back) = deque.back() {
-            // if there's a value at the back of the queue -> back is the last position P recorded in the queue
-            if m_hashes[back] > m_hashes[i] {
-                // if the minimizer list at position P is greater than what it is at the current position => remove from the queue
-                deque.pop_back(); // remove large values from the back
-            } else {
-                break;
-            }
-        }
-        deque.push_back(i); // current position i becomes a candidate for being a minimizer
-    }
-    // ===> the minimum for the first window has its position recorded at the front of the deque
-
-    /* example
-    window_size = 5
-    m_hashes = [4, 2, 5, 1, 3]       hash values for positions 0 through 4.
-    for i = 0
-        deque init : [] -> deque.push_back(0) // [0]
-    for i = 1
-        m_hashes[0] = 4, with m_hashes[1] = 2
-        4 > 2, pop index 0 from the deque
-        deque.push_back(1) // [1]
-    i = 2
-        m_hashes[1] = 2 h m_hashes[2] = 5
-        2 < 5 => break
-        deque.push_back(2) // [1,2]
-    i=3
-        m_hashes[2] = 5 m_hashes[3] = 1
-        5 > 3, pop index 2 from deque// [1]
-        m_hashes[1] = 2, m_hashes[3] = 1
-        2 > 1, pop index 1 // []
-        deque.push_back(3) //[3]
-    i=4
-        m_hashes[3] = 1 m_hashes[4] = 3
-        1 < 3 , break
-        deque.push_back(4) //[3,4]
-    => minimizer at pos 0 of deque
-
-
-    */
-
-    if let Some(&front) = deque.front() {
-        minima.push(m_hashes[front]);
-    }
-    // then the idea carries on, we just have to remove the leftmost index that is no longer in the window each time
-
-    //process the rest of the windows
-    for i in window_size..m_hashes.len() {
-        // remove indices that are now outside the current window
-        while let Some(&front) = deque.front() {
-            if front <= i - window_size {
-                deque.pop_front();
-            } else {
-                break;
-            }
-        }
-        // remove elements that are larger than the current element
-        while let Some(&back) = deque.back() {
-            if m_hashes[back] > m_hashes[i] {
-                deque.pop_back();
-            } else {
-                break;
-            }
-        }
-        deque.push_back(i);
-        if let Some(&front) = deque.front() {
-            minima.push(m_hashes[front]);
-        }
-    }
-
-    // the number of minima should equal the number of k-mers
-    debug_assert_eq!(minima.len(), seq.len() - k + 1);
-
-    let kmer_hash_iter: Box<dyn Iterator<Item = u64>> = if canonical {
-        Box::new(
-            NtHashIterator::new(seq, k)
-                .expect("should have been able to create canonical hash iterator"),
-        )
-    } else {
-        Box::new(
-            NtHashForwardIterator::new(seq, k)
-                .expect("should have been able to create hash iterator"),
-        )
-    };
-
-    // return an iterator over (hashed k-mers,corresponding minimizers)
-    Ok(kmer_hash_iter.zip(minima))
-}
-
-// --- MISC ---
-
-// fn _display_progress(total_kmers: u64, start_time: Instant) {
-//     let elapsed_s = start_time.elapsed().as_secs_f64();
-//     let elapsed_ms = start_time.elapsed().as_millis() as f64;
-//     let kmers_per_ms = total_kmers as f64 / elapsed_ms;
-//     println!(
-//         "Processed: {} k-mers | Time elapsed: {:.2} s | Rate: {:.2} k-mers/ms",
-//         total_kmers.to_formatted_string(&Locale::en),
-//         elapsed_s,
-//         kmers_per_ms
-//     );
-// }
-
-/* TESTS */
-
-#[allow(unused_imports)]
 #[cfg(test)]
 mod tests {
 
     use crate::reindeer2::merge::merge_multiple_indexes;
 
     use super::*;
-    use bio::io::fasta;
-    use serde::de::value;
-    use std::io::Cursor;
 
     use itertools::Itertools;
 
@@ -1575,23 +1504,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_kmer_hash_minimizers() {
-        let seq_str = "ACGTACGTACGTACGT";
-        let seq_bytes = seq_str.as_bytes();
-
-        let k = 7;
-        let m = 3;
-        let canonical = true;
-
-        let actual_count = kmer_minimizers_seq_level(seq_bytes, k, m, canonical)
-            .unwrap()
-            .count();
-
-        // there should be seq.len() - k + 1 pairs.
-        assert_eq!(actual_count, seq_bytes.len() - k + 1);
-    }
-
     /*
         #[test]
         fn test_update_bloom_filter_memory() {
@@ -1663,6 +1575,7 @@ mod tests {
             abundance_max: NonZero::new(512).unwrap(),
             dense_option: false,
             canonical: false,
+            sampling_strategy: None,
         };
         let indexed_file_names = vec![String::from("a"), String::from("b")];
 
@@ -1757,6 +1670,7 @@ mod tests {
             abundance_max: NonZero::new(65535).unwrap(),
             dense_option: false,
             canonical: false,
+            sampling_strategy: None,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -1835,6 +1749,7 @@ mod tests {
             abundance_max: NonZero::new(65535).unwrap(),
             dense_option: true,
             canonical: true,
+            sampling_strategy: None,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -1913,6 +1828,7 @@ mod tests {
             abundance_max: NonZero::new(65535).unwrap(),
             dense_option: false,
             canonical: true,
+            sampling_strategy: None,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -1989,6 +1905,7 @@ mod tests {
             abundance_max: NonZero::new(65535).unwrap(),
             dense_option: true,
             canonical: true,
+            sampling_strategy: None,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -2064,6 +1981,7 @@ mod tests {
             abundance_max: NonZero::new(65535).unwrap(),
             dense_option: false,
             canonical: true,
+            sampling_strategy: None,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -2136,6 +2054,7 @@ mod tests {
             abundance_max: NonZero::new(65535).unwrap(),
             dense_option: true,
             canonical: true,
+            sampling_strategy: None,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -2156,13 +2075,7 @@ mod tests {
         results.sort();
         expected_results.sort();
 
-        for (expected, actual) in expected_results.iter().zip(results.iter()) {
-            assert_eq!(
-                expected, actual,
-                "Mismatch: expected {:?}, got {:?}",
-                expected, actual
-            );
-        }
+        assert_eq!(results, expected_results);
 
         fs::remove_dir_all(test_dir).expect("Failed to clean up test directory");
     }
@@ -2213,6 +2126,7 @@ mod tests {
             abundance_max: NonZero::new(65535).unwrap(),
             dense_option: false,
             canonical: true,
+            sampling_strategy: None,
         };
         let chunks_size = 128;
         let threshold = 1;
@@ -2291,6 +2205,7 @@ mod tests {
             abundance_max: NonZero::new(65535).unwrap(),
             dense_option: true,
             canonical: true,
+            sampling_strategy: None,
         };
         let chunks_size = 128;
         let threshold = 1;
@@ -2368,6 +2283,7 @@ mod tests {
             abundance_max: NonZero::new(255).unwrap(),
             dense_option: false,
             canonical: true,
+            sampling_strategy: None,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -2447,6 +2363,7 @@ mod tests {
             abundance_max: NonZero::new(255).unwrap(),
             dense_option: true,
             canonical: true,
+            sampling_strategy: None,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -2526,6 +2443,7 @@ mod tests {
             abundance_max: NonZero::new(255).unwrap(),
             dense_option: false,
             canonical: true,
+            sampling_strategy: None,
         };
         let chunks_size = 1;
         let threshold = parameters.nb_color;
@@ -2605,6 +2523,7 @@ mod tests {
             abundance_max: NonZero::new(255).unwrap(),
             dense_option: true,
             canonical: true,
+            sampling_strategy: None,
         };
         let chunks_size = 1;
         let threshold = parameters.nb_color;
@@ -2680,6 +2599,7 @@ mod tests {
             abundance_max: NonZero::new(65535).unwrap(),
             dense_option: false,
             canonical: true,
+            sampling_strategy: None,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -2753,6 +2673,7 @@ mod tests {
             abundance_max: NonZero::new(65535).unwrap(),
             dense_option: true,
             canonical: true,
+            sampling_strategy: None,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -2799,6 +2720,7 @@ mod tests {
         let path_color_number = 0;
         let abundance_number = 2;
         let log_abundance = 1;
+        let base = 2.0;
 
         let mut bloom_filters: Vec<RoaringBitmap> = vec![RoaringBitmap::new(); partition_number];
 
@@ -2850,11 +2772,12 @@ mod tests {
                 color_number,
                 abundance_number,
                 0,
+                base,
                 &mut color_abundances,
             );
         }
 
-        let results: Vec<(usize, usize)> = color_abundances
+        let results = color_abundances
             .into_iter()
             .enumerate()
             .filter_map(|(color, abundances)| {
@@ -2864,15 +2787,15 @@ mod tests {
                     .min();
                 min_abundance.map(|abundance| (color, abundance))
             })
-            .collect();
+            .collect_vec();
 
-        let expected_results = vec![(0, log_abundance as usize), (1, 0), (2, 0)]; // expect color 0 with abundance level 1
+        let expected_results = vec![
+            (0, ApproxAbundance::from_dense(log_abundance as u8, base)),
+            (1, ApproxAbundance::from_dense(0, base)),
+            (2, ApproxAbundance::from_dense(0, base)),
+        ]; // expect color 0 with abundance level 1
 
-        assert_eq!(
-            results, expected_results,
-            "Mismatch in query results: expected {:?}, got {:?}",
-            expected_results, results
-        );
+        assert_eq!(results, expected_results);
     }
 
     #[test]
@@ -3071,6 +2994,7 @@ mod tests {
             abundance_max: NonZero::new(65535).unwrap(),
             dense_option: false,
             canonical: true,
+            sampling_strategy: None,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -3207,7 +3131,7 @@ mod tests {
         let parameters = Parameters {
             k: 31,
             m: 15,
-            bf_size: 8,
+            bf_size: 1024,
             partition_number: 2,
             nb_color: 6,
             abundance_number: NonZero::new(255).unwrap(),
@@ -3215,6 +3139,7 @@ mod tests {
             abundance_max: NonZero::new(65535).unwrap(),
             dense_option: false,
             canonical: true,
+            sampling_strategy: None,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -3321,6 +3246,7 @@ mod tests {
             abundance_max: NonZero::new(65535).unwrap(),
             dense_option: false,
             canonical: true,
+            sampling_strategy: None,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -3425,6 +3351,7 @@ mod tests {
             abundance_max: NonZero::new(65535).unwrap(),
             dense_option: false,
             canonical: true,
+            sampling_strategy: None,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -3467,7 +3394,7 @@ mod tests {
     #[test]
     fn test_merge_partition_bloom_filters() {
         use roaring::RoaringBitmap;
-        use std::fs::{File, create_dir_all};
+        use std::fs::{create_dir_all, File};
         use std::io::Write;
 
         let test_dir = "test_merge_partition_bloom_filters";
@@ -3624,6 +3551,7 @@ mod tests {
             abundance_max: NonZero::new(65535).unwrap(),
             dense_option: false,
             canonical: true,
+            sampling_strategy: None,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -3687,6 +3615,7 @@ mod tests {
             abundance_max: NonZero::new(65535).unwrap(),
             dense_option: false,
             canonical: false,
+            sampling_strategy: None,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -3770,6 +3699,7 @@ mod tests {
             abundance_max: NonZero::new(65535).unwrap(),
             dense_option: false,
             canonical: true,
+            sampling_strategy: None,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -3834,6 +3764,7 @@ shared_revcomp_with_other_test_file\t0-19:3\t0-19:10",
             abundance_max: NonZero::new(65535).unwrap(),
             dense_option: false,
             canonical: true,
+            sampling_strategy: None,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -3895,6 +3826,7 @@ header_0\t0-69:*\t0-69:1",
             abundance_max: NonZero::new(65535).unwrap(),
             dense_option: false,
             canonical: false,
+            sampling_strategy: None,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -3984,6 +3916,7 @@ shared_revcomp_with_other_test_file\t0-19:*\t0-19:10",
             abundance_max: NonZero::new(65535).unwrap(),
             dense_option: false,
             canonical: true,
+            sampling_strategy: None,
         };
 
         let chunks_size = 128;
