@@ -1,0 +1,7 @@
+rustflags = ["-C", "target-cpu=native"]
+
+[profile.dev]
+incremental = true # my code
+
+[profile.dev.package."*"]
+incremental = false # the dependencies
