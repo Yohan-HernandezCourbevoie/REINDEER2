@@ -9,7 +9,10 @@ use crate::reindeer2::query::ApproxAbundance;
 
 /// Computes a single cell of the matrix when we want the average of elements.
 /// Returns nan if `abund_values` is empty or if it has no valid values.
-pub fn cell_compute_average(abund_values: &[ApproxAbundance]) -> f64 {
+pub fn cell_compute_average(abund_values: &[ApproxAbundance]) -> String {
+    if abund_values.is_empty() {
+        return f64::NAN.to_string();
+    }
     let (sum, count) = abund_values
         .iter()
         .filter_map(|abund_values| abund_values.to_value())
@@ -17,10 +20,10 @@ pub fn cell_compute_average(abund_values: &[ApproxAbundance]) -> f64 {
             (s + abund_value as usize, c + 1)
         });
     if count == 0 {
-        return f64::NAN;
+        return "/".to_string();
     }
     let average: f64 = sum as f64 / count as f64;
-    average
+    average.to_string()
 }
 
 /// Computes a single cell of the matrix when we want the *normalized* average of elements.
@@ -28,14 +31,26 @@ pub fn cell_compute_average_normalized(
     abund_values: &[ApproxAbundance],
     normalize: &KmerCountsAndNormalizeValue,
     color_id: usize,
-) -> f64 {
-    let average = cell_compute_average(abund_values);
+) -> String {
+    if abund_values.is_empty() {
+        return f64::NAN.to_string();
+    }
+    let (sum, count) = abund_values
+        .iter()
+        .filter_map(|abund_values| abund_values.to_value())
+        .fold((0usize, 0usize), |(s, c), abund_value| {
+            (s + abund_value as usize, c + 1)
+        });
+    if count == 0 {
+        return "/".to_string();
+    }
+    let average: f64 = sum as f64 / count as f64;
     // TODO discuss if normalizing before or after average
     let KmerCountsAndNormalizeValue {
         kmer_counts,
         normalize_value,
     } = normalize;
-    average / kmer_counts[color_id] as f64 * (*normalize_value as f64)
+    (average / kmer_counts[color_id] as f64 * (*normalize_value as f64)).to_string()
 }
 
 /// Computes a single cell of the matrix when we want the median of elements.
@@ -177,21 +192,15 @@ mod tests {
 
     #[test]
     fn test_cell_compute_average() {
-        assert_almost_eq(cell_compute_average(&[Approx::new(1)]), 1.0, 1e-10);
-        assert_almost_eq(
+        assert_eq!(cell_compute_average(&[Approx::new(1)]), "1");
+        assert_eq!(
             cell_compute_average(&[Approx::new(1), Approx::new(2)]),
-            1.5,
-            1e-10,
+            "1.5"
         );
-        assert_almost_eq(
-            cell_compute_average(&[Approx::new(1), Approx::new(9)]),
-            5.0,
-            1e-10,
-        );
-        assert_almost_eq(
+        assert_eq!(cell_compute_average(&[Approx::new(1), Approx::new(9)]), "5");
+        assert_eq!(
             cell_compute_average(&(0..100).map(Approx::new).collect_vec()),
-            49.5,
-            1e-10,
+            "49.5",
         );
     }
 
@@ -201,24 +210,21 @@ mod tests {
             kmer_counts: vec![10, 5],
             normalize_value: 100,
         };
-        assert_almost_eq(
+        assert_eq!(
             cell_compute_average_normalized(&[Approx::new(1)], &normalize, 0),
-            10.0,
-            1e-10,
+            "10",
         );
-        assert_almost_eq(
+        assert_eq!(
             cell_compute_average_normalized(&[Approx::new(4)], &normalize, 1),
-            80.0,
-            1e-10,
+            "80",
         );
-        assert_almost_eq(
+        assert_eq!(
             cell_compute_average_normalized(
                 &[Approx::new(1), Approx::new(2), Approx::new(1)],
                 &normalize,
                 0,
             ),
-            13.3333333333333,
-            1e-10,
+            "13.333333333333334",
         );
     }
 
