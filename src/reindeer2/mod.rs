@@ -11,7 +11,7 @@ use nthash::{NtHashForwardIterator, NtHashIterator};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
-use std::fs::{self, File};
+use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
 use std::num::NonZero;
 use std::panic;
@@ -28,6 +28,25 @@ use zstd::stream::decode_all;
 
 use crate::reindeer2::dense_index::DenseIndex;
 use crate::reindeer2::filter::Filters;
+
+const NB_FILE_IN_AN_INDEX: usize = 1024;
+
+fn create_and_reserve_tar_get_file<P>(path: P, nb_object: u64) -> File
+where
+    P: AsRef<Path>,
+{
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .unwrap();
+    let mut writer = BufWriter::new(file);
+    tar_get::reserve_capacity(&mut writer, nb_object)
+        .expect("should have been able to write on disk");
+
+    writer.into_inner().unwrap()
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum BreakpointsNormalize {
@@ -271,7 +290,7 @@ impl Reindeer2 {
                 }
             } else {
                 // If there is only one chunk, write the final file directly
-                if let Err(e) = bloom_filters.write_to_disk_one_big_file(&dir_path) {
+                if let Err(e) = bloom_filters.write_to_disk_tar_get_files(&dir_path) {
                     eprintln!("Error writing Bloom filters for chunk {}: {}", chunk_i, e);
                 }
             }
@@ -3970,11 +3989,19 @@ shared_revcomp_with_other_test_file\t0-19:*\t0-19:10",
         );
 
         // check that each partition file in the merged index exists
-        let path = format!("{}/partition_bloom_filters.bin", merged_index.index_dir);
-        let file = File::open(path).unwrap();
-        let mut reader = BufReader::new(file);
-        let metadata = tar_get::get_metadata(&mut reader).unwrap();
-        assert_eq!(metadata.get_capacity(), parameters.partition_number as u64);
+        let total_capacity: u64 = (0..NB_FILE_IN_AN_INDEX)
+            .map(|i| {
+                let path = format!(
+                    "{}/partition_bloom_filters_group{}.bin",
+                    merged_index.index_dir, i
+                );
+                let file = File::open(path).unwrap();
+                let mut reader = BufReader::new(file);
+                let metadata = tar_get::get_metadata(&mut reader).unwrap();
+                metadata.get_nb_objects()
+            })
+            .sum();
+        assert_eq!(total_capacity, parameters.partition_number as u64);
 
         fs::remove_dir_all(base_dir).unwrap();
 

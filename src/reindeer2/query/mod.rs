@@ -5,6 +5,8 @@ use std::fs::File;
 use std::io::{self, Read};
 use std::path::Path;
 
+use crate::reindeer2::NB_FILE_IN_AN_INDEX;
+
 use super::{
     approximate_value, compute_base_position, dense_index::DenseIndexPartition,
     filter::load_bloom_filter_from_big_file, kmer_minimizers_seq_level,
@@ -51,17 +53,22 @@ pub fn fold_into_hashmap(
     is_dense: bool,
 ) -> HashMap<usize, Vec<Vec<(usize, u16)>>> {
     // Load the partition's Bloom filter
-    let path_bf = format!("{}/partition_bloom_filters.bin", bf_dir);
-    let maybe_bf = load_bloom_filter_from_big_file(&path_bf, partition_index as u64); // TODO conversion error, expect
+    let nb_partition_in_a_file = partition_number.div_ceil(NB_FILE_IN_AN_INDEX);
+    let group = partition_index / nb_partition_in_a_file;
+    let index = partition_index % nb_partition_in_a_file;
+    let path_bf = format!("{}/partition_bloom_filters_group{}.bin", bf_dir, group);
+    let maybe_bf = load_bloom_filter_from_big_file(&path_bf, index as u64); // TODO conversion error, expect
 
     if let Ok(bitmap) = maybe_bf {
         let hashmap: DenseIndexPartition = if is_dense {
             let path_dense_index =
                 format!("{}/partition_dense_index_p{}.bin", bf_dir, partition_index);
-            DenseIndexPartition::load_from_disk(&path_dense_index).expect(&format!(
-                "Failed to load dense index for partition {}",
-                partition_index
-            ))
+            DenseIndexPartition::load_from_disk(&path_dense_index).unwrap_or_else(|_| {
+                panic!(
+                    "Failed to load dense index for partition {}",
+                    partition_index
+                )
+            })
         } else {
             DenseIndexPartition::new()
         };
