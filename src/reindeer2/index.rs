@@ -6,14 +6,15 @@ use std::sync::atomic::Ordering;
 use std::sync::{atomic, Arc, Mutex};
 
 use crate::reindeer2::{
-    compute_log_abundance, extract_count, kmer_minimizers_seq_level, process_fasta_in_batches,
-    read_file, HeaderType, KmerMinimizerIteratorError,
+    compute_log_abundance, extract_count,
+    minimizer_iter::{kmer_minimizers_sampled, KmerMinimizerIteratorError, Sampler},
+    process_fasta_in_batches, read_file, HeaderType,
 };
 use crate::reindeer2::{dense_index::DenseIndex, filter::Filters};
 
 // --- INDEX FUNCTIONS ---
 
-pub fn process_fasta_file(
+pub fn process_fasta_file<S>(
     path: &str,
     maybe_dense_indexes: &Option<Arc<DenseIndex>>,
     bloom_filters: &Filters,
@@ -35,7 +36,11 @@ pub fn process_fasta_file(
     atomic_sparse_kmers_count: &atomic::AtomicU64,
     kmer_counts_vector: &Arc<Mutex<Vec<usize>>>,
     canonical: bool,
-) -> io::Result<()> {
+    sampler: &S,
+) -> io::Result<()>
+where
+    S: Sampler,
+{
     let atomic_record_count = atomic::AtomicU64::new(0);
     let mut kmer_count: usize = 0;
     let reader = read_file(path)?;
@@ -56,11 +61,12 @@ pub fn process_fasta_file(
                         atomic_record_count.fetch_add(1, Ordering::Relaxed);
                         let seq_str = std::str::from_utf8(&seq).expect("Invalid UTF-8 sequence");
 
-                        let kmer_minimizers = match kmer_minimizers_seq_level(
+                        let kmer_minimizers = match kmer_minimizers_sampled(
                             seq_str.as_bytes(),
                             k,
                             m,
                             canonical,
+                            sampler,
                         ) {
                             Ok(iterator) => iterator,
                             Err(KmerMinimizerIteratorError::SequenceTooSmall { k }) => {

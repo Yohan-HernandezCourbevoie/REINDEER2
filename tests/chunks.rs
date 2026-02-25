@@ -2,9 +2,9 @@ mod common;
 
 use std::num::NonZero;
 
-use common::{AutoRemoveDirectory, AutoRemoveFile, check_number_of_partitions, is_all_same};
+use common::{check_number_of_partitions, is_all_same, AutoRemoveDirectory, AutoRemoveFile};
 
-use reindeer2::reindeer2::{OutputFormat, Parameters, Reindeer2, read_fof_file};
+use reindeer2::reindeer2::{read_fof_file, OutputFormat, Parameters, Reindeer2};
 
 fn get_input_fof() -> String {
     String::from("tests/chunk_data/fof.txt")
@@ -35,6 +35,7 @@ fn no_effect_chunk() {
         abundance_max: NonZero::new(65024).unwrap(),
         dense_option: false,
         canonical: false,
+        sampling_strategy: None,
     };
     assert_eq!(parameters.nb_color, 4);
 

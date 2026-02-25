@@ -17,7 +17,6 @@ rand = "0.9"
 clap = { version = "4.1", features = ["derive"] }
 zstd = "0.11"
 roaring = "0.10.9"
-nthash = "0.5.1"
 num-format = "0.4"
 csv = "1.1"
 rayon = "1.7"
@@ -30,6 +29,8 @@ log = "0.4"
 env_logger = "0.11.8"
 tar-get = { git = "https://github.com/lrobidou/tar-get.git", rev = "44391c03624d54f765f4beeb4adbff5f3df34531" }
 
+simd-minimizers = "2.3.0"
+xxhash-rust = { version = "0.8.12", features = ["xxh3", "const_xxh3"] }
 
 # [dev-dependencies]
 itertools = "0.14.0"
@@ -55,3 +56,7 @@ codegen-units = 1
 incremental = false
 panic = "abort"
 overflow-checks = false
+
+[features]
+default = []
+nightly = []

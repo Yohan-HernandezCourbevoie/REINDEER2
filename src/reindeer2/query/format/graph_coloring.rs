@@ -1,6 +1,9 @@
 use std::io::Write;
 
 use bio::io::fasta;
+use itertools::Itertools;
+
+use crate::reindeer2::query::ApproxAbundance;
 
 use super::{
     compute_median, count_to_string_witout_star_maybe_normalized, get_full_header,
@@ -9,7 +12,7 @@ use super::{
 
 // rewrites a bcalm-like graph so that headers have abund info (one of the possible query operations)
 pub fn graph_coloring(
-    sequence_results: &[Vec<Vec<u16>>],
+    sequence_results: &[Vec<Vec<ApproxAbundance>>],
     batch: &[fasta::Record],
     normalize: &Option<KmerCountsAndNormalizeValue>,
     writer: &mut impl Write,
@@ -34,11 +37,15 @@ pub fn graph_coloring(
 
         // for each color, we do the median of all values:
         for (color_idx, vals) in color_vectors.iter().enumerate() {
+            let vals = vals
+                .iter()
+                .filter_map(ApproxAbundance::to_value)
+                .collect_vec();
             if vals.is_empty() {
                 // skip color if it has no data
                 continue;
             }
-            let median = compute_median(vals);
+            let median = compute_median(&vals);
             let median = count_to_string_witout_star_maybe_normalized(median, normalize, color_idx);
             // push e.g. "col:1:12"
             header_parts.push(format!("col:{}:{}", color_idx, median));

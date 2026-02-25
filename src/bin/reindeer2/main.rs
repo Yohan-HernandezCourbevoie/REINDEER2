@@ -12,8 +12,8 @@ use cli::Cli;
 use cli::OutputFormatCli;
 use overflow_detection::{get_min_number_of_files, get_number_of_partitions};
 use reindeer2::reindeer2::{
-    BreakpointsNormalize, MatrixFormat, OutputFormat, Parameters, Reindeer2,
-    merge_multiple_indexes, read_fof_file,
+    merge_multiple_indexes, read_fof_file, BreakpointsNormalize, MatrixFormat, OutputFormat,
+    Parameters, Reindeer2, SamplingStrategy,
 };
 
 use crate::cli::{IndexArgs, MergeArgs, QueryArgs};
@@ -66,6 +66,23 @@ impl OutputFormatCli {
     }
 }
 
+fn validate_sampling_strategy(
+    kmer_sampling: Option<u64>,
+    minimizer_sampling: Option<u64>,
+) -> Option<SamplingStrategy> {
+    match (kmer_sampling, minimizer_sampling) {
+        (Some(_), Some(_)) => {
+            panic!("cannot compute sampling from both kmer sampling and minimizer sampling");
+        }
+        (Some(kmer_sampling_factor), None) => Some(SamplingStrategy::KmerSampling {
+            last_bits_to_zero: kmer_sampling_factor,
+        }),
+        (None, Some(minimizer_sampling_factor)) => Some(SamplingStrategy::MinimizerSampling {
+            last_bits_to_zero: minimizer_sampling_factor,
+        }),
+        (None, None) => None,
+    }
+}
 fn main() -> io::Result<()> {
     let args = Cli::parse();
     let env = env_logger::Env::default().default_filter_or("trace");
@@ -86,6 +103,8 @@ fn main() -> io::Result<()> {
             dense,
             stranded,
             output_dir,
+            kmer_sampling,
+            minimizer_sampling,
         }) => {
             let dense_option = dense;
             let canonical = !stranded;
@@ -189,6 +208,7 @@ fn main() -> io::Result<()> {
                 abundance_max,
                 dense_option,
                 canonical,
+                sampling_strategy: validate_sampling_strategy(kmer_sampling, minimizer_sampling),
             };
             let mut index = Reindeer2::new(parameters, output_dir);
             index.build(file_paths, chunks_size, tolerated_number_of_zeros)?;
