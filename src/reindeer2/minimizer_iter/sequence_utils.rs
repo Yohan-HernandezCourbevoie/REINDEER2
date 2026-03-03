@@ -167,7 +167,8 @@ pub fn new_sk_iterator<const CANONICAL: bool>(
         minimizer_and_superkmer_positions(seq, k, minimizer_size)
     };
 
-    SKInfosIterator::new(k, seq.len(), min_pos_vec, sks_pos_vec).unwrap()
+    SKInfosIterator::new(k, seq.len(), min_pos_vec, sks_pos_vec)
+        .expect("cannot build a super-k-mer over the input sequence (is the sequence too short ?)")
 }
 
 #[cfg(test)]

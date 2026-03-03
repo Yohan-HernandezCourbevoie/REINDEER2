@@ -599,8 +599,21 @@ fn get_file_names(file_paths: &[String]) -> Vec<String> {
         .iter()
         .map(|file_path| {
             // get the file name, excluding everything after the first "."
-            let filename = Path::new(file_path).file_name().unwrap().to_str().unwrap();
-            let name = filename.split('.').next().unwrap();
+            let name = Path::new(file_path)
+                .file_prefix()
+                .unwrap_or_else(|| {
+                    panic!(
+                        "should have been able to extact the name of the file {}",
+                        file_path
+                    )
+                })
+                .to_str()
+                .unwrap_or_else(|| {
+                    panic!(
+                        "should have been able to convert the filename {} to UTF-8",
+                        file_path
+                    )
+                });
             String::from(name)
         })
         .collect()
@@ -989,10 +1002,15 @@ fn write_kmer_counts_to_disk(
     let file_path = Path::new(dir_path).join("kmer_counts_per_color.bin");
     let file = File::create(&file_path)?;
     let mut writer = BufWriter::new(file);
-    let mut locked_vector = kmer_counts_vector.lock().unwrap();
-    let binary_encoded = bincode::serialize(&locked_vector.clone()).unwrap();
-    writer.write_all(&binary_encoded)?;
+    let mut locked_vector = kmer_counts_vector.lock().expect(
+        "fatal error: a thread holding the mutex panicked, so this thread will panic as well",
+    );
+    let locked_vector_ref: &Vec<usize> = &locked_vector;
+    let binary_encoded = bincode::serialize(locked_vector_ref)
+        .expect("should have been able to serialize the count of k-mers");
     locked_vector.clear();
+    drop(locked_vector);
+    writer.write_all(&binary_encoded)?;
     Ok(())
 }
 

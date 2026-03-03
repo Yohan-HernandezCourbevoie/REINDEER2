@@ -138,7 +138,7 @@ impl Filters {
             // write the number of colors as a u64 to the file first
             writer.write_all(&chunk_colors.to_le_bytes())?;
             // serialize the bitmap into the file
-            let mut locked_bitmap = bitmap.lock().unwrap();
+            let mut locked_bitmap = bitmap.lock().expect("fatal error: a thread holding the mutex panicked, so this thread will panic as well");
             locked_bitmap.serialize_into(&mut writer)?;
             locked_bitmap.clear();
         }
@@ -166,7 +166,7 @@ impl Filters {
 
         let ones_by_partition = Arc::new(Mutex::new(Vec::<(usize, usize)>::new()));
         self.data.par_iter().for_each(|bitmap| {
-            let locked_bitmap = bitmap.lock().unwrap();
+            let locked_bitmap = bitmap.lock().expect("fatal error: a thread holding the mutex panicked, so this thread will panic as well");
             let mut color: usize = 0;
             let mut new_color: usize = 0;
             let mut ones: usize = 0;
@@ -180,7 +180,7 @@ impl Filters {
                     fp += 1;
                 }
             });
-            let mut tmp_vector = ones_by_partition.lock().unwrap();
+            let mut tmp_vector = ones_by_partition.lock().expect("fatal error: a thread holding the mutex panicked, so this thread will panic as well");
             tmp_vector.push((ones, fp));
             atomic_sparse_one_seen.fetch_add(ones as u64, Ordering::Relaxed);
             atomic_sparse_fp_seen.fetch_add(fp as u64, Ordering::Relaxed);
@@ -188,8 +188,11 @@ impl Filters {
 
         let file = File::create("partitions_info.log")?;
         let mut writer = BufWriter::new(file);
-        let tmp_vector: std::sync::MutexGuard<'_, Vec<(usize, usize)>> =
-            ones_by_partition.lock().unwrap();
+        let tmp_vector: std::sync::MutexGuard<'_, Vec<(usize, usize)>> = ones_by_partition
+            .lock()
+            .expect(
+            "fatal error: a thread holding the mutex panicked, so this thread will panic as well",
+        );
         for (a1, a2) in tmp_vector.iter() {
             writer.write_all(format!("{},{}\n", a1, a2).as_bytes())?;
         }
