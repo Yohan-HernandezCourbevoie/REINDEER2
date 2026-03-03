@@ -58,3 +58,4 @@ overflow-checks = false
 [features]
 default = []
 nightly = []
+scalar = ["simd-minimizers/scalar"]
