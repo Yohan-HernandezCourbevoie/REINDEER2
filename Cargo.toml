@@ -8,10 +8,6 @@ description = "REINDEER2: k-mer quantification in large collections of samples"
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-# thiserror = "1.0"
-# bitstream-io = "0.9"
-# minimizer-iter = { git = "https://github.com/rust-seq/minimizer-iter.git" }
-# bit-vec = "0.6"
 bio = "0.42.0"
 rand = "0.9"
 clap = { version = "4.1", features = ["derive"] }
@@ -29,10 +25,7 @@ log = "0.4"
 env_logger = "0.11.8"
 simd-minimizers = "2.3.0"
 xxhash-rust = { version = "0.8.12", features = ["xxh3", "const_xxh3"] }
-
-# [dev-dependencies]
 itertools = "0.14.0"
-colored = "3.0.0"
 thiserror = "2.0.17"
 
 [dev-dependencies]
@@ -58,3 +51,4 @@ overflow-checks = false
 [features]
 default = []
 nightly = []
+scalar = ["simd-minimizers/scalar"]

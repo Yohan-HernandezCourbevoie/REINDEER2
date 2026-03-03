@@ -3,7 +3,10 @@
 pub fn get_number_of_partitions(nb_files: usize, nb_abundance_level: usize, bf_size: u64) -> usize {
     let max_size_roaring = 2u64.pow(32);
 
-    usize::try_from((nb_abundance_level as u64 * nb_files as u64 * bf_size).div_ceil(max_size_roaring)).expect("error in conversion")
+    usize::try_from(
+        (nb_abundance_level as u64 * nb_files as u64 * bf_size).div_ceil(max_size_roaring),
+    )
+    .expect("error in conversion")
 }
 
 /// If `requested_number_of_files` is enough to index files `files_paths`, returns `requested_number_of_files`. Returns `file_paths.len()` otherwise.

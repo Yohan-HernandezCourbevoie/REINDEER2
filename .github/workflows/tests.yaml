@@ -11,34 +11,51 @@ on:
       - dev
 
 jobs:
-  check:
+  unit_test:
     strategy:
       matrix:
         os: [ubuntu-latest]
-        toolchain: [stable, nightly]
+        features: ["", "scalar"]
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: ${{ matrix.toolchain }}
-      - name: Run check
-        run: cargo check --all-targets
+      - name: Run unit tests
+        run: cargo test --no-default-features --features "${{ matrix.features }}"
 
-  tests_stable:
+  unit_test_nightly:
     strategy:
       matrix:
         os: [ubuntu-latest]
-        toolchain: [stable]
+        features: ["", "scalar"]
+    runs-on: ${{ matrix.os }}
+    continue-on-error: true
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@nightly
+      - name: Run unit tests
+        run: cargo test --no-default-features --features "${{ matrix.features }}"
+
+  system-tests:
+    strategy:
+      matrix:
+        os: [ubuntu-latest]
+        features: ["", "scalar"]
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: ${{ matrix.toolchain }}
-      - name: Run tests
-        run: cargo test
+
+      - name: build project
+        run: cargo build --release
+
+      - name: Run system tests
+        run: |
+          chmod +x tests/system_testing/run.sh
+          tests/system_testing/run.sh

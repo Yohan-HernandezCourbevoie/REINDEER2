@@ -51,7 +51,8 @@ impl DenseIndexPartition {
     }
 
     pub fn dump(&mut self, writer: &mut impl Write) -> std::io::Result<()> {
-        let binary_encoded = bincode::serialize(self).unwrap();
+        let binary_encoded = bincode::serialize(self)
+            .expect("fatal error: should have been able to serialize the dense partition");
         writer.write_all(&binary_encoded)?;
         self.data.clear();
         Ok(())
@@ -145,7 +146,7 @@ impl DenseIndex {
                 Path::new(dir_path).join(format!("partition_dense_index_p{}.bin", partition_id));
             let file = File::create(&file_path)?;
             let mut writer: BufWriter<File> = BufWriter::new(file);
-            let mut partition = partition.lock().unwrap();
+            let mut partition = partition.lock().expect("fatal error: a thread holding the mutex panicked, so this thread will panic as well");
             partition.dump(&mut writer)?;
         }
         Ok(())

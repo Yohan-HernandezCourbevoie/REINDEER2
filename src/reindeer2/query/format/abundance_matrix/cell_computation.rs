@@ -171,7 +171,12 @@ pub fn cell_compute_breakpoints(abund_values: &[ApproxAbundance], penalty: f64) 
     let abund_values = abund_values
         .iter()
         .copied()
-        .map(|x| x.to_value().map(u64::from).unwrap()) // TODO collect all valid values before
+        .map(|x| {
+            u64::from(
+                x.to_value()
+                    .unwrap_or_else(|| panic!("could not compute the value of {:?}", x)),
+            )
+        }) // TODO collect all valid values before
         .collect_vec();
     let breakpoints = pelt(&abund_values, pelt::score, penalty);
     let breakpoints = breakpoints.iter().map(usize::to_string).join(",");
@@ -185,10 +190,6 @@ mod tests {
     use super::*;
 
     use super::ApproxAbundance as Approx;
-
-    fn assert_almost_eq(a: f64, b: f64, e: f64) {
-        assert!((a - b).abs() < e);
-    }
 
     #[test]
     fn test_cell_compute_average() {
