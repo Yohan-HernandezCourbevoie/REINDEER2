@@ -21,7 +21,6 @@ cargo build --quiet
 set -euo pipefail
 
 for sampling in 0 1 2 3 4; do
-    echo $sampling
     expected_var="EXPECTED_QUERY_OUTPUT_${sampling}"
     expected="${!expected_var}"
 
