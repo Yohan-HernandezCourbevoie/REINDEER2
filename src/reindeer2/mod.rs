@@ -3698,7 +3698,6 @@ mod tests {
 
     #[test]
     fn test_output_rd1() {
-        use itertools::Itertools;
         let test_dir = "test_output_rd1";
         fs::create_dir_all(test_dir).expect("Failed to create test directory");
 
@@ -3763,7 +3762,6 @@ shared_revcomp_with_other_test_file\t0-19:3\t0-19:10",
 
     #[test]
     fn test_output_duplication() {
-        use itertools::Itertools;
         let test_dir = "test_output_duplication ";
         fs::create_dir_all(test_dir).expect("Failed to create test directory");
 
@@ -3825,7 +3823,6 @@ header_0\t0-69:*\t0-69:1",
 
     #[test]
     fn test_output_rd1_non_canonical() {
-        use itertools::Itertools;
         let test_dir = "test_output_rd1_canonical";
         fs::create_dir_all(test_dir).expect("Failed to create test directory");
 
@@ -3887,7 +3884,6 @@ shared_revcomp_with_other_test_file\t0-19:*\t0-19:10",
         fs::remove_dir_all(test_dir).expect("Failed to clean up test directory");
     }
 
-    use csv::Reader;
     #[test]
     fn test_merge_multiple_indexes() -> io::Result<()> {
         let base_dir = "test_merge_indexes";
