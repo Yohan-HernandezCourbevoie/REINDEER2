@@ -59,8 +59,8 @@ pub enum OutputFormat {
 }
 
 /// Reindeer2 parameters
-#[derive(Serialize, Deserialize, Clone)]
-#[cfg_attr(any(test, debug_assertions), derive(PartialEq, Debug))]
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[cfg_attr(any(test, debug_assertions), derive(PartialEq))]
 pub struct Parameters {
     pub bf_size: u64,
     pub partition_number: usize,
