@@ -16,7 +16,7 @@ use reindeer2::reindeer2::{
     Parameters, Reindeer2, SamplingStrategy,
 };
 
-use crate::cli::{IndexArgs, MergeArgs, QueryArgs};
+use crate::cli::{IndexArgs, InfosArgs, MergeArgs, QueryArgs};
 
 impl OutputFormatCli {
     fn to_output_format(self, normalized: Option<u64>, breakpoints: Option<f64>) -> OutputFormat {
@@ -292,6 +292,14 @@ fn main() -> io::Result<()> {
                 .expect("Failed to merge the given indexes.");
 
             log::info!("Query complete in {:.2?}", start_time.elapsed());
+        }
+        cli::Command::Infos(InfosArgs { index }) => {
+            let index_dir = index;
+            let index = Reindeer2::load_from_disk(&index_dir)
+                .expect("should have been able to load index infos from disk");
+            let infos = index.get_index_infos();
+
+            println!("{infos}");
         }
     }
 

@@ -23,6 +23,8 @@ pub enum Command {
     /// Merge option
     #[clap(alias = "m")]
     Merge(MergeArgs),
+    /// Get infos about a REINDEER2 index
+    Infos(InfosArgs),
 }
 
 // #[derive(Copy, Clone, Debug, PartialEq, ValueEnum)]
@@ -148,4 +150,11 @@ pub struct MergeArgs {
     /// Sets the index output directory (default: random name in the form of RD2_index_)
     #[arg(short = 'o', long = "output-dir", value_name = "OUT")]
     pub output_dir: Option<String>,
+}
+
+#[derive(Args, Debug)]
+pub struct InfosArgs {
+    /// Path to the directory containing the prebuilt index
+    #[arg(value_name = "DIR")]
+    pub index: String,
 }

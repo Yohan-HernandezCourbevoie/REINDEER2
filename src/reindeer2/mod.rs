@@ -29,7 +29,7 @@ use zstd::stream::decode_all;
 use crate::reindeer2::dense_index::DenseIndex;
 use crate::reindeer2::filter::Filters;
 use crate::reindeer2::minimizer_iter::{KmerSampler, MinimizerSampler, NoSampler, Sampler};
-use crate::reindeer2::query::ApproxAbundance;
+use crate::reindeer2::query::{load_kmer_counts_vector, ApproxAbundance};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum BreakpointsNormalize {
@@ -59,8 +59,8 @@ pub enum OutputFormat {
 }
 
 /// Reindeer2 parameters
-#[derive(Serialize, Deserialize, Clone)]
-#[cfg_attr(any(test, debug_assertions), derive(PartialEq, Debug))]
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[cfg_attr(any(test, debug_assertions), derive(PartialEq))]
 pub struct Parameters {
     pub bf_size: u64,
     pub partition_number: usize,
@@ -147,11 +147,50 @@ macro_rules! mut_if_debug {
     };
 }
 
+#[derive(Serialize, Deserialize)]
+pub struct Infos {
+    pub parameters: Parameters,
+    pub indexed_file_names: Vec<(String, usize)>,
+    pub index_dir: String,
+}
+
+use std::fmt;
+
+impl fmt::Display for Infos {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "index directory: \"{}\"", self.index_dir)?;
+        writeln!(f, "parameters: {:#?}", self.parameters)?;
+        writeln!(f, "indexed filenames and k-mers: [")?;
+        for (name, size) in &self.indexed_file_names {
+            writeln!(f, "  (\"{}\", {}),", name, size)?;
+        }
+        writeln!(f, "]")
+    }
+}
+
 impl Reindeer2 {
     pub const fn new(parameters: Parameters, index_dir: String) -> Self {
         Self {
             parameters,
             indexed_file_names: Vec::new(),
+            index_dir,
+        }
+    }
+
+    pub fn get_index_infos(&self) -> Infos {
+        let Self {
+            parameters,
+            indexed_file_names,
+            index_dir,
+        } = self;
+        let parameters = parameters.clone();
+        let index_dir = index_dir.clone();
+        let kmer_count = load_kmer_counts_vector(&self.index_dir)
+            .expect("Failed to load from disk the kmer counts vector");
+        let indexed_file_names = indexed_file_names.iter().cloned().zip(kmer_count).collect();
+        Infos {
+            parameters,
+            indexed_file_names,
             index_dir,
         }
     }
@@ -3698,7 +3737,6 @@ mod tests {
 
     #[test]
     fn test_output_rd1() {
-        use itertools::Itertools;
         let test_dir = "test_output_rd1";
         fs::create_dir_all(test_dir).expect("Failed to create test directory");
 
@@ -3763,7 +3801,6 @@ shared_revcomp_with_other_test_file\t0-19:3\t0-19:10",
 
     #[test]
     fn test_output_duplication() {
-        use itertools::Itertools;
         let test_dir = "test_output_duplication ";
         fs::create_dir_all(test_dir).expect("Failed to create test directory");
 
@@ -3825,7 +3862,6 @@ header_0\t0-69:*\t0-69:1",
 
     #[test]
     fn test_output_rd1_non_canonical() {
-        use itertools::Itertools;
         let test_dir = "test_output_rd1_canonical";
         fs::create_dir_all(test_dir).expect("Failed to create test directory");
 
@@ -3887,7 +3923,6 @@ shared_revcomp_with_other_test_file\t0-19:*\t0-19:10",
         fs::remove_dir_all(test_dir).expect("Failed to clean up test directory");
     }
 
-    use csv::Reader;
     #[test]
     fn test_merge_multiple_indexes() -> io::Result<()> {
         let base_dir = "test_merge_indexes";

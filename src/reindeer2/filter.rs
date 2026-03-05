@@ -159,10 +159,10 @@ impl Filters {
     ) -> std::io::Result<()> {
         use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
         use std::sync::atomic::Ordering;
-        use std::{
-            fs::File,
-            io::{BufWriter, Write},
-        };
+        // use std::{
+        //     fs::File,
+        //     io::{BufWriter, Write},
+        // };
 
         let ones_by_partition = Arc::new(Mutex::new(Vec::<(usize, usize)>::new()));
         self.data.par_iter().for_each(|bitmap| {
@@ -186,17 +186,17 @@ impl Filters {
             atomic_sparse_fp_seen.fetch_add(fp as u64, Ordering::Relaxed);
         });
 
-        let file = File::create("partitions_info.log")?;
-        let mut writer = BufWriter::new(file);
-        let tmp_vector: std::sync::MutexGuard<'_, Vec<(usize, usize)>> = ones_by_partition
-            .lock()
-            .expect(
-            "fatal error: a thread holding the mutex panicked, so this thread will panic as well",
-        );
-        for (a1, a2) in tmp_vector.iter() {
-            writer.write_all(format!("{},{}\n", a1, a2).as_bytes())?;
-        }
-        writer.flush()?;
+        // let file = File::create("partitions_info.log")?;
+        // let mut writer = BufWriter::new(file);
+        // let tmp_vector: std::sync::MutexGuard<'_, Vec<(usize, usize)>> = ones_by_partition
+        //     .lock()
+        //     .expect(
+        //     "fatal error: a thread holding the mutex panicked, so this thread will panic as well",
+        // );
+        // for (a1, a2) in tmp_vector.iter() {
+        //     writer.write_all(format!("{},{}\n", a1, a2).as_bytes())?;
+        // }
+        // writer.flush()?;
 
         Ok(())
     }
