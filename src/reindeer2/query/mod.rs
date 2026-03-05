@@ -189,7 +189,7 @@ pub fn update_color_abundances(
     }
 }
 
-fn load_kmer_counts_vector(dir_path: &str) -> io::Result<Vec<usize>> {
+pub fn load_kmer_counts_vector(dir_path: &str) -> io::Result<Vec<usize>> {
     let mut file = File::open(Path::new(dir_path).join("kmer_counts_per_color.bin"))?;
 
     // Read the rest of the file to deserialize the hashmap
@@ -277,6 +277,7 @@ mod tests {
         let abundance_number = 2;
         let base = 2.0;
 
+        #[allow(clippy::identity_op)]
         bitmap.insert((base_position + 0) as u32); // color 0, abundance 0
         bitmap.insert((base_position + 1) as u32); // color 0, abundance 1
         bitmap.insert((base_position + 2) as u32); // color 1, abundance 0

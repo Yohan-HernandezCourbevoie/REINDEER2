@@ -29,7 +29,7 @@ use zstd::stream::decode_all;
 use crate::reindeer2::dense_index::DenseIndex;
 use crate::reindeer2::filter::Filters;
 use crate::reindeer2::minimizer_iter::{KmerSampler, MinimizerSampler, NoSampler, Sampler};
-use crate::reindeer2::query::ApproxAbundance;
+use crate::reindeer2::query::{load_kmer_counts_vector, ApproxAbundance};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum BreakpointsNormalize {
@@ -147,11 +147,50 @@ macro_rules! mut_if_debug {
     };
 }
 
+#[derive(Serialize, Deserialize)]
+pub struct Infos {
+    pub parameters: Parameters,
+    pub indexed_file_names: Vec<(String, usize)>,
+    pub index_dir: String,
+}
+
+use std::fmt;
+
+impl fmt::Display for Infos {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "index directory: \"{}\"", self.index_dir)?;
+        writeln!(f, "parameters: {:#?}", self.parameters)?;
+        writeln!(f, "indexed filenames and k-mers: [")?;
+        for (name, size) in &self.indexed_file_names {
+            writeln!(f, "  (\"{}\", {}),", name, size)?;
+        }
+        writeln!(f, "]")
+    }
+}
+
 impl Reindeer2 {
     pub const fn new(parameters: Parameters, index_dir: String) -> Self {
         Self {
             parameters,
             indexed_file_names: Vec::new(),
+            index_dir,
+        }
+    }
+
+    pub fn get_index_infos(&self) -> Infos {
+        let Self {
+            parameters,
+            indexed_file_names,
+            index_dir,
+        } = self;
+        let parameters = parameters.clone();
+        let index_dir = index_dir.clone();
+        let kmer_count = load_kmer_counts_vector(&self.index_dir)
+            .expect("Failed to load from disk the kmer counts vector");
+        let indexed_file_names = indexed_file_names.iter().cloned().zip(kmer_count).collect();
+        Infos {
+            parameters,
+            indexed_file_names,
             index_dir,
         }
     }
