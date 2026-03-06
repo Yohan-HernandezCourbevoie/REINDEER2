@@ -4,7 +4,7 @@ mod index;
 mod merge;
 mod minimizer_iter;
 mod query;
-
+mod test_utils;
 use bio::io::fasta;
 use flate2::read::GzDecoder;
 use itertools::Itertools;
@@ -29,7 +29,7 @@ use zstd::stream::decode_all;
 use crate::reindeer2::dense_index::DenseIndex;
 use crate::reindeer2::filter::Filters;
 use crate::reindeer2::minimizer_iter::{KmerSampler, MinimizerSampler, NoSampler, Sampler};
-use crate::reindeer2::query::{load_kmer_counts_vector, ApproxAbundance};
+use crate::reindeer2::query::{fimpera, load_kmer_counts_vector, ApproxAbundance};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum BreakpointsNormalize {
@@ -73,6 +73,7 @@ pub struct Parameters {
     pub dense_option: bool,
     pub canonical: bool,
     pub sampling_strategy: Option<SamplingStrategy>,
+    pub findere_z: usize,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -95,6 +96,7 @@ impl Parameters {
         dense_option: bool,
         canonical: bool,
         sampling_strategy: Option<SamplingStrategy>,
+        findere_z: usize,
     ) -> Self {
         Self {
             bf_size,
@@ -108,6 +110,7 @@ impl Parameters {
             dense_option,
             canonical,
             sampling_strategy,
+            findere_z,
         }
     }
 
@@ -323,6 +326,7 @@ impl Reindeer2 {
                                             &maybe_dense_indexes,
                                             &bloom_filters,
                                             parameters.k,
+                                            parameters.findere_z,
                                             parameters.m,
                                             parameters.partition_number,
                                             parameters.nb_color,
@@ -352,6 +356,7 @@ impl Reindeer2 {
                                             &maybe_dense_indexes,
                                             &bloom_filters,
                                             parameters.k,
+                                            parameters.findere_z,
                                             parameters.m,
                                             parameters.partition_number,
                                             parameters.nb_color,
@@ -379,6 +384,7 @@ impl Reindeer2 {
                                             &maybe_dense_indexes,
                                             &bloom_filters,
                                             parameters.k,
+                                            parameters.findere_z,
                                             parameters.m,
                                             parameters.partition_number,
                                             parameters.nb_color,
@@ -564,9 +570,10 @@ impl Reindeer2 {
         S: Sampler,
     {
         let parameters = &self.parameters;
-        let partition_kmers = query::build_partitions_kmers(
+        let s = parameters.k - parameters.findere_z;
+        let partition_smers = query::build_partitions_smers(
             batch,
-            parameters.k,
+            s,
             parameters.m,
             parameters.partition_number as u64,
             parameters.canonical,
@@ -577,7 +584,7 @@ impl Reindeer2 {
         // This will store final results for *all* sequences in this batch.
         // Key: sequence header; Value: vector of vector of abundances
         let result_with_positions: HashMap<usize, Vec<Vec<(u32, ApproxAbundance)>>> =
-            partition_kmers
+            partition_smers
                 .into_par_iter()
                 // 1) Create a local HashMap in each thread
                 .fold(
@@ -586,11 +593,11 @@ impl Reindeer2 {
                     // (I needed this extra usize to get the correct order of kmer in the output)
                     HashMap::<usize, Vec<Vec<(u32, ApproxAbundance)>>>::new,
                     |local_results: HashMap<usize, Vec<Vec<(u32, ApproxAbundance)>>>,
-                     (partition_index, kmers)| {
+                     (partition_index, smers)| {
                         query::fold_into_hashmap(
                             local_results,
                             partition_index,
-                            kmers,
+                            smers,
                             base,
                             bf_dir,
                             parameters.bf_size,
@@ -607,9 +614,9 @@ impl Reindeer2 {
                     query::merge_results,
                 );
 
-        let mut res = vec![vec![]; batch.len()];
+        let mut smer_res: Vec<Vec<Vec<ApproxAbundance>>> = vec![vec![]; batch.len()];
         let empty = vec![vec![]; self.parameters.nb_color];
-        (0..res.len())
+        (0..smer_res.len())
             .map(|header_id| {
                 (
                     header_id,
@@ -617,19 +624,20 @@ impl Reindeer2 {
                 )
             })
             .for_each(|(header, color_vectors)| {
-                res[header] = color_vectors
+                smer_res[header] = color_vectors
                     .iter()
                     .map(|x| {
                         query::sort_abundance_vec(
                             x,
-                            batch[header].seq().len() - self.parameters.k + 1,
+                            batch[header].seq().len() - s + 1,
                             #[cfg(any(debug_assertions, test))]
-                            self.parameters.k,
+                            s,
                         )
                     })
                     .collect();
             });
-        res
+
+        fimpera(smer_res, parameters.findere_z)
     }
 }
 
@@ -915,13 +923,13 @@ fn process_fasta_in_batches<R: io::BufRead>(
 // --- BF MANAGEMENT ---
 
 const fn compute_base_position(
-    kmer_hash: u64,
+    smer_hash: u64,
     partitioned_bf_size: usize,
     color_number: usize,
     abundance_number: usize,
 ) -> u64 {
     // return the first position of the concerned column in the partition
-    let position = kmer_hash % (partitioned_bf_size as u64);
+    let position = smer_hash % (partitioned_bf_size as u64);
     position * (color_number as u64) * (abundance_number as u64)
 }
 
@@ -1328,11 +1336,13 @@ fn compute_base(abundance_number: NonZero<usize>, abundance_max: NonZero<u16>) -
 #[cfg(test)]
 mod tests {
 
-    use crate::reindeer2::merge::merge_multiple_indexes;
+    use crate::reindeer2::{merge::merge_multiple_indexes, test_utils::AutoRemoveDirectory};
 
     use super::*;
 
     use itertools::Itertools;
+    use rstest::{fixture, rstest};
+    use rstest_reuse::{self, *};
 
     #[test]
     fn test_read_fof_file() {
@@ -1618,9 +1628,24 @@ mod tests {
         }
     */
 
-    #[test]
-    fn test_write_and_read_metadata() {
-        let bf_dir = "test_bf_dir";
+    #[template]
+    #[rstest]
+    #[case(0)]
+    #[case(2)]
+    #[case(4)]
+    #[case(6)]
+    #[case(8)]
+    #[case(10)]
+    fn findere_fixture(#[case] z: usize) {}
+
+    #[fixture]
+    pub fn random_directory() -> AutoRemoveDirectory {
+        AutoRemoveDirectory::create_random()
+    }
+
+    #[apply(findere_fixture)]
+    fn test_write_and_read_metadata(#[case] z: usize, random_directory: AutoRemoveDirectory) {
+        let bf_dir = random_directory.filename().to_str().unwrap();
         let parameters = Parameters {
             k: 31,
             m: 15,
@@ -1633,6 +1658,7 @@ mod tests {
             dense_option: false,
             canonical: false,
             sampling_strategy: None,
+            findere_z: z,
         };
         let indexed_file_names = vec![String::from("a"), String::from("b")];
 
@@ -1643,8 +1669,6 @@ mod tests {
 
         let actual = Reindeer2::load_from_disk(bf_dir).unwrap();
         assert_eq!(actual, expected);
-
-        fs::remove_dir_all(bf_dir).expect("Failed to remove test directory");
     }
 
     /// Helper function for tests
@@ -1693,9 +1717,12 @@ mod tests {
             .collect()
     }
 
-    #[test]
-    fn test_build_and_query_index_single_sparse() {
-        let test_dir = "test_files_bq0";
+    #[apply(findere_fixture)]
+    fn test_build_and_query_index_single_sparse(
+        #[case] z: usize,
+        random_directory: AutoRemoveDirectory,
+    ) {
+        let test_dir = random_directory.filename().to_str().unwrap();
         fs::create_dir_all(test_dir).expect("Failed to create test directory");
 
         let fof_path = format!("{}/fof.txt", test_dir);
@@ -1728,6 +1755,7 @@ mod tests {
             dense_option: false,
             canonical: false,
             sampling_strategy: None,
+            findere_z: z,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -1761,15 +1789,7 @@ mod tests {
         results.sort();
         expected_results.sort();
 
-        for (expected, actual) in expected_results.iter().zip(results.iter()) {
-            assert_eq!(
-                expected, actual,
-                "Mismatch: expected {:?}, got {:?}",
-                expected, actual
-            );
-        }
-
-        fs::remove_dir_all(test_dir).expect("Failed to clean up test directory");
+        assert_eq!(results, expected_results);
     }
 
     #[test]
@@ -1807,6 +1827,7 @@ mod tests {
             dense_option: true,
             canonical: true,
             sampling_strategy: None,
+            findere_z: 0,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -1886,6 +1907,7 @@ mod tests {
             dense_option: false,
             canonical: true,
             sampling_strategy: None,
+            findere_z: 0,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -1963,6 +1985,7 @@ mod tests {
             dense_option: true,
             canonical: true,
             sampling_strategy: None,
+            findere_z: 0,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -2039,6 +2062,7 @@ mod tests {
             dense_option: false,
             canonical: true,
             sampling_strategy: None,
+            findere_z: 0,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -2112,6 +2136,7 @@ mod tests {
             dense_option: true,
             canonical: true,
             sampling_strategy: None,
+            findere_z: 0,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -2184,6 +2209,7 @@ mod tests {
             dense_option: false,
             canonical: true,
             sampling_strategy: None,
+            findere_z: 0,
         };
         let chunks_size = 128;
         let threshold = 1;
@@ -2263,6 +2289,7 @@ mod tests {
             dense_option: true,
             canonical: true,
             sampling_strategy: None,
+            findere_z: 0,
         };
         let chunks_size = 128;
         let threshold = 1;
@@ -2341,6 +2368,7 @@ mod tests {
             dense_option: false,
             canonical: true,
             sampling_strategy: None,
+            findere_z: 0,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -2421,6 +2449,7 @@ mod tests {
             dense_option: true,
             canonical: true,
             sampling_strategy: None,
+            findere_z: 0,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -2501,6 +2530,7 @@ mod tests {
             dense_option: false,
             canonical: true,
             sampling_strategy: None,
+            findere_z: 0,
         };
         let chunks_size = 1;
         let threshold = parameters.nb_color;
@@ -2581,6 +2611,7 @@ mod tests {
             dense_option: true,
             canonical: true,
             sampling_strategy: None,
+            findere_z: 0,
         };
         let chunks_size = 1;
         let threshold = parameters.nb_color;
@@ -2657,6 +2688,7 @@ mod tests {
             dense_option: false,
             canonical: true,
             sampling_strategy: None,
+            findere_z: 0,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -2731,6 +2763,7 @@ mod tests {
             dense_option: true,
             canonical: true,
             sampling_strategy: None,
+            findere_z: 0,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -3052,6 +3085,7 @@ mod tests {
             dense_option: false,
             canonical: true,
             sampling_strategy: None,
+            findere_z: 0,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -3197,6 +3231,7 @@ mod tests {
             dense_option: false,
             canonical: true,
             sampling_strategy: None,
+            findere_z: 0,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -3304,6 +3339,7 @@ mod tests {
             dense_option: false,
             canonical: true,
             sampling_strategy: None,
+            findere_z: 0,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -3409,6 +3445,7 @@ mod tests {
             dense_option: false,
             canonical: true,
             sampling_strategy: None,
+            findere_z: 0,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -3609,6 +3646,7 @@ mod tests {
             dense_option: false,
             canonical: true,
             sampling_strategy: None,
+            findere_z: 0,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -3673,6 +3711,7 @@ mod tests {
             dense_option: false,
             canonical: false,
             sampling_strategy: None,
+            findere_z: 0,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -3756,6 +3795,7 @@ mod tests {
             dense_option: false,
             canonical: true,
             sampling_strategy: None,
+            findere_z: 0,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -3820,6 +3860,7 @@ shared_revcomp_with_other_test_file\t0-19:3\t0-19:10",
             dense_option: false,
             canonical: true,
             sampling_strategy: None,
+            findere_z: 0,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -3881,6 +3922,7 @@ header_0\t0-69:*\t0-69:1",
             dense_option: false,
             canonical: false,
             sampling_strategy: None,
+            findere_z: 0,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -3970,6 +4012,7 @@ shared_revcomp_with_other_test_file\t0-19:*\t0-19:10",
             dense_option: false,
             canonical: true,
             sampling_strategy: None,
+            findere_z: 0,
         };
 
         let chunks_size = 128;

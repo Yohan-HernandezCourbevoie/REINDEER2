@@ -36,6 +36,7 @@ fn no_effect_chunk() {
         dense_option: false,
         canonical: false,
         sampling_strategy: None,
+        findere_z: 4,
     };
     assert_eq!(parameters.nb_color, 4);
 
