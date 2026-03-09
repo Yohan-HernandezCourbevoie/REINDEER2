@@ -71,7 +71,7 @@ impl ApproxAbundance {
     }
 
     pub fn select_abundance_from_candidates(candidates: &[(u32, Self)]) -> Option<&(u32, Self)> {
-        candidates.iter().min()
+        candidates.iter().max()
     }
 
     pub fn new_absent() -> Self {
