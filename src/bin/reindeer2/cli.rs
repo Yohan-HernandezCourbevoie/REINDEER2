@@ -96,7 +96,10 @@ pub struct IndexArgs {
     #[arg(long)]
     pub minimizer_sampling: Option<u64>,
 
-    /// Expert parameter: findere's z parameter: index (k-z)-mers as proxy for k-mers. Higher z: less false positive, but if k-z < 16, increases false positive rate.  
+    /// Expert parameter: findere's z parameter: index (k-z)-mers as proxy for k-mers. Default: z=4.
+    /// Rule of thumb:
+    ///  - higher z decreases false positive rate, if to k-z > 16
+    ///  - if k-z <= 16, the false positive rate will increase
     #[arg(long, value_name = "z")]
     pub findere: Option<usize>,
 }
