@@ -87,10 +87,12 @@ pub fn fold_into_hashmap(
         let hashmap: DenseIndexPartition = if is_dense {
             let path_dense_index =
                 format!("{}/partition_dense_index_p{}.bin", bf_dir, partition_index);
-            DenseIndexPartition::load_from_disk(&path_dense_index).expect(&format!(
-                "Failed to load dense index for partition {}",
-                partition_index
-            ))
+            DenseIndexPartition::load_from_disk(&path_dense_index).unwrap_or_else(|_| {
+                panic!(
+                    "Failed to load dense index for partition {}",
+                    partition_index
+                )
+            })
         } else {
             DenseIndexPartition::new()
         };
