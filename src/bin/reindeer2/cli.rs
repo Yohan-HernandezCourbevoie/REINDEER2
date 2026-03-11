@@ -1,5 +1,7 @@
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
+pub const DEFAULT_Z: usize = 4;
+
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 pub struct Cli {
@@ -93,6 +95,13 @@ pub struct IndexArgs {
     /// k-mer sampling strategy
     #[arg(long)]
     pub minimizer_sampling: Option<u64>,
+
+    /// Expert parameter: findere's z parameter: index (k-z)-mers as proxy for k-mers. Default: z=4.
+    /// Rule of thumb:
+    ///  - higher z decreases false positive rate, if to k-z > 16
+    ///  - if k-z <= 16, the false positive rate will increase
+    #[arg(long, value_name = "z")]
+    pub findere: Option<usize>,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, ValueEnum)]

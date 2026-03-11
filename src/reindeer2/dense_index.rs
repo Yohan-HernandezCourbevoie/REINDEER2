@@ -181,7 +181,8 @@ impl DenseIndex {
         if partition.contains_key(&kmer_hash) {
             // update the vector with the right abundance
             if let Some(abundance_vector) = partition.get_mut(&kmer_hash) {
-                abundance_vector[path_num_global] = (log_abundance + 1) as u8;
+                abundance_vector[path_num_global] =
+                    abundance_vector[path_num_global].max((log_abundance + 1) as u8);
             }
             return true;
         }

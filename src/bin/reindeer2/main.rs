@@ -3,6 +3,7 @@ mod memory_measure;
 mod overflow_detection;
 
 use clap::Parser;
+use log::warn;
 use rand::Rng;
 use std::io::{self};
 use std::num::NonZero;
@@ -105,6 +106,7 @@ fn main() -> io::Result<()> {
             output_dir,
             kmer_sampling,
             minimizer_sampling,
+            findere,
         }) => {
             let dense_option = dense;
             let canonical = !stranded;
@@ -164,6 +166,26 @@ fn main() -> io::Result<()> {
                 minimizer
             };
 
+            let sampling_strategy = validate_sampling_strategy(kmer_sampling, minimizer_sampling);
+
+            // test that findere is not activated at the same time as sampling
+            let findere_z = match (findere, sampling_strategy) {
+                (Some(_), Some(_)) => panic!("sampling and findere are currently not supported"),
+                (Some(z), None) => z, // user asked for findere without sampling
+                (None, Some(_)) => 0, // user asked sampling and not findere
+                (None, None) => cli::DEFAULT_Z, // user did'nt asked anything, let's provide findere's default
+            };
+
+            assert!(
+                kmer > findere_z,
+                "Fatal error: findere's z parameter cannot be higher than k. We recommand (k-z) > 16."
+            );
+
+            if (kmer - findere_z) <= 16 {
+                warn!("Indexing with k = {} and z = {}. A high false positive rate is expected. Using (k-z) > 16 is recommanded.", kmer, findere_z);
+                println!("Warning: with current chosen values (k = {}, findere's z = {}), the index might have a lot of false positives. We recommand using using (k-z) > 16.", kmer, findere_z);
+            }
+
             let tolerated_number_of_zeros = 0;
 
             let start_time = Instant::now();
@@ -209,6 +231,7 @@ fn main() -> io::Result<()> {
                 dense_option,
                 canonical,
                 sampling_strategy: validate_sampling_strategy(kmer_sampling, minimizer_sampling),
+                findere_z,
             };
             let mut index = Reindeer2::new(parameters, output_dir);
             index.build(file_paths, chunks_size, tolerated_number_of_zeros)?;

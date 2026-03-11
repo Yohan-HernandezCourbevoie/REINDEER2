@@ -4,7 +4,7 @@ mod index;
 mod merge;
 mod minimizer_iter;
 mod query;
-
+mod test_utils;
 use bio::io::fasta;
 use flate2::read::GzDecoder;
 use itertools::Itertools;
@@ -29,7 +29,7 @@ use zstd::stream::decode_all;
 use crate::reindeer2::dense_index::DenseIndex;
 use crate::reindeer2::filter::Filters;
 use crate::reindeer2::minimizer_iter::{KmerSampler, MinimizerSampler, NoSampler, Sampler};
-use crate::reindeer2::query::{load_kmer_counts_vector, ApproxAbundance};
+use crate::reindeer2::query::{fimpera, load_kmer_counts_vector, ApproxAbundance};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum BreakpointsNormalize {
@@ -37,51 +37,99 @@ pub enum BreakpointsNormalize {
     Normalize(u64),
 }
 
+/// Matrix formats supported by REINDEER 2.
 #[derive(Clone, Debug, PartialEq)]
 pub enum MatrixFormat {
-    Raw(
-        /// None if not computing breakpoints nor normalization
-        Option<BreakpointsNormalize>,
-    ),
+    /// Raw format: the abundance of each k-mer is present in the output.
+    Raw(Option<BreakpointsNormalize>),
+    /// Average format: the average of the k-mers of the sequence is outputted.
     Average {
+        /// This format can be normalized, i.e. the abundance is adjusted
+        /// by a factor depending on a constant and on the number of k-mers in the indexed dataset.
         normalized: Option<u64>,
     },
+    /// Median format: the median of the k-mers of the sequence is outputted.
     Median {
+        /// This format can be normalized, i.e. the abundance is adjusted
+        /// by a factor depending on a constant and on the number of k-mers in the indexed dataset.
         normalized: Option<u64>,
     },
 }
 
+/// Output formats supported by REINDEER 2.
 #[derive(Clone, Debug, PartialEq)]
 pub enum OutputFormat {
-    Colored { normalized: Option<u64> },
-    Median { normalized: Option<u64> },
-    AbundanceMatrix { format: MatrixFormat },
+    /// Colored format: annotate the input file with abundances rather than producing the standard output file.
+    Colored {
+        /// This format can be normalized, i.e. the abundance is adjusted
+        /// by a factor depending on a constant and on the number of k-mers in the indexed dataset.
+        normalized: Option<u64>,
+    },
+    /// Median format: for each color, returns the median of k-mer abundance per read.
+    Median {
+        /// This format can be normalized, i.e. the abundance is adjusted
+        /// by a factor depending on a constant and on the number of k-mers in the indexed dataset.
+        normalized: Option<u64>,
+    },
+    /// Matrix formats: output a matrix of k-mers. Row: queried sequences, columns: indexed datasets.
+    AbundanceMatrix {
+        /// The format of the matrix.
+        format: MatrixFormat,
+    },
 }
 
-/// Reindeer2 parameters
+/// REINDEER 2's  parameters
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[cfg_attr(any(test, debug_assertions), derive(PartialEq))]
 pub struct Parameters {
+    /// Size of the Bloom filter in bits
     pub bf_size: u64,
+    /// Number of partition in the index
     pub partition_number: usize,
+    /// Size of the k-mers
     pub k: usize,
+    /// Size of the minimizers
     pub m: usize,
+    /// Number of color in the index
     pub nb_color: usize,
+    /// Number of abundance levels in the index
     pub abundance_number: NonZero<usize>,
+    /// Minimum abundance for a k-mer to be indexed
     pub abundance_min: u16,
+    /// Maximal abundance of k-mers. If a k-mer has a greater abundance, its abundance is capped.
     pub abundance_max: NonZero<u16>,
+    /// True if and only if the index a dense index
     pub dense_option: bool,
+    /// True if and only if the index is buit in canonical mode, i.e. we consider a strand equal to its reverse complement
     pub canonical: bool,
+    /// The strategy to sample k-mers or minimizers.
+    /// Allows to save query time, indexation time and memory, at the cost of some approxitmation.
+    /// If None, no sampling is performed.
     pub sampling_strategy: Option<SamplingStrategy>,
+    /// The z parameter of findere.
+    /// The index will contains (k-z)-mers, and reconstruct k-mers on the fly.
+    /// This allows to decrease the false positive rate of queries.
+    pub findere_z: usize,
 }
 
+/// The strategy to sample k-mers or minimizers.
+/// Allows to save query time, indexation time and memory, at the cost of some approxitmation.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub enum SamplingStrategy {
-    MinimizerSampling { last_bits_to_zero: u64 },
-    KmerSampling { last_bits_to_zero: u64 },
+    /// Only take into account minimizers which hash ends by at least `last_bits_to_zero` 0s.
+    MinimizerSampling {
+        /// The minimum number of 0 a minimizer should have at the end of its hash to be sampled
+        last_bits_to_zero: u64,
+    },
+    /// Only take into account k-mers which hash ends by at least `last_bits_to_zero` 0s.
+    KmerSampling {
+        /// The minimum number of 0 a k-mer should have at the end of its hash to be sampled
+        last_bits_to_zero: u64,
+    },
 }
 
 impl Parameters {
+    /// Constructs a new `Parameters` from its inner values.
     pub const fn new(
         bf_size: u64,
         partition_number: usize,
@@ -95,6 +143,7 @@ impl Parameters {
         dense_option: bool,
         canonical: bool,
         sampling_strategy: Option<SamplingStrategy>,
+        findere_z: usize,
     ) -> Self {
         Self {
             bf_size,
@@ -108,6 +157,7 @@ impl Parameters {
             dense_option,
             canonical,
             sampling_strategy,
+            findere_z,
         }
     }
 
@@ -124,6 +174,7 @@ impl Parameters {
     }
 }
 
+/// A REINDEER 2 index handle. Allows to build and query the index.
 #[derive(Serialize, Deserialize)]
 #[cfg_attr(any(test, debug_assertions), derive(PartialEq, Debug))]
 pub struct Reindeer2 {
@@ -131,9 +182,9 @@ pub struct Reindeer2 {
     parameters: Parameters,
     /// Names of indexed files
     indexed_file_names: Vec<String>,
-    /// Index directory
+    /// Directory containing the index
     #[serde(skip)]
-    index_dir: String,
+    index_dir: String, // TODO use a path ?
 }
 
 /// Declares a variable. The variable is declared as mut iif `#[cfg(any(debug_assertions, test))]`.
@@ -323,6 +374,7 @@ impl Reindeer2 {
                                             &maybe_dense_indexes,
                                             &bloom_filters,
                                             parameters.k,
+                                            parameters.findere_z,
                                             parameters.m,
                                             parameters.partition_number,
                                             parameters.nb_color,
@@ -352,6 +404,7 @@ impl Reindeer2 {
                                             &maybe_dense_indexes,
                                             &bloom_filters,
                                             parameters.k,
+                                            parameters.findere_z,
                                             parameters.m,
                                             parameters.partition_number,
                                             parameters.nb_color,
@@ -379,6 +432,7 @@ impl Reindeer2 {
                                             &maybe_dense_indexes,
                                             &bloom_filters,
                                             parameters.k,
+                                            parameters.findere_z,
                                             parameters.m,
                                             parameters.partition_number,
                                             parameters.nb_color,
@@ -564,9 +618,10 @@ impl Reindeer2 {
         S: Sampler,
     {
         let parameters = &self.parameters;
-        let partition_kmers = query::build_partitions_kmers(
+        let s = parameters.k - parameters.findere_z;
+        let partition_smers = query::build_partitions_smers(
             batch,
-            parameters.k,
+            s,
             parameters.m,
             parameters.partition_number as u64,
             parameters.canonical,
@@ -577,7 +632,7 @@ impl Reindeer2 {
         // This will store final results for *all* sequences in this batch.
         // Key: sequence header; Value: vector of vector of abundances
         let result_with_positions: HashMap<usize, Vec<Vec<(u32, ApproxAbundance)>>> =
-            partition_kmers
+            partition_smers
                 .into_par_iter()
                 // 1) Create a local HashMap in each thread
                 .fold(
@@ -586,11 +641,11 @@ impl Reindeer2 {
                     // (I needed this extra usize to get the correct order of kmer in the output)
                     HashMap::<usize, Vec<Vec<(u32, ApproxAbundance)>>>::new,
                     |local_results: HashMap<usize, Vec<Vec<(u32, ApproxAbundance)>>>,
-                     (partition_index, kmers)| {
+                     (partition_index, smers)| {
                         query::fold_into_hashmap(
                             local_results,
                             partition_index,
-                            kmers,
+                            smers,
                             base,
                             bf_dir,
                             parameters.bf_size,
@@ -607,9 +662,9 @@ impl Reindeer2 {
                     query::merge_results,
                 );
 
-        let mut res = vec![vec![]; batch.len()];
+        let mut smer_res: Vec<Vec<Vec<ApproxAbundance>>> = vec![vec![]; batch.len()];
         let empty = vec![vec![]; self.parameters.nb_color];
-        (0..res.len())
+        (0..smer_res.len())
             .map(|header_id| {
                 (
                     header_id,
@@ -617,19 +672,20 @@ impl Reindeer2 {
                 )
             })
             .for_each(|(header, color_vectors)| {
-                res[header] = color_vectors
+                smer_res[header] = color_vectors
                     .iter()
                     .map(|x| {
                         query::sort_abundance_vec(
                             x,
-                            batch[header].seq().len() - self.parameters.k + 1,
+                            batch[header].seq().len() - s + 1,
                             #[cfg(any(debug_assertions, test))]
-                            self.parameters.k,
+                            s,
                         )
                     })
                     .collect();
             });
-        res
+
+        fimpera(smer_res, parameters.findere_z)
     }
 }
 
@@ -915,13 +971,13 @@ fn process_fasta_in_batches<R: io::BufRead>(
 // --- BF MANAGEMENT ---
 
 const fn compute_base_position(
-    kmer_hash: u64,
+    smer_hash: u64,
     partitioned_bf_size: usize,
     color_number: usize,
     abundance_number: usize,
 ) -> u64 {
     // return the first position of the concerned column in the partition
-    let position = kmer_hash % (partitioned_bf_size as u64);
+    let position = smer_hash % (partitioned_bf_size as u64);
     position * (color_number as u64) * (abundance_number as u64)
 }
 
@@ -1328,11 +1384,13 @@ fn compute_base(abundance_number: NonZero<usize>, abundance_max: NonZero<u16>) -
 #[cfg(test)]
 mod tests {
 
-    use crate::reindeer2::merge::merge_multiple_indexes;
+    use crate::reindeer2::{merge::merge_multiple_indexes, test_utils::AutoRemoveDirectory};
 
     use super::*;
 
     use itertools::Itertools;
+    use rstest::{fixture, rstest};
+    use rstest_reuse::{self, *};
 
     #[test]
     fn test_read_fof_file() {
@@ -1618,9 +1676,24 @@ mod tests {
         }
     */
 
-    #[test]
-    fn test_write_and_read_metadata() {
-        let bf_dir = "test_bf_dir";
+    #[template]
+    #[rstest]
+    #[case(0)]
+    #[case(2)]
+    #[case(4)]
+    #[case(6)]
+    #[case(8)]
+    #[case(10)]
+    fn findere_fixture(#[case] z: usize) {}
+
+    #[fixture]
+    pub fn random_directory() -> AutoRemoveDirectory {
+        AutoRemoveDirectory::create_random()
+    }
+
+    #[apply(findere_fixture)]
+    fn test_write_and_read_metadata(#[case] z: usize, random_directory: AutoRemoveDirectory) {
+        let bf_dir = random_directory.filename().to_str().unwrap();
         let parameters = Parameters {
             k: 31,
             m: 15,
@@ -1633,6 +1706,7 @@ mod tests {
             dense_option: false,
             canonical: false,
             sampling_strategy: None,
+            findere_z: z,
         };
         let indexed_file_names = vec![String::from("a"), String::from("b")];
 
@@ -1643,8 +1717,6 @@ mod tests {
 
         let actual = Reindeer2::load_from_disk(bf_dir).unwrap();
         assert_eq!(actual, expected);
-
-        fs::remove_dir_all(bf_dir).expect("Failed to remove test directory");
     }
 
     /// Helper function for tests
@@ -1693,9 +1765,12 @@ mod tests {
             .collect()
     }
 
-    #[test]
-    fn test_build_and_query_index_single_sparse() {
-        let test_dir = "test_files_bq0";
+    #[apply(findere_fixture)]
+    fn test_build_and_query_index_single_sparse(
+        #[case] z: usize,
+        random_directory: AutoRemoveDirectory,
+    ) {
+        let test_dir = random_directory.filename().to_str().unwrap();
         fs::create_dir_all(test_dir).expect("Failed to create test directory");
 
         let fof_path = format!("{}/fof.txt", test_dir);
@@ -1728,6 +1803,7 @@ mod tests {
             dense_option: false,
             canonical: false,
             sampling_strategy: None,
+            findere_z: z,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -1761,20 +1837,15 @@ mod tests {
         results.sort();
         expected_results.sort();
 
-        for (expected, actual) in expected_results.iter().zip(results.iter()) {
-            assert_eq!(
-                expected, actual,
-                "Mismatch: expected {:?}, got {:?}",
-                expected, actual
-            );
-        }
-
-        fs::remove_dir_all(test_dir).expect("Failed to clean up test directory");
+        assert_eq!(results, expected_results);
     }
 
-    #[test]
-    fn test_build_and_query_index_single_dense() {
-        let test_dir = "test_files_bq0d";
+    #[apply(findere_fixture)]
+    fn test_build_and_query_index_single_dense(
+        #[case] z: usize,
+        random_directory: AutoRemoveDirectory,
+    ) {
+        let test_dir = random_directory.filename().to_str().unwrap();
         fs::create_dir_all(test_dir).expect("Failed to create test directory");
 
         let fof_path = format!("{}/fof.txt", test_dir);
@@ -1807,6 +1878,7 @@ mod tests {
             dense_option: true,
             canonical: true,
             sampling_strategy: None,
+            findere_z: z,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -1830,20 +1902,12 @@ mod tests {
         results.sort();
         expected_results.sort();
 
-        for (expected, actual) in expected_results.iter().zip(results.iter()) {
-            assert_eq!(
-                expected, actual,
-                "Mismatch: expected {:?}, got {:?}",
-                expected, actual
-            );
-        }
-
-        fs::remove_dir_all(test_dir).expect("Failed to clean up test directory");
+        assert_eq!(results, expected_results);
     }
 
-    #[test]
-    fn test_build_and_query_index_sparse() {
-        let test_dir = "test_files_bq1";
+    #[apply(findere_fixture)]
+    fn test_build_and_query_index_sparse(#[case] z: usize, random_directory: AutoRemoveDirectory) {
+        let test_dir = random_directory.filename().to_str().unwrap();
         fs::create_dir_all(test_dir).expect("Failed to create test directory");
 
         let fof_path = format!("{}/fof.txt", test_dir);
@@ -1886,6 +1950,7 @@ mod tests {
             dense_option: false,
             canonical: true,
             sampling_strategy: None,
+            findere_z: z,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -1907,20 +1972,13 @@ mod tests {
         ];
         results.sort();
         expected_results.sort();
-        for (expected, actual) in expected_results.iter().zip(results.iter()) {
-            assert_eq!(
-                expected, actual,
-                "Mismatch: expected {:?}, got {:?}",
-                expected, actual
-            );
-        }
 
-        fs::remove_dir_all(test_dir).expect("Failed to clean up test directory");
+        assert_eq!(results, expected_results);
     }
 
-    #[test]
-    fn test_build_and_query_index_dense() {
-        let test_dir = "test_files_bq1d";
+    #[apply(findere_fixture)]
+    fn test_build_and_query_index_dense(#[case] z: usize, random_directory: AutoRemoveDirectory) {
+        let test_dir = random_directory.filename().to_str().unwrap();
         fs::create_dir_all(test_dir).expect("Failed to create test directory");
 
         let fof_path = format!("{}/fof.txt", test_dir);
@@ -1963,6 +2021,7 @@ mod tests {
             dense_option: true,
             canonical: true,
             sampling_strategy: None,
+            findere_z: z,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -1986,20 +2045,16 @@ mod tests {
 
         results.sort();
         expected_results.sort();
-        for (expected, actual) in expected_results.iter().zip(results.iter()) {
-            assert_eq!(
-                expected, actual,
-                "Mismatch: expected {:?}, got {:?}",
-                expected, actual
-            );
-        }
 
-        fs::remove_dir_all(test_dir).expect("Failed to clean up test directory");
+        assert_eq!(results, expected_results);
     }
 
-    #[test]
-    fn test_build_and_query_index_longseq_simple_sparse() {
-        let test_dir = "test_files_bq_ls";
+    #[apply(findere_fixture)]
+    fn test_build_and_query_index_longseq_simple_sparse(
+        #[case] z: usize,
+        random_directory: AutoRemoveDirectory,
+    ) {
+        let test_dir = random_directory.filename().to_str().unwrap();
         fs::create_dir_all(test_dir).expect("Failed to create test directory");
 
         let fof_path = format!("{}/fof.txt", test_dir);
@@ -2039,79 +2094,7 @@ mod tests {
             dense_option: false,
             canonical: true,
             sampling_strategy: None,
-        };
-        let chunks_size = 128;
-        let threshold = parameters.nb_color;
-
-        let query_results_path = create_build_query(
-            parameters,
-            chunks_size,
-            threshold,
-            vec![file1_path, file2_path],
-            1,
-            test_dir,
-        );
-
-        // Validate the results written to the query results CSV file
-        let mut results = load_query_result_csv(query_results_path);
-        let mut expected_results = [(">seq3 ka:f:1000".to_string(), String::from("file2Q"), 997)];
-
-        results.sort();
-        expected_results.sort();
-
-        for (expected, actual) in expected_results.iter().zip(results.iter()) {
-            assert_eq!(
-                expected, actual,
-                "Mismatch: expected {:?}, got {:?}",
-                expected, actual
-            );
-        }
-
-        fs::remove_dir_all(test_dir).expect("Failed to clean up test directory");
-    }
-
-    #[test]
-    fn test_build_and_query_index_longseq_simple_dense() {
-        let test_dir = "test_files_bq_lsd";
-        fs::create_dir_all(test_dir).expect("Failed to create test directory");
-
-        let fof_path = format!("{}/fof.txt", test_dir);
-        let file1_path = format!("{}/file1Q.fa", test_dir);
-        let file2_path = format!("{}/file2Q.fa", test_dir);
-
-        {
-            let mut fof_file = File::create(&fof_path).expect("Failed to create fof.txt");
-            writeln!(fof_file, "{}", file1_path).expect("Failed to write to fof.txt");
-            writeln!(fof_file, "{}", file2_path).expect("Failed to write to fof.txt");
-        }
-
-        {
-            let mut file1 = File::create(&file1_path).expect("Failed to create file1.fasta");
-            writeln!(file1, ">seq1 ka:f:30").expect("Failed to write header");
-            writeln!(file1, "AAAAAAAAAAAAAAAAAAAAAACACAGATCA").expect("Failed to write sequence");
-            writeln!(file1, ">seq2 ka:f:10").expect("Failed to write header");
-            writeln!(file1, "AAAAAAAAAAAAAAAAAAAAACACAGATCAT").expect("Failed to write sequence");
-        }
-
-        {
-            let mut file2 = File::create(&file2_path).expect("Failed to create file2.fasta");
-            writeln!(file2, ">seq3 ka:f:1000").expect("Failed to write header");
-            writeln!(file2, "AAAAATGATAGTAGAAAAAAATTTTAAAAAAACACCCCTGG")
-                .expect("Failed to write sequence");
-        }
-
-        let parameters = Parameters {
-            k: 31,
-            m: 15,
-            bf_size: 1024 * 1024,
-            partition_number: 4,
-            nb_color: 2,
-            abundance_number: NonZero::new(256).unwrap(),
-            abundance_min: 0,
-            abundance_max: NonZero::new(65535).unwrap(),
-            dense_option: true,
-            canonical: true,
-            sampling_strategy: None,
+            findere_z: z,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -2133,15 +2116,82 @@ mod tests {
         expected_results.sort();
 
         assert_eq!(results, expected_results);
-
-        fs::remove_dir_all(test_dir).expect("Failed to clean up test directory");
     }
 
-    #[test]
-    fn test_build_and_query_index2_sparse() {
+    #[apply(findere_fixture)]
+    fn test_build_and_query_index_longseq_simple_dense(
+        #[case] z: usize,
+        random_directory: AutoRemoveDirectory,
+    ) {
+        let test_dir = random_directory.filename().to_str().unwrap();
+        fs::create_dir_all(test_dir).expect("Failed to create test directory");
+
+        let fof_path = format!("{}/fof.txt", test_dir);
+        let file1_path = format!("{}/file1Q.fa", test_dir);
+        let file2_path = format!("{}/file2Q.fa", test_dir);
+
+        {
+            let mut fof_file = File::create(&fof_path).expect("Failed to create fof.txt");
+            writeln!(fof_file, "{}", file1_path).expect("Failed to write to fof.txt");
+            writeln!(fof_file, "{}", file2_path).expect("Failed to write to fof.txt");
+        }
+
+        {
+            let mut file1 = File::create(&file1_path).expect("Failed to create file1.fasta");
+            writeln!(file1, ">seq1 ka:f:30").expect("Failed to write header");
+            writeln!(file1, "AAAAAAAAAAAAAAAAAAAAAACACAGATCA").expect("Failed to write sequence");
+            writeln!(file1, ">seq2 ka:f:10").expect("Failed to write header");
+            writeln!(file1, "AAAAAAAAAAAAAAAAAAAAACACAGATCAT").expect("Failed to write sequence");
+        }
+
+        {
+            let mut file2 = File::create(&file2_path).expect("Failed to create file2.fasta");
+            writeln!(file2, ">seq3 ka:f:1000").expect("Failed to write header");
+            writeln!(file2, "AAAAATGATAGTAGAAAAAAATTTTAAAAAAACACCCCTGG")
+                .expect("Failed to write sequence");
+        }
+
+        let parameters = Parameters {
+            k: 31,
+            m: 15,
+            bf_size: 1024 * 1024,
+            partition_number: 4,
+            nb_color: 2,
+            abundance_number: NonZero::new(256).unwrap(),
+            abundance_min: 0,
+            abundance_max: NonZero::new(65535).unwrap(),
+            dense_option: true,
+            canonical: true,
+            sampling_strategy: None,
+            findere_z: z,
+        };
+        let chunks_size = 128;
+        let threshold = parameters.nb_color;
+
+        let query_results_path = create_build_query(
+            parameters,
+            chunks_size,
+            threshold,
+            vec![file1_path, file2_path],
+            1,
+            test_dir,
+        );
+
+        // Validate the results written to the query results CSV file
+        let mut results = load_query_result_csv(query_results_path);
+        let mut expected_results = [(">seq3 ka:f:1000".to_string(), String::from("file2Q"), 997)];
+
+        results.sort();
+        expected_results.sort();
+
+        assert_eq!(results, expected_results);
+    }
+
+    #[apply(findere_fixture)]
+    fn test_build_and_query_index2_sparse(#[case] z: usize, random_directory: AutoRemoveDirectory) {
         use std::io::Write;
 
-        let test_dir = "test_files_bq2";
+        let test_dir = random_directory.filename().to_str().unwrap();
         fs::create_dir_all(test_dir).expect("Failed to create test directory");
 
         let fof_path = format!("{}/fof.txt", test_dir);
@@ -2184,6 +2234,7 @@ mod tests {
             dense_option: false,
             canonical: true,
             sampling_strategy: None,
+            findere_z: z,
         };
         let chunks_size = 128;
         let threshold = 1;
@@ -2206,21 +2257,14 @@ mod tests {
         results.sort();
         expected_results.sort();
 
-        for (expected, actual) in expected_results.iter().zip(results.iter()) {
-            assert_eq!(
-                expected, actual,
-                "Mismatch: expected {:?}, got {:?}",
-                expected, actual
-            );
-        }
-        fs::remove_dir_all(test_dir).expect("Failed to clean up test directory");
+        assert_eq!(results, expected_results);
     }
 
-    #[test]
-    fn test_build_and_query_index2_dense() {
+    #[apply(findere_fixture)]
+    fn test_build_and_query_index2_dense(#[case] z: usize, random_directory: AutoRemoveDirectory) {
         use std::io::Write;
 
-        let test_dir = "test_files_bq2d";
+        let test_dir = random_directory.filename().to_str().unwrap();
         fs::create_dir_all(test_dir).expect("Failed to create test directory");
 
         let fof_path = format!("{}/fof.txt", test_dir);
@@ -2263,6 +2307,7 @@ mod tests {
             dense_option: true,
             canonical: true,
             sampling_strategy: None,
+            findere_z: z,
         };
         let chunks_size = 128;
         let threshold = 1;
@@ -2285,19 +2330,15 @@ mod tests {
         results.sort();
         expected_results.sort();
 
-        for (expected, actual) in expected_results.iter().zip(results.iter()) {
-            assert_eq!(
-                expected, actual,
-                "Mismatch: expected {:?}, got {:?}",
-                expected, actual
-            );
-        }
-        fs::remove_dir_all(test_dir).expect("Failed to clean up test directory");
+        assert_eq!(results, expected_results);
     }
 
-    #[test]
-    fn test_build_and_query_index_sharedk_sparse() {
-        let test_dir = "test_files_bq3";
+    #[apply(findere_fixture)]
+    fn test_build_and_query_index_sharedk_sparse(
+        #[case] z: usize,
+        random_directory: AutoRemoveDirectory,
+    ) {
+        let test_dir = random_directory.filename().to_str().unwrap();
         fs::create_dir_all(test_dir).expect("Failed to create test directory");
 
         let fof_path = format!("{}/fof.txt", test_dir);
@@ -2341,6 +2382,7 @@ mod tests {
             dense_option: false,
             canonical: true,
             sampling_strategy: None,
+            findere_z: z,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -2365,19 +2407,15 @@ mod tests {
         results.sort();
         expected_results.sort();
 
-        for (expected, actual) in expected_results.iter().zip(results.iter()) {
-            assert_eq!(
-                expected, actual,
-                "Mismatch: expected {:?}, got {:?}",
-                expected, actual
-            );
-        }
-        fs::remove_dir_all(test_dir).expect("Failed to clean up test directory");
+        assert_eq!(results, expected_results);
     }
 
-    #[test]
-    fn test_build_and_query_index_sharedk_dense() {
-        let test_dir = "test_files_bq3d";
+    #[apply(findere_fixture)]
+    fn test_build_and_query_index_sharedk_dense(
+        #[case] z: usize,
+        random_directory: AutoRemoveDirectory,
+    ) {
+        let test_dir = random_directory.filename().to_str().unwrap();
         fs::create_dir_all(test_dir).expect("Failed to create test directory");
 
         let fof_path = format!("{}/fof.txt", test_dir);
@@ -2421,6 +2459,7 @@ mod tests {
             dense_option: true,
             canonical: true,
             sampling_strategy: None,
+            findere_z: z,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -2445,19 +2484,15 @@ mod tests {
         results.sort();
         expected_results.sort();
 
-        for (expected, actual) in expected_results.iter().zip(results.iter()) {
-            assert_eq!(
-                expected, actual,
-                "Mismatch: expected {:?}, got {:?}",
-                expected, actual
-            );
-        }
-        fs::remove_dir_all(test_dir).expect("Failed to clean up test directory");
+        assert_eq!(results, expected_results);
     }
 
-    #[test]
-    fn test_build_and_query_index_sharedk_sparse_smallchunks() {
-        let test_dir = "test_files_bq3_smallchunks";
+    #[apply(findere_fixture)]
+    fn test_build_and_query_index_sharedk_sparse_smallchunks(
+        #[case] z: usize,
+        random_directory: AutoRemoveDirectory,
+    ) {
+        let test_dir = random_directory.filename().to_str().unwrap();
         fs::create_dir_all(test_dir).expect("Failed to create test directory");
 
         let fof_path = format!("{}/fof.txt", test_dir);
@@ -2501,6 +2536,7 @@ mod tests {
             dense_option: false,
             canonical: true,
             sampling_strategy: None,
+            findere_z: z,
         };
         let chunks_size = 1;
         let threshold = parameters.nb_color;
@@ -2525,19 +2561,15 @@ mod tests {
         results.sort();
         expected_results.sort();
 
-        for (expected, actual) in expected_results.iter().zip(results.iter()) {
-            assert_eq!(
-                expected, actual,
-                "Mismatch: expected {:?}, got {:?}",
-                expected, actual
-            );
-        }
-        fs::remove_dir_all(test_dir).expect("Failed to clean up test directory");
+        assert_eq!(results, expected_results);
     }
 
-    #[test]
-    fn test_build_and_query_index_sharedk_dense_smallchunks() {
-        let test_dir = "test_files_bq3d_smallchunks";
+    #[apply(findere_fixture)]
+    fn test_build_and_query_index_sharedk_dense_smallchunks(
+        #[case] z: usize,
+        random_directory: AutoRemoveDirectory,
+    ) {
+        let test_dir = random_directory.filename().to_str().unwrap();
         fs::create_dir_all(test_dir).expect("Failed to create test directory");
 
         let fof_path = format!("{}/fof.txt", test_dir);
@@ -2581,6 +2613,7 @@ mod tests {
             dense_option: true,
             canonical: true,
             sampling_strategy: None,
+            findere_z: z,
         };
         let chunks_size = 1;
         let threshold = parameters.nb_color;
@@ -2605,19 +2638,15 @@ mod tests {
         results.sort();
         expected_results.sort();
 
-        for (expected, actual) in expected_results.iter().zip(results.iter()) {
-            assert_eq!(
-                expected, actual,
-                "Mismatch: expected {:?}, got {:?}",
-                expected, actual
-            );
-        }
-        fs::remove_dir_all(test_dir).expect("Failed to clean up test directory");
+        assert_eq!(results, expected_results);
     }
 
-    #[test]
-    fn test_build_and_query_index_long_sparse() {
-        let test_dir = "test_files_bql";
+    #[apply(findere_fixture)]
+    fn test_build_and_query_index_long_sparse(
+        #[case] z: usize,
+        random_directory: AutoRemoveDirectory,
+    ) {
+        let test_dir = random_directory.filename().to_str().unwrap();
         fs::create_dir_all(test_dir).expect("Failed to create test directory");
 
         let fof_path = format!("{}/fof.txt", test_dir);
@@ -2657,6 +2686,7 @@ mod tests {
             dense_option: false,
             canonical: true,
             sampling_strategy: None,
+            findere_z: z,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -2679,19 +2709,15 @@ mod tests {
         results.sort();
         expected_results.sort();
 
-        for (expected, actual) in expected_results.iter().zip(results.iter()) {
-            assert_eq!(
-                expected, actual,
-                "Mismatch: expected {:?}, got {:?}",
-                expected, actual
-            );
-        }
-        fs::remove_dir_all(test_dir).expect("Failed to clean up test directory");
+        assert_eq!(results, expected_results);
     }
 
-    #[test]
-    fn test_build_and_query_index_long_dense() {
-        let test_dir = "test_files_bqld";
+    #[apply(findere_fixture)]
+    fn test_build_and_query_index_long_dense(
+        #[case] z: usize,
+        random_directory: AutoRemoveDirectory,
+    ) {
+        let test_dir = random_directory.filename().to_str().unwrap();
         fs::create_dir_all(test_dir).expect("Failed to create test directory");
 
         let fof_path = format!("{}/fof.txt", test_dir);
@@ -2731,6 +2757,7 @@ mod tests {
             dense_option: true,
             canonical: true,
             sampling_strategy: None,
+            findere_z: z,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -2753,14 +2780,7 @@ mod tests {
         results.sort();
         expected_results.sort();
 
-        for (expected, actual) in expected_results.iter().zip(results.iter()) {
-            assert_eq!(
-                expected, actual,
-                "Mismatch: expected {:?}, got {:?}",
-                expected, actual
-            );
-        }
-        fs::remove_dir_all(test_dir).expect("Failed to clean up test directory");
+        assert_eq!(results, expected_results);
     }
 
     #[ignore]
@@ -2855,12 +2875,12 @@ mod tests {
         assert_eq!(results, expected_results);
     }
 
-    #[test]
-    fn test_split_fof() -> std::io::Result<()> {
+    #[rstest]
+    fn test_split_fof(random_directory: AutoRemoveDirectory) -> std::io::Result<()> {
         use std::fs::{self, File};
         use std::io::{BufRead, BufReader, Write};
 
-        let test_dir = "test_files_fofs1";
+        let test_dir = random_directory.filename().to_str().unwrap();
         fs::create_dir_all(test_dir).expect("Failed to create test directory");
 
         let fof_path = format!("{}/fof_split.txt", test_dir);
@@ -2926,8 +2946,6 @@ mod tests {
             expected_chunks, fof_chunks
         );
 
-        fs::remove_dir_all(test_dir).expect("Failed to clean up test directory");
-
         Ok(())
     }
 
@@ -2986,64 +3004,48 @@ mod tests {
     */
 
     //#[ignore]
-    #[test]
-    fn test_build_and_query_index_with_chunks_and_merge() {
-        let test_dir = "test_files_bq_merge";
+    #[apply(findere_fixture)]
+    fn test_build_and_query_index_with_chunks_and_merge(
+        #[case] z: usize,
+        random_directory: AutoRemoveDirectory,
+    ) {
+        let test_dir = random_directory.filename().to_str().unwrap();
         fs::create_dir_all(test_dir).expect("Failed to create test directory");
 
         let fof_path = format!("{}/fof.txt", test_dir);
-        let file1_path = format!("{}/file1Q.fa", test_dir);
-        let file2_path = format!("{}/file2Q.fa", test_dir);
-        let file3_path = format!("{}/file3Q.fa", test_dir);
-        let file4_path = format!("{}/file4Q.fa", test_dir);
-        let file5_path = format!("{}/file5Q.fa", test_dir);
-        let file6_path = format!("{}/file6Q.fa", test_dir);
-        let file7_path = format!("{}/file7Q.fa", test_dir);
-        let file8_path = format!("{}/file8Q.fa", test_dir);
+        let filepaths = (1..=8)
+            .map(|i| format!("{test_dir}/file{i}Q.fa"))
+            .collect_vec();
 
+        // write the fof
         {
             let mut fof_file = File::create(&fof_path).expect("Failed to create fof.txt");
-            writeln!(fof_file, "{}", file1_path).expect("Failed to write to fof.txt");
-            writeln!(fof_file, "{}", file2_path).expect("Failed to write to fof.txt");
-            writeln!(fof_file, "{}", file3_path).expect("Failed to write to fof.txt");
-            writeln!(fof_file, "{}", file4_path).expect("Failed to write to fof.txt");
-            writeln!(fof_file, "{}", file5_path).expect("Failed to write to fof.txt");
-            writeln!(fof_file, "{}", file6_path).expect("Failed to write to fof.txt");
-            writeln!(fof_file, "{}", file7_path).expect("Failed to write to fof.txt");
-            writeln!(fof_file, "{}", file8_path).expect("Failed to write to fof.txt");
+            filepaths.iter().for_each(|path| {
+                writeln!(fof_file, "{path}").expect("Failed to write to fof.txt");
+            });
         }
 
-        for (file_path, (seq_id, ka_value, sequence)) in [
-            (&file1_path, ("seq1", 30, "AAAAAAAAAAAAAAAAAAAAAACACAGATCA")),
-            (&file2_path, ("seq2", 12, "AAAAAAAAAAAAAAAAAAAAACACAGATCAT")),
-            (
-                &file3_path,
-                ("seq3", 1500, "AAAAAAAAAAAAAAAAAAAAAACAAAAAGAA"),
-            ),
-            (
-                &file4_path,
-                ("seq4", 1000, "AAAAAAAAAAAAAAAAAAAAAACACCCCTGG"),
-            ),
-            (
-                &file5_path,
-                ("seq5", 450, "AAAAAAAAAAAAAAAAAAAAACACCCCTGGG"),
-            ),
-            (&file6_path, ("seq6", 4, "AAAAAAAAAAAAAAAAAAAAAACAAAAAGAA")),
-            (
-                &file7_path,
-                ("seq7", 45110, "AAAAAAAAAAAAAAAAAAAAACACCCCTGGG"),
-            ),
-            (&file8_path, ("seq8", 75, "AAAAAAAAAAAAAAAAAAAAAACAAAAAGAA")),
-        ] {
+        let data = [
+            ("seq1", 30, "AAAAAAAAATAAAAAAAAAAAACACAGATCA"),
+            ("seq2", 12, "AAAAAAAAAAAAAAAAAAAAACACAGATCAT"),
+            ("seq3", 1500, "AAAAAAAAAAAAAAAAAAAAAACAAAAAGAA"),
+            ("seq4", 1000, "AAAAAAAAAAAAAAAAAAAAAACACCCCTGG"),
+            ("seq5", 450, "AAAAAAAAAAAAAAAAAAAAACACCCCTGGG"),
+            ("seq6", 4, "AAAAAAAAAAAAAAAAAAAAAACAAAAAGAA"),
+            ("seq7", 45110, "AAAAAAAAAAAAAAAAAAAAACACCCCTGGG"),
+            ("seq8", 75, "AAAAAAAAAAAAAAAAAAAAAACAAAAAGAA"),
+        ];
+
+        for (file_path, (seq_id, ka_value, sequence)) in filepaths.iter().zip(data) {
             let mut file = File::create(file_path).expect("Failed to create FASTA file");
-            writeln!(file, ">{} ka:f:{}", seq_id, ka_value).expect("Failed to write header");
-            writeln!(file, "{}", sequence).expect("Failed to write sequence");
+            writeln!(file, ">{seq_id} ka:f:{ka_value}").expect("Failed to write header");
+            writeln!(file, "{sequence}").expect("Failed to write sequence");
         }
 
         let parameters = Parameters {
             k: 31,
             m: 15,
-            bf_size: 8,
+            bf_size: 1024 * 1024,
             partition_number: 2,
             nb_color: 8,
             abundance_number: NonZero::new(255).unwrap(),
@@ -3052,22 +3054,13 @@ mod tests {
             dense_option: false,
             canonical: true,
             sampling_strategy: None,
+            findere_z: z,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
 
-        let file_paths = vec![
-            file1_path.clone(),
-            file2_path.clone(),
-            file3_path.clone(),
-            file4_path.clone(),
-            file5_path.clone(),
-            file6_path.clone(),
-            file7_path.clone(),
-            file8_path.clone(),
-        ];
         let query_results_path =
-            create_build_query(parameters, chunks_size, threshold, file_paths, 0, test_dir);
+            create_build_query(parameters, chunks_size, threshold, filepaths, 0, test_dir);
 
         let mut results = load_query_result_csv(query_results_path);
         let mut expected_results = [(">seq1 ka:f:30".to_string(), String::from("file1Q"), 29)];
@@ -3075,14 +3068,7 @@ mod tests {
         results.sort();
         expected_results.sort();
 
-        for (expected, actual) in expected_results.iter().zip(results.iter()) {
-            assert_eq!(
-                expected, actual,
-                "Mismatch: expected {:?}, got {:?}",
-                expected, actual
-            );
-        }
-        fs::remove_dir_all(test_dir).expect("Failed to clean up test directory");
+        assert_eq!(results, expected_results);
     }
 
     /*
@@ -3140,9 +3126,12 @@ mod tests {
     */
 
     //#[ignore]
-    #[test]
-    fn test_build_and_query_index_with_chunks_and_merge2() {
-        let test_dir = "test_files_bq_merge2";
+    #[apply(findere_fixture)]
+    fn test_build_and_query_index_with_chunks_and_merge2(
+        #[case] z: usize,
+        random_directory: AutoRemoveDirectory,
+    ) {
+        let test_dir = random_directory.filename().to_str().unwrap();
         fs::create_dir_all(test_dir).expect("Failed to create test directory");
 
         let fof_path = format!("{}/fof.txt", test_dir);
@@ -3197,6 +3186,7 @@ mod tests {
             dense_option: false,
             canonical: true,
             sampling_strategy: None,
+            findere_z: z,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -3221,20 +3211,16 @@ mod tests {
         results.sort();
         expected_results.sort();
 
-        for (expected, actual) in expected_results.iter().zip(results.iter()) {
-            assert_eq!(
-                expected, actual,
-                "Mismatch: expected {:?}, got {:?}",
-                expected, actual
-            );
-        }
-        fs::remove_dir_all(test_dir).expect("Failed to clean up test directory");
+        assert_eq!(results, expected_results);
     }
 
     //#[ignore]
-    #[test]
-    fn test_build_and_query_index_with_chunks_and_merge3() {
-        let test_dir = "test_files_bq_merge3";
+    #[apply(findere_fixture)]
+    fn test_build_and_query_index_with_chunks_and_merge3(
+        #[case] z: usize,
+        random_directory: AutoRemoveDirectory,
+    ) {
+        let test_dir = random_directory.filename().to_str().unwrap();
         fs::create_dir_all(test_dir).expect("Failed to create test directory");
 
         let fof_path = format!("{}/fof.txt", test_dir);
@@ -3295,7 +3281,7 @@ mod tests {
         let parameters = Parameters {
             k: 31,
             m: 15,
-            bf_size: 4,
+            bf_size: 1024 * 1024,
             partition_number: 2,
             nb_color: 9,
             abundance_number: NonZero::new(255).unwrap(),
@@ -3304,6 +3290,7 @@ mod tests {
             dense_option: false,
             canonical: true,
             sampling_strategy: None,
+            findere_z: z,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -3332,21 +3319,16 @@ mod tests {
         results.sort();
         expected_results.sort();
 
-        for (expected, actual) in expected_results.iter().zip(results.iter()) {
-            assert_eq!(
-                expected, actual,
-                "Mismatch: expected {:?}, got {:?}",
-                expected, actual
-            );
-        }
-
-        fs::remove_dir_all(test_dir).expect("Failed to clean up test directory");
+        assert_eq!(results, expected_results);
     }
 
     //#[ignore]
-    #[test]
-    fn test_build_and_query_index_with_chunks_and_merge4() {
-        let test_dir = "test_files_bq_merge4";
+    #[apply(findere_fixture)]
+    fn test_build_and_query_index_with_chunks_and_merge4(
+        #[case] z: usize,
+        random_directory: AutoRemoveDirectory,
+    ) {
+        let test_dir = random_directory.filename().to_str().unwrap();
         fs::create_dir_all(test_dir).expect("Failed to create test directory");
 
         let fof_path = format!("{}/fof.txt", test_dir);
@@ -3409,6 +3391,7 @@ mod tests {
             dense_option: false,
             canonical: true,
             sampling_strategy: None,
+            findere_z: z,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -3437,24 +3420,16 @@ mod tests {
         results.sort();
         expected_results.sort();
 
-        for (expected, actual) in expected_results.iter().zip(results.iter()) {
-            assert_eq!(
-                expected, actual,
-                "Mismatch: expected {:?}, got {:?}",
-                expected, actual
-            );
-        }
-
-        fs::remove_dir_all(test_dir).expect("Failed to clean up test directory");
+        assert_eq!(results, expected_results);
     }
 
-    #[test]
-    fn test_merge_partition_bloom_filters() {
+    #[rstest]
+    fn test_merge_partition_bloom_filters(random_directory: AutoRemoveDirectory) {
         use roaring::RoaringBitmap;
         use std::fs::{create_dir_all, File};
         use std::io::Write;
 
-        let test_dir = "test_merge_partition_bloom_filters";
+        let test_dir = random_directory.filename().to_str().unwrap();
         create_dir_all(test_dir).expect("Failed to create test directory");
 
         let chunk1_path = format!("{}/chunk1_p0.bin", test_dir);
@@ -3503,7 +3478,7 @@ mod tests {
             abundance_number,
             &color_counts,
             &mut merged_bf,
-            "test_merge_partition_bloom_filters",
+            test_dir,
             5,
         )
         .expect("Failed to merge partition Bloom filters");
@@ -3528,14 +3503,15 @@ mod tests {
                 elem
             );
         }
-
-        fs::remove_dir_all(test_dir).expect("Failed to clean up test directory");
     }
 
     //#[ignore]
-    #[test]
-    fn test_build_and_query_index_with_chunks_and_merge_longseq() {
-        let test_dir = "test_files_bq_merge3_ls";
+    #[apply(findere_fixture)]
+    fn test_build_and_query_index_with_chunks_and_merge_longseq(
+        #[case] z: usize,
+        random_directory: AutoRemoveDirectory,
+    ) {
+        let test_dir = random_directory.filename().to_str().unwrap();
         fs::create_dir_all(test_dir).expect("Failed to create test directory");
 
         let fof_path = format!("{}/fof.txt", test_dir);
@@ -3609,6 +3585,7 @@ mod tests {
             dense_option: false,
             canonical: true,
             sampling_strategy: None,
+            findere_z: z,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -3640,13 +3617,11 @@ mod tests {
                 expected, actual
             );
         }
-
-        fs::remove_dir_all(test_dir).expect("Failed to clean up test directory");
     }
 
-    #[test]
-    fn test_color_graph() {
-        let test_dir = "test_color_graph";
+    #[apply(findere_fixture)]
+    fn test_color_graph(#[case] z: usize, random_directory: AutoRemoveDirectory) {
+        let test_dir = random_directory.filename().to_str().unwrap();
         fs::create_dir_all(test_dir).expect("Failed to create test directory");
 
         let fasta_path = format!("{}/test.fasta", test_dir);
@@ -3673,6 +3648,7 @@ mod tests {
             dense_option: false,
             canonical: false,
             sampling_strategy: None,
+            findere_z: z,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -3716,8 +3692,6 @@ mod tests {
             expected_output, actual_output,
             "Mismatch between expected and actual output"
         );
-
-        fs::remove_dir_all(test_dir).expect("Failed to clean up test directory");
     }
 
     /// Asserts if the two contents are "equal", in the sense that:
@@ -3735,9 +3709,9 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_output_rd1() {
-        let test_dir = "test_output_rd1";
+    #[apply(findere_fixture)]
+    fn test_output_rd1(#[case] z: usize, random_directory: AutoRemoveDirectory) {
+        let test_dir = random_directory.filename().to_str().unwrap();
         fs::create_dir_all(test_dir).expect("Failed to create test directory");
 
         let file1_path = String::from("tests/unit_tests_data/random_seq_with_revcomp.fa");
@@ -3756,6 +3730,7 @@ mod tests {
             dense_option: false,
             canonical: true,
             sampling_strategy: None,
+            findere_z: z,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -3795,13 +3770,11 @@ shared_revcomp_with_other_test_file\t0-19:3\t0-19:10",
         );
 
         assert_equal_sorted_content_with_equal_header(&expected, actual);
-
-        fs::remove_dir_all(test_dir).expect("Failed to clean up test directory");
     }
 
-    #[test]
-    fn test_output_duplication() {
-        let test_dir = "test_output_duplication ";
+    #[apply(findere_fixture)]
+    fn test_output_duplication(#[case] z: usize, random_directory: AutoRemoveDirectory) {
+        let test_dir = random_directory.filename().to_str().unwrap();
         fs::create_dir_all(test_dir).expect("Failed to create test directory");
 
         let file1_path = String::from("tests/unit_tests_data/random_seq_with_revcomp.fa");
@@ -3820,6 +3793,7 @@ shared_revcomp_with_other_test_file\t0-19:3\t0-19:10",
             dense_option: false,
             canonical: true,
             sampling_strategy: None,
+            findere_z: z,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -3856,13 +3830,11 @@ header_0\t0-69:*\t0-69:1",
         );
 
         assert_equal_sorted_content_with_equal_header(&expected, actual);
-
-        fs::remove_dir_all(test_dir).expect("Failed to clean up test directory");
     }
 
-    #[test]
-    fn test_output_rd1_non_canonical() {
-        let test_dir = "test_output_rd1_canonical";
+    #[apply(findere_fixture)]
+    fn test_output_rd1_non_canonical(#[case] z: usize, random_directory: AutoRemoveDirectory) {
+        let test_dir = random_directory.filename().to_str().unwrap();
         fs::create_dir_all(test_dir).expect("Failed to create test directory");
 
         let file1_path = String::from("tests/unit_tests_data/random_seq_with_revcomp.fa");
@@ -3881,6 +3853,7 @@ header_0\t0-69:*\t0-69:1",
             dense_option: false,
             canonical: false,
             sampling_strategy: None,
+            findere_z: z,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -3919,19 +3892,20 @@ shared_revcomp_with_other_test_file\t0-19:*\t0-19:10",
         );
 
         assert_equal_sorted_content_with_equal_header(&expected, actual);
-
-        fs::remove_dir_all(test_dir).expect("Failed to clean up test directory");
     }
 
-    #[test]
-    fn test_merge_multiple_indexes() -> io::Result<()> {
-        let base_dir = "test_merge_indexes";
-        let index1_files_dir = format!("{}/index1_files", base_dir);
-        let index2_files_dir = format!("{}/index2_files", base_dir);
-        let index1_index_dir = format!("{}/index1_index", base_dir);
-        let index2_index_dir = format!("{}/index2_index", base_dir);
-        let merged_index_dir = format!("{}/merged_index", base_dir);
-        let indexes_fof = format!("{}/indexes.txt", base_dir);
+    #[apply(findere_fixture)]
+    fn test_merge_multiple_indexes(
+        #[case] z: usize,
+        random_directory: AutoRemoveDirectory,
+    ) -> io::Result<()> {
+        let test_dir = random_directory.filename().to_str().unwrap();
+        let index1_files_dir = format!("{}/index1_files", test_dir);
+        let index2_files_dir = format!("{}/index2_files", test_dir);
+        let index1_index_dir = format!("{}/index1_index", test_dir);
+        let index2_index_dir = format!("{}/index2_index", test_dir);
+        let merged_index_dir = format!("{}/merged_index", test_dir);
+        let indexes_fof = format!("{}/indexes.txt", test_dir);
 
         fs::create_dir_all(&index1_files_dir)?;
         fs::create_dir_all(&index2_files_dir)?;
@@ -3942,7 +3916,7 @@ shared_revcomp_with_other_test_file\t0-19:*\t0-19:10",
         {
             let mut file = File::create(&file1_path)?;
             writeln!(file, ">seq1 ka:f:30")?;
-            writeln!(file, "ACGTACG")?;
+            writeln!(file, "TAGAAGGCGTGAGTCTTAGCT")?;
         }
 
         let file2_path = format!("{}/file2.fa", index2_files_dir);
@@ -3950,17 +3924,17 @@ shared_revcomp_with_other_test_file\t0-19:*\t0-19:10",
         {
             let mut file = File::create(&file2_path)?;
             writeln!(file, ">seq2 ka:f:30")?;
-            writeln!(file, "ACGTACG")?;
+            writeln!(file, "TAGAAGGCGTGAGTCTTAGCT")?;
         }
         {
             let mut file = File::create(&file3_path)?;
             writeln!(file, ">seq3 ka:f:30")?;
-            writeln!(file, "ACGTACG")?;
+            writeln!(file, "TAGAAGGCGTGAGTCTTAGCT")?;
         }
 
         let mut parameters = Parameters {
-            k: 7,
-            m: 3,
+            k: 21,
+            m: 5,
             bf_size: 1024,
             partition_number: 2,
             nb_color: 1,
@@ -3970,6 +3944,7 @@ shared_revcomp_with_other_test_file\t0-19:*\t0-19:10",
             dense_option: false,
             canonical: true,
             sampling_strategy: None,
+            findere_z: z,
         };
 
         let chunks_size = 128;
@@ -4020,8 +3995,6 @@ shared_revcomp_with_other_test_file\t0-19:*\t0-19:10",
                 part_path
             );
         }
-
-        fs::remove_dir_all(base_dir)?;
 
         Ok(())
     }

@@ -19,6 +19,7 @@ pub fn process_fasta_file<S>(
     maybe_dense_indexes: &Option<Arc<DenseIndex>>,
     bloom_filters: &Filters,
     k: usize,
+    z: usize,
     m: usize,
     partition_number: usize,
     color_number_global: usize,
@@ -61,9 +62,9 @@ where
                         atomic_record_count.fetch_add(1, Ordering::Relaxed);
                         let seq_str = std::str::from_utf8(&seq).expect("Invalid UTF-8 sequence");
 
-                        let kmer_minimizers = match kmer_minimizers_sampled(
+                        let smer_minimizers = match kmer_minimizers_sampled(
                             seq_str.as_bytes(),
-                            k,
+                            k - z, // use k-z mers instead of k-mers
                             m,
                             canonical,
                             sampler,
@@ -75,9 +76,8 @@ where
                             }
                         };
 
-                        for (kmer_hash, minimizer) in kmer_minimizers {
-                            kmer_count += count_value as usize;
-                            //for (kmer_hash, (minimizer, _)) in nt_hash_iterator.zip(min_iter) { // iterate on both minimizer and hash for each kmer
+                        kmer_count += count_value as usize * (seq.len() - k);
+                        for (smer_hash, minimizer) in smer_minimizers {
                             let partition_index = (minimizer % (partition_number as u64)) as usize;
                             total_kmers.fetch_add(1, Ordering::Relaxed);
 
@@ -85,7 +85,7 @@ where
                             let inserted = match maybe_dense_indexes {
                                 Some(dense_indexes) => dense_indexes.insert_if_dense(
                                     partition_index,
-                                    kmer_hash,
+                                    smer_hash,
                                     path_num_global,
                                     threshold,
                                     log_abundance,
@@ -98,7 +98,7 @@ where
                             } else {
                                 // write the k-mer in a file of sparse k-mer from this color
                                 partition_kmers.entry(partition_index).or_default().push((
-                                    kmer_hash,
+                                    smer_hash,
                                     log_abundance,
                                     path_num,
                                     chunk_index,

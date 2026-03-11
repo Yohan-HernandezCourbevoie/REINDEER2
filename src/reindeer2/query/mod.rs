@@ -1,4 +1,5 @@
 mod approx_abundance;
+mod findere;
 mod format;
 
 use std::collections::HashMap;
@@ -16,11 +17,12 @@ use bio::io::fasta;
 pub use format::{write_header, write_kmer_query, EnrichedOutputFormat};
 
 pub use approx_abundance::ApproxAbundance;
+pub use findere::fimpera;
 
-/// Builds a map from partition_index -> Vec of (sequence_id, position_kmer_in_sequence, kmer_hash).
-pub fn build_partitions_kmers<S>(
+/// Builds a map from partition_index -> Vec of (sequence_id, position_kmer_in_sequence, smer_hash).
+pub fn build_partitions_smers<S>(
     batch: &[fasta::Record],
-    k: usize,
+    s: usize,
     m: usize,
     partition_number: u64,
     canonical: bool,
@@ -42,16 +44,16 @@ where
             (sequence.len() as u32) < u32::MAX,
             "queried sequence length should be smaller than 2^32"
         );
-        let kmer_minimizers = kmer_minimizers_all(sequence, k, m, canonical)
+        let kmer_minimizers = kmer_minimizers_all(sequence, s, m, canonical)
             .expect("should have been able to iterate over kmers");
 
-        for (position, (kmer_hash, minimizer)) in kmer_minimizers.enumerate() {
-            if sampler.filter((kmer_hash, minimizer)) {
+        for (position, (smer_hash, minimizer)) in kmer_minimizers.enumerate() {
+            if sampler.filter((smer_hash, minimizer)) {
                 let partition_index = (minimizer % partition_number) as usize;
                 partition_kmers.entry(partition_index).or_default().push((
                     record_id,
                     position as u32,
-                    kmer_hash,
+                    smer_hash,
                 ));
             }
         }
@@ -61,11 +63,11 @@ where
 }
 
 // TODO rename
-/// parameter `kmers` is Vec<(read_id, pos_in_read, hash)>
+/// parameter `smers` is Vec<(read_id, pos_in_read, hash)>
 pub fn fold_into_hashmap(
     mut local_results: HashMap<usize, Vec<Vec<(u32, ApproxAbundance)>>>,
     partition_index: usize,
-    kmers: Vec<(usize, u32, u64)>,
+    smers: Vec<(usize, u32, u64)>,
     base: f64,
     bf_dir: &str,
     bf_size: u64,
@@ -85,24 +87,26 @@ pub fn fold_into_hashmap(
         let hashmap: DenseIndexPartition = if is_dense {
             let path_dense_index =
                 format!("{}/partition_dense_index_p{}.bin", bf_dir, partition_index);
-            DenseIndexPartition::load_from_disk(&path_dense_index).expect(&format!(
-                "Failed to load dense index for partition {}",
-                partition_index
-            ))
+            DenseIndexPartition::load_from_disk(&path_dense_index).unwrap_or_else(|_| {
+                panic!(
+                    "Failed to load dense index for partition {}",
+                    partition_index
+                )
+            })
         } else {
             DenseIndexPartition::new()
         };
         //  For each k-mer in this partition
-        for (sequence_id, kmer_position, kmer_hash) in kmers {
-            let approximate_counts = if hashmap.contains_key(&kmer_hash) {
+        for (sequence_id, smer_position, smer_hash) in smers {
+            let approximate_counts = if hashmap.contains_key(&smer_hash) {
                 let log_abundance_vector = hashmap
-                    .get_abundance(&kmer_hash)
+                    .get_abundance(&smer_hash)
                     .expect("failed to read the hashmap");
                 // OPTIMIZE use only a vector instead of a vec of vec
                 let mut approximate_counts = vec![Vec::new(); color_number];
                 for (color, log_abundance) in log_abundance_vector.iter().enumerate() {
                     approximate_counts[color].push((
-                        kmer_position,
+                        smer_position,
                         ApproxAbundance::from_dense(*log_abundance, base),
                     ));
                 }
@@ -110,7 +114,7 @@ pub fn fold_into_hashmap(
             } else {
                 // Compute base position
                 let base_position = compute_base_position(
-                    kmer_hash,
+                    smer_hash,
                     (bf_size as usize) / partition_number,
                     color_number,
                     abundance_number,
@@ -124,7 +128,7 @@ pub fn fold_into_hashmap(
                     base_position,
                     color_number,
                     abundance_number,
-                    kmer_position,
+                    smer_position,
                     base,
                     &mut approximate_counts,
                 );
@@ -154,6 +158,26 @@ pub fn fold_into_hashmap(
     local_results
 }
 
+// TODO this should be in the Filter
+fn query_smer(
+    bitmap: &roaring::RoaringBitmap,
+    base_position: u64,
+    abundance_number: u16,
+    base: f64,
+    color: usize,
+) -> ApproxAbundance {
+    let mut res = ApproxAbundance::new_absent();
+    for abundance in 0..abundance_number {
+        let position_to_check =
+            base_position + (color as u64) * (abundance_number as u64) + (abundance as u64);
+
+        if bitmap.contains(position_to_check as u32) {
+            res = ApproxAbundance::from_position_of_hit_in_the_filter(abundance, base);
+        }
+    }
+    res
+}
+
 // TOUN
 // TODO why the outparameter ?
 /// update color abundances for a specific base position in the Bloom filter
@@ -162,30 +186,16 @@ pub fn update_color_abundances(
     base_position: u64,
     color_number: usize,
     abundance_number: usize,
-    kmer_position: u32,
+    smer_position: u32,
     base: f64,
     color_abundances: &mut [Vec<(u32, ApproxAbundance)>],
 ) {
     debug_assert!(abundance_number < u16::MAX as usize); // TODO make this check before ?
-    let abundance_number = abundance_number as u16; // TODO take u16 as parameter ?
+    let abundance_number: u16 = abundance_number as u16; // TODO take u16 as parameter ?
     for color in 0..color_number {
-        let mut insert = false;
-        for abundance in 0..abundance_number {
-            let position_to_check =
-                base_position + (color as u64) * (abundance_number as u64) + (abundance as u64);
-
-            if bitmap.contains(position_to_check as u32) {
-                color_abundances[color].push((
-                    kmer_position,
-                    ApproxAbundance::from_position_of_hit_in_the_filter(abundance, base),
-                ));
-                insert = true;
-                break; // keep the minimum
-            }
-        }
-        if !insert {
-            color_abundances[color].push((kmer_position, ApproxAbundance::new_absent()));
-        }
+        let smer_approx_abundance =
+            query_smer(bitmap, base_position, abundance_number, base, color);
+        color_abundances[color].push((smer_position, smer_approx_abundance));
     }
 }
 
@@ -217,8 +227,8 @@ pub fn load_kmer_counts_vector(dir_path: &str) -> io::Result<Vec<usize>> {
 
 pub fn sort_abundance_vec(
     abund_values: &Vec<(u32, ApproxAbundance)>,
-    nb_kmer_in_query: usize,
-    #[cfg(any(debug_assertions, test))] k: usize,
+    nb_smer_in_query: usize,
+    #[cfg(any(debug_assertions, test))] s: usize,
 ) -> Vec<ApproxAbundance> {
     #[cfg(debug_assertions)]
     {
@@ -233,11 +243,11 @@ pub fn sort_abundance_vec(
         // all positions are in the range of possible positions
         // FIXME what if usize is less than 32 bits ?
         if let Some(max) = set_positions.iter().max() {
-            debug_assert!((**max as usize) < nb_kmer_in_query + k - 1);
+            debug_assert!((**max as usize) < nb_smer_in_query + s - 1);
         }
     }
 
-    let mut abund_values_ordered = vec![ApproxAbundance::new_not_queried(); nb_kmer_in_query];
+    let mut abund_values_ordered = vec![ApproxAbundance::new_not_queried(); nb_smer_in_query];
     for (kmer_pos, abundance) in abund_values {
         abund_values_ordered[*kmer_pos as usize] = *abundance;
     }
@@ -295,7 +305,7 @@ mod tests {
         );
 
         let expected_color_abundances = vec![
-            vec![(0, ApproxAbundance::from_dense(1, base))], // color 0 has abundance levels 0 and 1 -> will keep the min
+            vec![(0, ApproxAbundance::from_dense(2, base))], // color 0 has abundance levels 0 and 1 -> will keep the max
             vec![(0, ApproxAbundance::from_dense(1, base))], // color 1 has abundance level 0
             vec![(0, ApproxAbundance::new_absent())], // color 2 has no abundance, set to QUERIED_BUT_ERROR instead (handle later in the pipeline)
         ];
