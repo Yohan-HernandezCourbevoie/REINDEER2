@@ -37,52 +37,99 @@ pub enum BreakpointsNormalize {
     Normalize(u64),
 }
 
+/// Matrix formats supported by REINDEER 2.
 #[derive(Clone, Debug, PartialEq)]
 pub enum MatrixFormat {
-    Raw(
-        /// None if not computing breakpoints nor normalization
-        Option<BreakpointsNormalize>,
-    ),
+    /// Raw format: the abundance of each k-mer is present in the output.
+    Raw(Option<BreakpointsNormalize>),
+    /// Average format: the average of the k-mers of the sequence is outputted.
     Average {
+        /// This format can be normalized, i.e. the abundance is adjusted
+        /// by a factor depending on a constant and on the number of k-mers in the indexed dataset.
         normalized: Option<u64>,
     },
+    /// Median format: the median of the k-mers of the sequence is outputted.
     Median {
+        /// This format can be normalized, i.e. the abundance is adjusted
+        /// by a factor depending on a constant and on the number of k-mers in the indexed dataset.
         normalized: Option<u64>,
     },
 }
 
+/// Output formats supported by REINDEER 2.
 #[derive(Clone, Debug, PartialEq)]
 pub enum OutputFormat {
-    Colored { normalized: Option<u64> },
-    Median { normalized: Option<u64> },
-    AbundanceMatrix { format: MatrixFormat },
+    /// Colored format: annotate the input file with abundances rather than producing the standard output file.
+    Colored {
+        /// This format can be normalized, i.e. the abundance is adjusted
+        /// by a factor depending on a constant and on the number of k-mers in the indexed dataset.
+        normalized: Option<u64>,
+    },
+    /// Median format: for each color, returns the median of k-mer abundance per read.
+    Median {
+        /// This format can be normalized, i.e. the abundance is adjusted
+        /// by a factor depending on a constant and on the number of k-mers in the indexed dataset.
+        normalized: Option<u64>,
+    },
+    /// Matrix formats: output a matrix of k-mers. Row: queried sequences, columns: indexed datasets.
+    AbundanceMatrix {
+        /// The format of the matrix.
+        format: MatrixFormat,
+    },
 }
 
-/// Reindeer2 parameters
+/// REINDEER 2's  parameters
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[cfg_attr(any(test, debug_assertions), derive(PartialEq))]
 pub struct Parameters {
+    /// Size of the Bloom filter in bits
     pub bf_size: u64,
+    /// Number of partition in the index
     pub partition_number: usize,
+    /// Size of the k-mers
     pub k: usize,
+    /// Size of the minimizers
     pub m: usize,
+    /// Number of color in the index
     pub nb_color: usize,
+    /// Number of abundance levels in the index
     pub abundance_number: NonZero<usize>,
+    /// Minimum abundance for a k-mer to be indexed
     pub abundance_min: u16,
+    /// Maximal abundance of k-mers. If a k-mer has a greater abundance, its abundance is capped.
     pub abundance_max: NonZero<u16>,
+    /// True if and only if the index a dense index
     pub dense_option: bool,
+    /// True if and only if the index is buit in canonical mode, i.e. we consider a strand equal to its reverse complement
     pub canonical: bool,
+    /// The strategy to sample k-mers or minimizers.
+    /// Allows to save query time, indexation time and memory, at the cost of some approxitmation.
+    /// If None, no sampling is performed.
     pub sampling_strategy: Option<SamplingStrategy>,
+    /// The z parameter of findere.
+    /// The index will contains (k-z)-mers, and reconstruct k-mers on the fly.
+    /// This allows to decrease the false positive rate of queries.
     pub findere_z: usize,
 }
 
+/// The strategy to sample k-mers or minimizers.
+/// Allows to save query time, indexation time and memory, at the cost of some approxitmation.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub enum SamplingStrategy {
-    MinimizerSampling { last_bits_to_zero: u64 },
-    KmerSampling { last_bits_to_zero: u64 },
+    /// Only take into account minimizers which hash ends by at least `last_bits_to_zero` 0s.
+    MinimizerSampling {
+        /// The minimum number of 0 a minimizer should have at the end of its hash to be sampled
+        last_bits_to_zero: u64,
+    },
+    /// Only take into account k-mers which hash ends by at least `last_bits_to_zero` 0s.
+    KmerSampling {
+        /// The minimum number of 0 a k-mer should have at the end of its hash to be sampled
+        last_bits_to_zero: u64,
+    },
 }
 
 impl Parameters {
+    /// Constructs a new `Parameters` from its inner values.
     pub const fn new(
         bf_size: u64,
         partition_number: usize,
@@ -127,6 +174,7 @@ impl Parameters {
     }
 }
 
+/// A REINDEER 2 index handle. Allows to build and query the index.
 #[derive(Serialize, Deserialize)]
 #[cfg_attr(any(test, debug_assertions), derive(PartialEq, Debug))]
 pub struct Reindeer2 {
@@ -134,9 +182,9 @@ pub struct Reindeer2 {
     parameters: Parameters,
     /// Names of indexed files
     indexed_file_names: Vec<String>,
-    /// Index directory
+    /// Directory containing the index
     #[serde(skip)]
-    index_dir: String,
+    index_dir: String, // TODO use a path ?
 }
 
 /// Declares a variable. The variable is declared as mut iif `#[cfg(any(debug_assertions, test))]`.
