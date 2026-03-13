@@ -32,8 +32,15 @@ use crate::reindeer2::minimizer_iter::{KmerSampler, MinimizerSampler, NoSampler,
 use crate::reindeer2::query::{fimpera, load_kmer_counts_vector, ApproxAbundance};
 
 #[derive(Clone, Debug, PartialEq)]
+/// Breakpoints reports position in which the abundance varies along the queried k-mers.
+/// Normalize prints the values of k-mers.
+///
+/// They are not compatible in the current implementation.
 pub enum BreakpointsNormalize {
+    /// Ask to report the position at which the abundance varies along the queried k-mers.
+    /// Parameter: the parameter given to the PELT algorithm to detect breakpoints.
     Breakpoints(f64),
+    /// Normalize the output by a factor decided by the parameter and the number of kindexed k-mers.
     Normalize(u64),
 }
 
@@ -198,10 +205,16 @@ macro_rules! mut_if_debug {
     };
 }
 
+/// Infos about a REINDEER 2 index.
+///
+/// Implements serde::Serialize and serde::Deserialize so it can be e.g. shown to users.
 #[derive(Serialize, Deserialize)]
 pub struct Infos {
+    /// Parameters used to build the index.
     pub parameters: Parameters,
+    /// Vector of infos about a file. Each element is a tuple (file name, number of k-mers in the file).
     pub indexed_file_names: Vec<(String, usize)>,
+    /// Directory contaning the index.
     pub index_dir: String,
 }
 
@@ -220,6 +233,7 @@ impl fmt::Display for Infos {
 }
 
 impl Reindeer2 {
+    /// Constructs a new index handle.
     pub const fn new(parameters: Parameters, index_dir: String) -> Self {
         Self {
             parameters,
@@ -228,6 +242,7 @@ impl Reindeer2 {
         }
     }
 
+    /// Returns the infos of an index.
     pub fn get_index_infos(&self) -> Infos {
         let Self {
             parameters,
@@ -247,6 +262,12 @@ impl Reindeer2 {
     }
 
     #[cfg(any(debug_assertions, test))]
+    /// Sets the name of indexed file in the index.
+    ///
+    /// Only available in test and debug mode.
+    ///
+    /// # Warning
+    /// This breaks your ability to reason about the index. Do not use except for unit tests.
     pub fn set_indexed_file_names(&mut self, indexed_file_names: Vec<String>) {
         self.indexed_file_names = indexed_file_names;
     }
@@ -280,6 +301,7 @@ impl Reindeer2 {
         Ok(())
     }
 
+    /// Build the index by indexing the files in `file_paths` using the parameters passed during the construction of the struct.
     pub fn build(
         &mut self,
         file_paths: Vec<String>,
@@ -549,6 +571,7 @@ impl Reindeer2 {
     }
 
     // TODO store bf_dir in Reindeer2 ?
+    /// Performs a query on the index and writes the results on the disk.
     pub fn query(
         &self,
         fasta_file: &str,
@@ -1164,6 +1187,7 @@ fn load_bloom_filter(file_path: &str) -> io::Result<(RoaringBitmap, usize)> {
 
 // --- FOF MANAGEMENT ---
 
+/// Reads a file of file and return each lines, along with the number of lines in it.
 pub fn read_fof_file(file_path: &str) -> io::Result<(Vec<String>, usize)> {
     let file = File::open(file_path)?;
     let reader = BufReader::new(file);

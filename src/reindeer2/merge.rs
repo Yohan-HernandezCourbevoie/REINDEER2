@@ -8,9 +8,9 @@ use std::{
 
 use crate::reindeer2::{load_bloom_filter, Parameters, Reindeer2};
 
-// merge an arbitrary number of indexes  listed in a fof
-// each line of the fof is expected to he path to one index dir
-// in the end, alsos write a  new metadata JSON file in the output dir
+/// Merges an arbitrary number of indexes listed in the file `indexes_fof`. The new index is placed in `output_dir`.
+///
+/// Each line of the fof is expected to the path to one index directory.
 pub fn merge_multiple_indexes(indexes_fof: &str, output_dir: &str) -> io::Result<()> {
     // read the list of index directories.
     let index_dirs: Vec<String> = {
