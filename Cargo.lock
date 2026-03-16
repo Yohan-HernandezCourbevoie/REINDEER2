@@ -1171,6 +1171,7 @@ dependencies = [
  "serde",
  "serde_json",
  "simd-minimizers",
+ "tar-get",
  "thiserror 2.0.18",
  "thousands",
  "uuid",
@@ -1453,6 +1454,15 @@ dependencies = [
  "proc-macro2",
  "quote",
  "unicode-ident",
+]
+
+[[package]]
+name = "tar-get"
+version = "0.4.3"
+source = "git+https://github.com/lrobidou/tar-get.git?rev=44391c03624d54f765f4beeb4adbff5f3df34531#44391c03624d54f765f4beeb4adbff5f3df34531"
+dependencies = [
+ "serde",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
