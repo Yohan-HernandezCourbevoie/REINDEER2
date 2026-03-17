@@ -9,7 +9,6 @@ use bio::io::fasta;
 use flate2::read::GzDecoder;
 use itertools::Itertools;
 use rayon::prelude::*;
-use roaring::RoaringBitmap;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
@@ -1117,21 +1116,6 @@ fn create_dir_and_files(
     000000000000  as a partitioned_bloom_filters
     */
 }
-
-// fn _write_bloom_filters_to_disk_nochunk(
-//     dir_path: &str,
-//     bloom_filters: &[RoaringBitmap],
-//     nb_colors: usize,
-// ) -> io::Result<()> {
-//     for (i, bitmap) in bloom_filters.iter().enumerate() {
-//         let file_path = Path::new(dir_path).join(format!("partition_bloom_filters_p{}.bin", i));
-//         let file = File::create(&file_path)?;
-//         let mut writer = BufWriter::new(file);
-//         writer.write_all(&nb_colors.to_le_bytes())?;
-//         bitmap.serialize_into(&mut writer)?;
-//     }
-//     Ok(())
-// }
 
 fn write_kmer_counts_to_disk(
     dir_path: &str,
@@ -3983,14 +3967,18 @@ shared_revcomp_with_other_test_file\t0-19:*\t0-19:10",
         // check that each partition file in the merged index exists
         let total_capacity: u64 = (0..NB_FILE_IN_AN_INDEX)
             .map(|i| {
-                let path = format!(
-                    "{}/partition_bloom_filters_group{}.bin",
-                    merged_index.index_dir, i
-                );
-                let file = File::open(path).unwrap();
-                let mut reader = BufReader::new(file);
-                let metadata = tar_get::get_metadata(&mut reader).unwrap();
-                metadata.get_nb_objects()
+                if i < parameters.partition_number {
+                    let path = format!(
+                        "{}/partition_bloom_filters_group{}.bin",
+                        merged_index.index_dir, i
+                    );
+                    let file = File::open(path).unwrap();
+                    let mut reader = BufReader::new(file);
+                    let metadata = tar_get::get_metadata(&mut reader).unwrap();
+                    metadata.get_nb_objects()
+                } else {
+                    0
+                }
             })
             .sum();
         assert_eq!(total_capacity, parameters.partition_number as u64);
