@@ -142,6 +142,7 @@ pub struct Parameters {
     /// The index will contains (k-z)-mers, and reconstruct k-mers on the fly.
     /// This allows to decrease the false positive rate of queries.
     pub findere_z: usize,
+    pub capacity: usize,
 }
 
 /// The strategy to sample k-mers or minimizers.
@@ -176,6 +177,7 @@ impl Parameters {
         canonical: bool,
         sampling_strategy: Option<SamplingStrategy>,
         findere_z: usize,
+        capacity: usize,
     ) -> Self {
         Self {
             bf_size,
@@ -190,6 +192,7 @@ impl Parameters {
             canonical,
             sampling_strategy,
             findere_z,
+            capacity,
         }
     }
 
@@ -1716,6 +1719,12 @@ mod tests {
         AutoRemoveDirectory::create_random()
     }
 
+    pub fn wrong_capacity() -> usize {
+        // this is used to give a wrong capacity, but it should no matter for tests
+        // TODO change it later
+        0
+    }
+
     #[apply(findere_fixture)]
     fn test_write_and_read_metadata(#[case] z: usize, random_directory: AutoRemoveDirectory) {
         let bf_dir = random_directory.filename().to_str().unwrap();
@@ -1732,6 +1741,7 @@ mod tests {
             canonical: false,
             sampling_strategy: None,
             findere_z: z,
+            capacity: wrong_capacity(),
         };
         let indexed_file_names = vec![String::from("a"), String::from("b")];
 
@@ -1829,6 +1839,7 @@ mod tests {
             canonical: false,
             sampling_strategy: None,
             findere_z: z,
+            capacity: wrong_capacity(),
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -1904,6 +1915,7 @@ mod tests {
             canonical: true,
             sampling_strategy: None,
             findere_z: z,
+            capacity: wrong_capacity(),
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -1976,6 +1988,7 @@ mod tests {
             canonical: true,
             sampling_strategy: None,
             findere_z: z,
+            capacity: wrong_capacity(),
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -2047,6 +2060,7 @@ mod tests {
             canonical: true,
             sampling_strategy: None,
             findere_z: z,
+            capacity: wrong_capacity(),
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -2120,6 +2134,7 @@ mod tests {
             canonical: true,
             sampling_strategy: None,
             findere_z: z,
+            capacity: wrong_capacity(),
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -2189,6 +2204,7 @@ mod tests {
             canonical: true,
             sampling_strategy: None,
             findere_z: z,
+            capacity: wrong_capacity(),
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -2260,6 +2276,7 @@ mod tests {
             canonical: true,
             sampling_strategy: None,
             findere_z: z,
+            capacity: wrong_capacity(),
         };
         let chunks_size = 128;
         let threshold = 1;
@@ -2333,6 +2350,7 @@ mod tests {
             canonical: true,
             sampling_strategy: None,
             findere_z: z,
+            capacity: wrong_capacity(),
         };
         let chunks_size = 128;
         let threshold = 1;
@@ -2408,6 +2426,7 @@ mod tests {
             canonical: true,
             sampling_strategy: None,
             findere_z: z,
+            capacity: wrong_capacity(),
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -2485,6 +2504,7 @@ mod tests {
             canonical: true,
             sampling_strategy: None,
             findere_z: z,
+            capacity: wrong_capacity(),
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -2562,6 +2582,7 @@ mod tests {
             canonical: true,
             sampling_strategy: None,
             findere_z: z,
+            capacity: wrong_capacity(),
         };
         let chunks_size = 1;
         let threshold = parameters.nb_color;
@@ -2639,6 +2660,7 @@ mod tests {
             canonical: true,
             sampling_strategy: None,
             findere_z: z,
+            capacity: wrong_capacity(),
         };
         let chunks_size = 1;
         let threshold = parameters.nb_color;
@@ -2712,6 +2734,7 @@ mod tests {
             canonical: true,
             sampling_strategy: None,
             findere_z: z,
+            capacity: wrong_capacity(),
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -2783,6 +2806,7 @@ mod tests {
             canonical: true,
             sampling_strategy: None,
             findere_z: z,
+            capacity: wrong_capacity(),
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -3080,6 +3104,7 @@ mod tests {
             canonical: true,
             sampling_strategy: None,
             findere_z: z,
+            capacity: wrong_capacity(),
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -3212,6 +3237,7 @@ mod tests {
             canonical: true,
             sampling_strategy: None,
             findere_z: z,
+            capacity: wrong_capacity(),
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -3316,6 +3342,7 @@ mod tests {
             canonical: true,
             sampling_strategy: None,
             findere_z: z,
+            capacity: wrong_capacity(),
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -3417,6 +3444,7 @@ mod tests {
             canonical: true,
             sampling_strategy: None,
             findere_z: z,
+            capacity: wrong_capacity(),
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -3529,6 +3557,7 @@ mod tests {
             canonical: true,
             sampling_strategy: None,
             findere_z: z,
+            capacity: wrong_capacity(),
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -3592,6 +3621,7 @@ mod tests {
             canonical: false,
             sampling_strategy: None,
             findere_z: z,
+            capacity: wrong_capacity(),
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -3674,6 +3704,7 @@ mod tests {
             canonical: true,
             sampling_strategy: None,
             findere_z: z,
+            capacity: wrong_capacity(),
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -3737,6 +3768,7 @@ shared_revcomp_with_other_test_file\t0-19:3\t0-19:10",
             canonical: true,
             sampling_strategy: None,
             findere_z: z,
+            capacity: wrong_capacity(),
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -3797,6 +3829,7 @@ header_0\t0-69:*\t0-69:1",
             canonical: false,
             sampling_strategy: None,
             findere_z: z,
+            capacity: wrong_capacity(),
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -3837,6 +3870,21 @@ shared_revcomp_with_other_test_file\t0-19:*\t0-19:10",
         assert_equal_sorted_content_with_equal_header(&expected, actual);
     }
 
+    // TODO duplicate
+    const MAX_SIZE_ROARING: u64 = 2u64.pow(32);
+    /// Returns the minimum number of partitions required to index `nb_files` files with `nb_abundance_level` abundance levels and filters of size `bf_size`.
+    #[must_use]
+    pub fn get_number_of_partitions(
+        nb_files: usize,
+        nb_abundance_level: usize,
+        bf_size: u64,
+    ) -> usize {
+        usize::try_from(
+            (nb_abundance_level as u64 * nb_files as u64 * bf_size).div_ceil(MAX_SIZE_ROARING),
+        )
+        .expect("error in conversion")
+    }
+
     #[apply(findere_fixture)]
     fn test_merge_multiple_indexes(
         #[case] z: usize,
@@ -3875,11 +3923,16 @@ shared_revcomp_with_other_test_file\t0-19:*\t0-19:10",
             writeln!(file, "TAGAAGGCGTGAGTCTTAGCT")?;
         }
 
+        let capacity = 40;
+        let bf_size = 1024;
+
+        let partition_number = get_number_of_partitions(capacity, 255, bf_size);
+
         let mut parameters = Parameters {
             k: 21,
             m: 5,
-            bf_size: 1024,
-            partition_number: 2,
+            bf_size,
+            partition_number,
             nb_color: 1,
             abundance_number: NonZero::new(255).unwrap(),
             abundance_min: 0,
@@ -3888,6 +3941,7 @@ shared_revcomp_with_other_test_file\t0-19:*\t0-19:10",
             canonical: true,
             sampling_strategy: None,
             findere_z: z,
+            capacity,
         };
 
         let chunks_size = 128;
