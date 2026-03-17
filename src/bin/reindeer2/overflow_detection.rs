@@ -1,10 +1,10 @@
+const MAX_SIZE_ROARING: u64 = 2u64.pow(32);
+
 /// Returns the minimum number of partitions required to index `nb_files` files with `nb_abundance_level` abundance levels and filters of size `bf_size`.
 #[must_use]
 pub fn get_number_of_partitions(nb_files: usize, nb_abundance_level: usize, bf_size: u64) -> usize {
-    let max_size_roaring = 2u64.pow(32);
-
     usize::try_from(
-        (nb_abundance_level as u64 * nb_files as u64 * bf_size).div_ceil(max_size_roaring),
+        (nb_abundance_level as u64 * nb_files as u64 * bf_size).div_ceil(MAX_SIZE_ROARING),
     )
     .expect("error in conversion")
 }
