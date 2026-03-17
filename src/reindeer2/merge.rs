@@ -128,7 +128,6 @@ pub fn merge_multiple_indexes(indexes_fof: &str, output_dir: &str) -> io::Result
         ));
     }
 
-    println!("here");
     let index_ref = Reindeer2::load_from_disk(&index_dirs[0]).unwrap_or_else(|_| {
         panic!(
             "should have been able to load index infos from disk {}",
