@@ -125,11 +125,9 @@ fn canonical_minimizer_and_superkmer_positions(
     let mut minimizer_positions = Vec::new();
     let mut super_kmers = Vec::new();
     let packed_seq = PackedSeqVec::from_ascii(seq);
-    let minimizer_vals: Vec<u64> = canonical_minimizers(m, k - m + 1)
+    canonical_minimizers(m, k - m + 1)
         .super_kmers(&mut super_kmers)
-        .run(packed_seq.as_slice(), &mut minimizer_positions)
-        .values_u64()
-        .collect();
+        .run(packed_seq.as_slice(), &mut minimizer_positions);
     (minimizer_positions, super_kmers)
 }
 
@@ -137,11 +135,9 @@ fn minimizer_and_superkmer_positions(seq: &[u8], k: usize, m: usize) -> (Vec<u32
     let mut minimizer_positions = Vec::new();
     let mut super_kmers = Vec::new();
     let packed_seq = PackedSeqVec::from_ascii(seq);
-    let minimizer_vals: Vec<u64> = minimizers(m, k - m + 1)
+    minimizers(m, k - m + 1)
         .super_kmers(&mut super_kmers)
-        .run(packed_seq.as_slice(), &mut minimizer_positions)
-        .values_u64()
-        .collect();
+        .run(packed_seq.as_slice(), &mut minimizer_positions);
     (minimizer_positions, super_kmers)
 }
 
