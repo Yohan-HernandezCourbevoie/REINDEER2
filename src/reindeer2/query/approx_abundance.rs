@@ -58,7 +58,7 @@ impl ApproxAbundance {
         self.value != Self::NOT_QUERIED
     }
 
-    pub fn to_value(&self) -> Option<u16> {
+    pub fn to_value(self) -> Option<u16> {
         if self.is_queried() {
             if self.value == Self::QUERIED_BUT_ABSENT {
                 Some(0)

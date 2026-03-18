@@ -8,5 +8,6 @@
 #![cfg_attr(not(test), deny(clippy::unwrap_used))]
 #![deny(dead_code)]
 #![deny(unused)]
+#![deny(clippy::allow_attributes_without_reason)]
 
 pub mod reindeer2;

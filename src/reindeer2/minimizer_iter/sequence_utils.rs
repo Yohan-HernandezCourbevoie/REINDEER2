@@ -27,8 +27,9 @@ pub const REVCOMP_TAB: [u8; 255] = {
     tab
 };
 
-#[allow(clippy::type_complexity)]
-pub fn reverse_complement<'a>(seq: &'a [u8]) -> Map<Rev<Iter<'a, u8>>, fn(&'a u8) -> u8> {
+pub type ReverseComplement<'a> = Map<Rev<Iter<'a, u8>>, fn(&'a u8) -> u8>;
+
+pub fn reverse_complement(seq: &[u8]) -> ReverseComplement<'_> {
     seq.iter()
         .rev()
         .map(|base| unsafe { *REVCOMP_TAB.get_unchecked(*base as usize) })

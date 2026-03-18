@@ -289,7 +289,7 @@ mod tests {
         let abundance_number = 2;
         let base = 2.0;
 
-        #[allow(clippy::identity_op)]
+        #[allow(clippy::identity_op, reason = "readability")]
         bitmap.insert((base_position + 0) as u32); // color 0, abundance 0
         bitmap.insert((base_position + 1) as u32); // color 0, abundance 1
         bitmap.insert((base_position + 2) as u32); // color 1, abundance 0

@@ -217,6 +217,7 @@ pub fn merge_multiple_indexes(indexes_fof: &str, output_dir: &str) -> io::Result
         ..index_ref.parameters
     };
 
+    #[allow(clippy::map_flatten, reason = "readability")]
     let indexed_file_names = indexes
         .into_iter()
         .map(|index| index.indexed_file_names)

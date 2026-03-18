@@ -39,6 +39,7 @@ pub fn graph_coloring(
         for (color_idx, vals) in color_vectors.iter().enumerate() {
             let vals = vals
                 .iter()
+                .copied()
                 .filter_map(ApproxAbundance::to_value)
                 .collect_vec();
             if vals.is_empty() {
