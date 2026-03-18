@@ -1,4 +1,5 @@
 use bio::io::fasta;
+use log::warn;
 use std::collections::HashMap;
 use std::io;
 use std::num::NonZero;
@@ -113,7 +114,10 @@ where
                         }
                     }
                 }
-                Err(e) => eprintln!("Error processing fasta: {}", e),
+                Err(e) => {
+                    warn!("Error processing fasta: {}", e);
+                    eprintln!("Error processing fasta: {}", e)
+                }
             }
         }
         // Flush remaining k-mers in the map by calling the earlier closure
@@ -146,8 +150,10 @@ pub fn process_fasta_record(
     abundance_max: NonZero<u16>,
     header_type: &HeaderType,
 ) -> Result<(Vec<u8>, Option<u16>, u16), io::Error> {
-    let header_option = record.desc();
-    let header = header_option.unwrap_or("no header found");
+    let header = match record.desc() {
+        Some(header) => header,
+        None => return Err(io::Error::other("no header found")),
+    };
     let count_value = match extract_count(header, header_type) {
         Ok(count_value) => count_value,
         Err(_) => return Err(io::Error::other("count not found!")),

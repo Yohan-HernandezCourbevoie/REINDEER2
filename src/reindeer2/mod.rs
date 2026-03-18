@@ -1297,9 +1297,10 @@ fn determine_header_type(header: &str) -> Result<HeaderType, io::Error> {
     } else if header.contains("ka:f:") {
         Ok(HeaderType::Logan)
     } else {
-        Err(io::Error::other(
-            "Header does not contain a recognized count field (km:f: or ka:f:)",
-        ))
+        Err(io::Error::other(format!(
+            "Header {} does not contain a recognized count field (km:f: or ka:f:)",
+            header,
+        )))
     }
 }
 
