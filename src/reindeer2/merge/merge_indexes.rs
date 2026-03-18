@@ -151,10 +151,6 @@ pub fn merge_multiple_indexes(indexes_fof: &str, output_dir: &str) -> io::Result
 
     // let mut indexes_metadata = vec![(index_dirs[0].clone(), index_ref.parameters.nb_color)];
     let mut new_color_number = index_ref.parameters.nb_color;
-    assert!(
-        new_color_number <= index_ref.parameters.capacity,
-        "not enough capacity to store all the indexes"
-    );
 
     // for all other indexes, check that the parameters match and add its color count
     for index_to_merge in indexes.iter().skip(1) {
@@ -169,6 +165,11 @@ pub fn merge_multiple_indexes(indexes_fof: &str, output_dir: &str) -> io::Result
         }
         new_color_number += index_to_merge.parameters.nb_color;
     }
+
+    assert!(
+        new_color_number <= index_ref.parameters.capacity,
+        "not enough capacity to store all the indexes"
+    );
 
     fs::create_dir_all(output_dir)?;
 
