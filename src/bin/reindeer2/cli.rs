@@ -96,6 +96,11 @@ pub struct IndexArgs {
     #[arg(long)]
     pub minimizer_sampling: Option<u64>,
 
+    // TODO rename
+    /// Requires the count to be in header right after the ">", e.g. ">ka:f:18"
+    #[arg(long, default_value_t = false)]
+    pub count_right_after: bool,
+
     /// Expert parameter: findere's z parameter: index (k-z)-mers as proxy for k-mers. Default: z=4.
     /// Rule of thumb:
     ///  - higher z decreases false positive rate, if to k-z > 16

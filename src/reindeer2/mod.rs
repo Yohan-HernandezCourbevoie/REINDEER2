@@ -334,6 +334,7 @@ impl Reindeer2 {
         file_paths: Vec<String>,
         chunks_size: usize,
         threshold: usize,
+        count_right_after: bool,
     ) -> io::Result<(Vec<String>, String)> {
         mut_if_debug!(total_kmers = atomic::AtomicU64::new(0));
         mut_if_debug!(atomic_dense_kmers_count = atomic::AtomicU64::new(0));
@@ -405,8 +406,12 @@ impl Reindeer2 {
                             let first_record = fasta_reader.records().next();
 
                             if let Some(Ok(record)) = first_record {
-                                let header_option = record.desc();
-                                let header = header_option.unwrap_or("no header found");
+                                let header = if count_right_after {
+                                    record.id()
+                                } else {
+                                    let header_option = record.desc();
+                                    header_option.unwrap_or("no header found")
+                                };
                                 let h_type = match determine_header_type(header) {
                                     Ok(ht) => ht,
                                     Err(e) => {
@@ -441,6 +446,7 @@ impl Reindeer2 {
                                             &atomic_sparse_kmers_count,
                                             &kmer_counts_vector,
                                             parameters.canonical,
+                                            count_right_after,
                                             &sampler,
                                         )
                                     }
@@ -471,6 +477,7 @@ impl Reindeer2 {
                                             &atomic_sparse_kmers_count,
                                             &kmer_counts_vector,
                                             parameters.canonical,
+                                            count_right_after,
                                             &sampler,
                                         )
                                     }
@@ -499,6 +506,7 @@ impl Reindeer2 {
                                             &atomic_sparse_kmers_count,
                                             &kmer_counts_vector,
                                             parameters.canonical,
+                                            count_right_after,
                                             &sampler,
                                         )
                                     }
@@ -1751,7 +1759,7 @@ mod tests {
     ) -> String {
         let mut index = Reindeer2::new(parameters, test_dir.into());
         let (_file_paths, index_dir) = index
-            .build(file_paths.clone(), chunks_size, threshold)
+            .build(file_paths.clone(), chunks_size, threshold, false)
             .expect("Failed to build index");
 
         let query_results_path = format!("{}/query_results.csv", index_dir);
@@ -1831,7 +1839,7 @@ mod tests {
 
         let mut index = Reindeer2::new(parameters, String::from(test_dir));
         let (_file_paths, index_dir) = index
-            .build(vec![file1_path.clone()], chunks_size, threshold)
+            .build(vec![file1_path.clone()], chunks_size, threshold, false)
             .expect("Failed to build index");
 
         let query_results_path = format!("{}/query_results.csv", index_dir);
@@ -3616,7 +3624,7 @@ mod tests {
         let mut index = Reindeer2::new(parameters, String::from(test_dir));
 
         let (_file_paths, index_dir) = index
-            .build(vec![fasta_path.clone()], chunks_size, threshold)
+            .build(vec![fasta_path.clone()], chunks_size, threshold, false)
             .expect("Failed to build index");
 
         let index_from_disk =
@@ -3696,7 +3704,7 @@ mod tests {
 
         let mut index = Reindeer2::new(parameters, String::from(test_dir));
         let (_, index_dir) = index
-            .build(file_paths.clone(), chunks_size, threshold)
+            .build(file_paths.clone(), chunks_size, threshold, false)
             .expect("Failed to build index");
 
         let query_results_path = format!("{}/query_results.csv", index_dir);
@@ -3760,7 +3768,7 @@ shared_revcomp_with_other_test_file\t0-19:3\t0-19:10",
 
         let mut index = Reindeer2::new(parameters, String::from(test_dir));
         let (_, index_dir) = index
-            .build(file_paths.clone(), chunks_size, threshold)
+            .build(file_paths.clone(), chunks_size, threshold, false)
             .expect("Failed to build index");
 
         let query_results_path = format!("{}/query_results.csv", index_dir);
@@ -3821,7 +3829,7 @@ header_0\t0-69:*\t0-69:1",
 
         let mut index = Reindeer2::new(parameters, String::from(test_dir));
         let (_, index_dir) = index
-            .build(file_paths.clone(), chunks_size, threshold)
+            .build(file_paths.clone(), chunks_size, threshold, false)
             .expect("Failed to build index");
 
         let query_results_path = format!("{}/query_results.csv", index_dir);
@@ -3935,13 +3943,23 @@ shared_revcomp_with_other_test_file\t0-19:*\t0-19:10",
         // for index1, color count = 1
         let index1_file_paths = vec![file1_path.clone()];
         let mut index = Reindeer2::new(parameters.clone(), String::from(&index1_index_dir));
-        index.build(index1_file_paths, chunks_size, tolerated_number_of_zeros)?;
+        index.build(
+            index1_file_paths,
+            chunks_size,
+            tolerated_number_of_zeros,
+            false,
+        )?;
 
         //index2, color count = 2
         parameters.nb_color = 2;
         let index2_file_paths = vec![file2_path.clone(), file3_path.clone()];
         let mut index = Reindeer2::new(parameters.clone(), String::from(&index2_index_dir));
-        index.build(index2_file_paths, chunks_size, tolerated_number_of_zeros)?;
+        index.build(
+            index2_file_paths,
+            chunks_size,
+            tolerated_number_of_zeros,
+            false,
+        )?;
 
         {
             let mut fof = File::create(&indexes_fof)?;
