@@ -10,8 +10,8 @@ QUERY_OUTPUT="$LOCAL_FOLDER/results.tsv"
 EXPECTED_QUERY_OUTPUT="$LOCAL_FOLDER/expected.tsv"
 
 cargo build --quiet
-RUST_LOG=warn $reindeer2 --threads 7 index --input $INPUT_FOF_0 -k 31 --nb-file-capacity 10 -o integration_test_index_0
-RUST_LOG=warn $reindeer2 --threads 7 index --input $INPUT_FOF_1 -k 31 --nb-file-capacity 10 -o integration_test_index_1
+RUST_LOG=warn $reindeer2 --threads 7 index --input $INPUT_FOF_0 -k 31 --nb-file-capacity 2 -o integration_test_index_0
+RUST_LOG=warn $reindeer2 --threads 7 index --input $INPUT_FOF_1 -k 31 --nb-file-capacity 2 -o integration_test_index_1
 RUST_LOG=warn $reindeer2 --threads 7 merge --file-of-indexes $INPUT_FOF_INDEXES -o integration_test_index
 RUST_LOG=warn $reindeer2 query --fasta $QUERY_INPUT --index ./integration_test_index --output-format matrix-raw --output $QUERY_OUTPUT
 
