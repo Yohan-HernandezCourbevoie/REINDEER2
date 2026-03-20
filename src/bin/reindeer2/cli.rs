@@ -7,10 +7,6 @@ pub const DEFAULT_Z: usize = 4;
 pub struct Cli {
     #[command(subcommand)]
     pub command: Command,
-
-    /// Define a number of threads available
-    #[arg(short, long, value_name = "THREADS", default_value_t = 1)]
-    pub threads: usize,
 }
 
 // TODO name the modes
@@ -48,6 +44,10 @@ pub struct IndexArgs {
     /// Sets the minimizer size
     #[arg(short, long, value_name = "MINSIZE", default_value_t = 15)]
     pub minimizer: usize,
+
+    /// Define a number of threads available
+    #[arg(short, long, value_name = "THREADS", default_value_t = 7)]
+    pub threads: usize,
 
     // TODO better help
     /// Capacity of the index (in number of files). Default: only reserve space for the indexed files.
@@ -127,6 +127,10 @@ pub struct QueryArgs {
     #[arg(short = 'f', long, value_enum, default_value_t = OutputFormatCli::Median)]
     pub output_format: OutputFormatCli,
 
+    /// Define a number of threads available
+    #[arg(short, long, value_name = "THREADS", default_value_t = 7)]
+    pub threads: usize,
+
     /// Normalize output (default: false)
     #[arg(long, num_args(0..=1), value_parser = clap::value_parser!(u64), default_missing_value = "1000000")]
     pub normalize: Option<u64>,
@@ -159,6 +163,10 @@ pub struct MergeArgs {
     /// Sets the index output directory (default: random name in the form of RD2_index_)
     #[arg(short = 'o', long = "output-dir", value_name = "OUT")]
     pub output_dir: Option<String>,
+
+    /// Define a number of threads available
+    #[arg(short, long, value_name = "THREADS", default_value_t = 1)]
+    pub threads: usize,
 }
 
 #[derive(Args, Debug)]
