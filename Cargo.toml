@@ -27,6 +27,7 @@ simd-minimizers = "2.3.0"
 xxhash-rust = { version = "0.8.12", features = ["xxh3", "const_xxh3"] }
 itertools = "0.14.0"
 thiserror = "2.0.17"
+tar-get = { git = "https://github.com/lrobidou/tar-get.git", rev = "44391c03624d54f765f4beeb4adbff5f3df34531" }
 
 [dev-dependencies]
 rstest = "0.26.1"

@@ -7,10 +7,12 @@ use std::fs::File;
 use std::io::{self, Read};
 use std::path::Path;
 
+use crate::reindeer2::NB_FILE_IN_AN_INDEX;
+
 use super::{
     compute_base_position,
     dense_index::DenseIndexPartition,
-    load_bloom_filter,
+    filter::load_bloom_filter_from_big_file,
     minimizer_iter::{kmer_minimizers_all, Sampler},
 };
 use bio::io::fasta;
@@ -77,13 +79,13 @@ pub fn fold_into_hashmap(
     is_dense: bool,
 ) -> HashMap<usize, Vec<Vec<(u32, ApproxAbundance)>>> {
     // Load the partition's Bloom filter
-    let path_bf = format!(
-        "{}/partition_bloom_filters_p{}.bin",
-        bf_dir, partition_index
-    );
-    let maybe_bf = load_bloom_filter(&path_bf);
+    let nb_partition_in_a_file = partition_number.div_ceil(NB_FILE_IN_AN_INDEX);
+    let group = partition_index / nb_partition_in_a_file;
+    let index = partition_index % nb_partition_in_a_file;
+    let path_bf = format!("{}/partition_bloom_filters_group{}.bin", bf_dir, group);
+    let maybe_bf = load_bloom_filter_from_big_file(&path_bf, index as u64); // TODO conversion error, expect
 
-    if let Ok((bitmap, _maybe_aux_data)) = maybe_bf {
+    if let Ok(bitmap) = maybe_bf {
         let hashmap: DenseIndexPartition = if is_dense {
             let path_dense_index =
                 format!("{}/partition_dense_index_p{}.bin", bf_dir, partition_index);
@@ -287,7 +289,7 @@ mod tests {
         let abundance_number = 2;
         let base = 2.0;
 
-        #[allow(clippy::identity_op)]
+        #[allow(clippy::identity_op, reason = "readability")]
         bitmap.insert((base_position + 0) as u32); // color 0, abundance 0
         bitmap.insert((base_position + 1) as u32); // color 0, abundance 1
         bitmap.insert((base_position + 2) as u32); // color 1, abundance 0

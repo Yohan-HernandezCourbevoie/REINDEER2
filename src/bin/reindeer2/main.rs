@@ -232,6 +232,7 @@ fn main() -> io::Result<()> {
                 canonical,
                 sampling_strategy: validate_sampling_strategy(kmer_sampling, minimizer_sampling),
                 findere_z,
+                capacity: nb_files,
             };
             let mut index = Reindeer2::new(parameters, output_dir);
             index.build(file_paths, chunks_size, tolerated_number_of_zeros)?;
@@ -314,7 +315,7 @@ fn main() -> io::Result<()> {
             merge_multiple_indexes(&file_of_indexes, &output_dir)
                 .expect("Failed to merge the given indexes.");
 
-            log::info!("Query complete in {:.2?}", start_time.elapsed());
+            log::info!("Merge complete in {:.2?}", start_time.elapsed());
         }
         cli::Command::Infos(InfosArgs { index }) => {
             let index_dir = index;

@@ -18,6 +18,11 @@ fn get_query() -> String {
     String::from("tests/chunk_data/file1.fa")
 }
 
+fn wrong_capacity() -> usize {
+    // gets a wrong capacity but should not matter for this test
+    0
+}
+
 #[test]
 /// Checks that the number of chunk has no effect on RD2's output.
 fn no_effect_chunk() {
@@ -37,6 +42,7 @@ fn no_effect_chunk() {
         canonical: false,
         sampling_strategy: None,
         findere_z: 4,
+        capacity: wrong_capacity(),
     };
     assert_eq!(parameters.nb_color, 4);
 
