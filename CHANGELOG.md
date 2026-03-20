@@ -36,6 +36,9 @@ This project does **not** adheres to Semantic Versioning.
 - Replace integer by filename in median output
 - Compilation now uses target native by default
 - Uses simd minimizer
+- New CLI design: most incompatible options are now incompatible in the CLI by design
+- CLI now requires `reindeer2 query` instead of `reindeer2 --mode` 
+- bin `Reindeer2` was renamed `reindeer2`
 
 ### Fixed
 
