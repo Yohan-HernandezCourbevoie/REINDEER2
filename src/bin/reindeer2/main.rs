@@ -88,13 +88,13 @@ fn main() -> io::Result<()> {
     let args = Cli::parse();
     let env = env_logger::Env::default().default_filter_or("trace");
     env_logger::init_from_env(env);
-    let max_threads = args.threads;
 
     match args.command {
         cli::Command::Index(IndexArgs {
             input,
             kmer,
             minimizer,
+            threads,
             nb_file_capacity,
             bloomfilter,
             abundance,
@@ -132,7 +132,7 @@ fn main() -> io::Result<()> {
                 }
             } else {
                 rayon::ThreadPoolBuilder::new()
-                    .num_threads(max_threads)
+                    .num_threads(threads)
                     .build_global()
                     .unwrap();
             }
@@ -259,13 +259,14 @@ fn main() -> io::Result<()> {
             fasta,
             index,
             output_format,
+            threads,
             normalize,
             output,
             coverage,
             breakpoints,
         }) => {
             rayon::ThreadPoolBuilder::new()
-                .num_threads(max_threads)
+                .num_threads(threads)
                 .build_global()
                 .unwrap();
 
@@ -307,9 +308,10 @@ fn main() -> io::Result<()> {
         cli::Command::Merge(MergeArgs {
             file_of_indexes,
             output_dir,
+            threads,
         }) => {
             rayon::ThreadPoolBuilder::new()
-                .num_threads(max_threads)
+                .num_threads(threads)
                 .build_global()
                 .unwrap();
 

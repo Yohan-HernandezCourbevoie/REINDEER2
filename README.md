@@ -46,7 +46,7 @@ The general use of REINDEER 2 is divided into two steps: index building and abun
 
 For the **index** mode, the mandatory parameters are the file of files (a plain text file where each line represents a unitigs file) and the size of the k-mers to be indexed.
 
-`reindeer2 index --input file_of_files.txt --kmer 31`
+`reindeer2 index --input <file_of_files.txt> --kmer <k>`
 
 
 General parameters:
@@ -72,7 +72,7 @@ Advanced parameters:
 
 For **query** mode, the parameters are the FASTA file containing the sequence(s) to be queried and the index directory.
 
-`reindeer2 query --fasta sequences_query.fa --index ~/index_directory`
+`reindeer2 query --fasta <sequences_query.fa> --index <index_directory>`
 
 - `-f, --output-format` allows to change the output format. Supported formats are:
     - `median` (default): for each color, returns the median of k-mer abundance per read
@@ -80,9 +80,17 @@ For **query** mode, the parameters are the FASTA file containing the sequence(s)
     - `matrix-raw`: for each color, for each queried sequence, write a tsv containing the abundance of each k-mer (similar to REINDEER 1).
     - `matrix-median`: for each color, for each queried sequence, write a tsv containing the median of k-mers.
     - `matrix-average`: for each color, for each queried sequence, write a tsv containing the average of k-mers.
-- `--breakpoints <penalty>`: Reindeer2 will apply the `PELT` algorithm to detect breakpoints in the abundances of k-mers. Reindeer will then report the position of such breakpoints in the query. This option is only available if the output format is `matrix-raw`. **Warning:** using this options significantly slows down the query. 
+- `--breakpoints <penalty>`: Reindeer2 will apply the `PELT` algorithm to detect breakpoints in the abundances of k-mers. Reindeer will then report the position of such breakpoints in the query. This option is only available if the output format is `matrix-raw`. **Warning:** using this options significantly slows down the query.
+- `-t, --threads` the maximal number of threads used (default: 1)
 - `--normalize <N>`: normalize abundances based on sequencing depth estimates. The calculation is _normalized\_abundance = raw\_abundance / number\_of\_kmers\_in\_the\_dataset * N_. No normalization by default. If `--normalize` is passed without an argument, `N` defaults to 1\_000\_000. This option is incompatible with `--breakpoints`.
 - `-C, --coverage-min` minimum proportion of kmers that must be present in the query sequence in order to propose an abundance value
+
+### Infos
+
+The **infos** command prints informations about an index.
+
+`reindeer2 infos <index_path>`
+
 
 <!--
 #### CSV file with --color false (default)
@@ -136,5 +144,35 @@ AAAAAAAAAAAAAAAAAAAAAACACAGATCA
 AAAAAAAAAAAAAAAAAAAAACACAGATCAT
 >seq3 ka:f:1500 col:0:1470 col:1:4
 AAAAAAAAAAAAAAAAAAAAAACAAAAAGAA
+```
+
+#### INFOS
+With the command:
+```
+reindeer2 index --input test_files/fof.txt --kmer 31 --output-dir ../index_test
+reindeer2 infos ../index_test
+```
+is expected the result:
+```
+index directory: "../index_test"
+parameters: Parameters {
+    bf_size: 4294967296,
+    partition_number: 510,
+    k: 31,
+    m: 15,
+    nb_color: 2,
+    abundance_number: 255,
+    abundance_min: 0,
+    abundance_max: 65024,
+    dense_option: false,
+    canonical: true,
+    sampling_strategy: None,
+    findere_z: 4,
+    capacity: 2,
+}
+indexed filenames and k-mers: [
+  ("file1Q", 0),
+  ("file2Q", 1000),
+]
 ```
 
