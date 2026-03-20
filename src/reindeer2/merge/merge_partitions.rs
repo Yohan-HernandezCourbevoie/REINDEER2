@@ -1,4 +1,5 @@
 use itertools::Itertools;
+use rayon::prelude::*;
 use roaring::RoaringBitmap;
 use std::{
     cmp::min,
@@ -30,7 +31,7 @@ pub fn merge_all_partitions_of_chunks(
     let nb_partition_in_a_file = num_partitions.div_ceil(NB_FILE_IN_AN_INDEX);
 
     (0..NB_FILE_IN_AN_INDEX)
-        .into_iter()
+        .into_par_iter()
         .try_for_each(|file_id| {
             let range_start = nb_partition_in_a_file * file_id;
             let range_end = min(nb_partition_in_a_file * (file_id + 1), num_partitions);
