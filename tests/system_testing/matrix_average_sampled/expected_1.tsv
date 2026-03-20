@@ -1,0 +1,4 @@
+query	datasetA	datasetB
+all_present_with_variations	74.17948717948718	73.15384615384616
+single_present_kmer	/	/
+present_kmers_then_nothing	16	16
