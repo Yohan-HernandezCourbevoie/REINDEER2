@@ -334,7 +334,7 @@ impl Reindeer2 {
         file_paths: Vec<String>,
         chunks_size: usize,
         threshold: usize,
-        count_right_after: bool,
+        count_right_after_angle_bracket: bool,
     ) -> io::Result<(Vec<String>, String)> {
         mut_if_debug!(total_kmers = atomic::AtomicU64::new(0));
         mut_if_debug!(atomic_dense_kmers_count = atomic::AtomicU64::new(0));
@@ -406,7 +406,7 @@ impl Reindeer2 {
                             let first_record = fasta_reader.records().next();
 
                             if let Some(Ok(record)) = first_record {
-                                let header = if count_right_after {
+                                let header = if count_right_after_angle_bracket {
                                     record.id()
                                 } else {
                                     let header_option = record.desc();
@@ -446,7 +446,7 @@ impl Reindeer2 {
                                             &atomic_sparse_kmers_count,
                                             &kmer_counts_vector,
                                             parameters.canonical,
-                                            count_right_after,
+                                            count_right_after_angle_bracket,
                                             &sampler,
                                         )
                                     }
@@ -477,7 +477,7 @@ impl Reindeer2 {
                                             &atomic_sparse_kmers_count,
                                             &kmer_counts_vector,
                                             parameters.canonical,
-                                            count_right_after,
+                                            count_right_after_angle_bracket,
                                             &sampler,
                                         )
                                     }
@@ -506,7 +506,7 @@ impl Reindeer2 {
                                             &atomic_sparse_kmers_count,
                                             &kmer_counts_vector,
                                             parameters.canonical,
-                                            count_right_after,
+                                            count_right_after_angle_bracket,
                                             &sampler,
                                         )
                                     }

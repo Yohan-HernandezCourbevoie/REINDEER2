@@ -96,10 +96,12 @@ pub struct IndexArgs {
     #[arg(long)]
     pub minimizer_sampling: Option<u64>,
 
-    // TODO rename
-    /// Requires the count to be in header right after the ">", e.g. ">ka:f:18"
+    // To gain some space, users can remove the header of their fasta/q files.
+    // This causes problems as our parser expects the count to be located after the header.
+    // Introducing this flag solved the issue.
+    /// Experty parameter: requires the count to be in header right after the ">", e.g. ">ka:f:18"
     #[arg(long, default_value_t = false)]
-    pub count_right_after: bool,
+    pub count_right_after_angle_bracket: bool,
 
     /// Expert parameter: findere's z parameter: index (k-z)-mers as proxy for k-mers. Default: z=4.
     /// Rule of thumb:

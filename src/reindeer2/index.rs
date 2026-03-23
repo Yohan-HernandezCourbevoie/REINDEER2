@@ -38,7 +38,7 @@ pub fn process_fasta_file<S>(
     atomic_sparse_kmers_count: &atomic::AtomicU64,
     kmer_counts_vector: &Arc<Mutex<Vec<usize>>>,
     canonical: bool,
-    count_right_after: bool,
+    count_right_after_angle_bracket: bool,
     sampler: &S,
 ) -> io::Result<()>
 where
@@ -60,7 +60,7 @@ where
                 abundance_min,
                 abundance_max,
                 &header_type,
-                count_right_after,
+                count_right_after_angle_bracket,
             ); //read fasta
             match processed {
                 Ok((seq, log_abundance, count_value)) => {

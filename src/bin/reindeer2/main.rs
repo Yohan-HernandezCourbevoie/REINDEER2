@@ -106,7 +106,7 @@ fn main() -> io::Result<()> {
             output_dir,
             kmer_sampling,
             minimizer_sampling,
-            count_right_after,
+            count_right_after_angle_bracket,
             findere,
         }) => {
             let dense_option = dense;
@@ -240,7 +240,7 @@ fn main() -> io::Result<()> {
                 file_paths,
                 chunks_size,
                 tolerated_number_of_zeros,
-                count_right_after,
+                count_right_after_angle_bracket,
             )?;
             // }
 
