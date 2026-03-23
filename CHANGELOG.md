@@ -7,6 +7,16 @@ This project does **not** adheres to Semantic Versioning.
 
 ## [Unreleased]
 
+## [1.1.1] - 2025-03-23
+
+### Added
+
+- Add option `count_right_after_angle_bracket` to index files with no header
+
+### Fixed
+
+- Merge of chunks is parallelized
+
 ## [1.1.0] - 2025-03-20
 
 ### Added

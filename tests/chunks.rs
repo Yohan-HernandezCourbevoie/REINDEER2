@@ -62,7 +62,7 @@ fn no_effect_chunk() {
         let threshold = 0;
         let paths = file_paths.clone();
 
-        index.build(paths, chunks_size, threshold).unwrap();
+        index.build(paths, chunks_size, threshold, false).unwrap();
 
         let coverage = 0.5;
         let output_format = OutputFormat::AbundanceMatrix {
