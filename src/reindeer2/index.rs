@@ -1,4 +1,5 @@
 use bio::io::fasta;
+use log::warn;
 use std::collections::HashMap;
 use std::io;
 use std::num::NonZero;
@@ -37,6 +38,7 @@ pub fn process_fasta_file<S>(
     atomic_sparse_kmers_count: &atomic::AtomicU64,
     kmer_counts_vector: &Arc<Mutex<Vec<usize>>>,
     canonical: bool,
+    count_right_after_angle_bracket: bool,
     sampler: &S,
 ) -> io::Result<()>
 where
@@ -52,8 +54,14 @@ where
 
         // this part reads the batches of sequences and records kmers info until the structure is too large in memory
         for record in batch {
-            let processed =
-                process_fasta_record(record, base, abundance_min, abundance_max, &header_type); //read fasta
+            let processed = process_fasta_record(
+                record,
+                base,
+                abundance_min,
+                abundance_max,
+                &header_type,
+                count_right_after_angle_bracket,
+            ); //read fasta
             match processed {
                 Ok((seq, log_abundance, count_value)) => {
                     // TODO discuss we should at least print a warning here if it is None
@@ -113,7 +121,10 @@ where
                         }
                     }
                 }
-                Err(e) => eprintln!("Error processing fasta: {}", e),
+                Err(e) => {
+                    warn!("Error processing fasta: {}", e);
+                    eprintln!("Error processing fasta: {}", e)
+                }
             }
         }
         // Flush remaining k-mers in the map by calling the earlier closure
@@ -145,9 +156,16 @@ pub fn process_fasta_record(
     abundance_min: u16,
     abundance_max: NonZero<u16>,
     header_type: &HeaderType,
+    count_right_after: bool,
 ) -> Result<(Vec<u8>, Option<u16>, u16), io::Error> {
-    let header_option = record.desc();
-    let header = header_option.unwrap_or("no header found");
+    let header = if count_right_after {
+        record.id()
+    } else {
+        match record.desc() {
+            Some(header) => header,
+            None => return Err(io::Error::other("no header found")),
+        }
+    };
     let count_value = match extract_count(header, header_type) {
         Ok(count_value) => count_value,
         Err(_) => return Err(io::Error::other("count not found!")),
@@ -182,7 +200,8 @@ mod tests {
 
         let base = 2.0;
         let max = NonZero::new(65535).unwrap();
-        let processed = process_fasta_record(&result, base, 0, max, &HeaderType::Logan);
+        // TODO add a test using true
+        let processed = process_fasta_record(&result, base, 0, max, &HeaderType::Logan, false);
 
         assert!(processed.is_ok(), "processing failed");
         let (seq, log_abundance, _) = processed.unwrap();
