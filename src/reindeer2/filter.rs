@@ -22,6 +22,11 @@ pub struct Filters {
     number_abundance: usize,
 }
 
+const LOW_BITS: u64 = 16;
+const MINIMIZER_BIT_MASK: u64 = u64::MAX << LOW_BITS;
+const KMER_BIT_MASK: u64 = !MINIMIZER_BIT_MASK;
+// const BLOCK_SIZE_BIT: u64 = 1 << (LOW_BITS - 1);
+
 impl Filters {
     pub fn with_number_partition(
         number_partition: usize,
@@ -42,24 +47,24 @@ impl Filters {
 
     pub fn extend_by_draining_partitions_map(
         &self,
-        partition_kmers: &mut HashMap<usize, Vec<(u64, u16, usize, usize)>>,
+        partition_kmers: &mut HashMap<usize, Vec<(u64, u64, u16, usize, usize)>>,
     ) {
         // iterates and empties the hash map when needed
         let partitioned_bf_size = self.bf_bit_size / self.data.len();
         for (partition_index, kmers) in partition_kmers.drain() {
-            let kmer_hashes_to_update =
-                kmers
-                    .iter()
-                    .map(|(kmer_hash, log_abundance, path_num, _chunk_index)| {
-                        Self::compute_location(
-                            *kmer_hash,
-                            partitioned_bf_size,
-                            self.color_number,
-                            *path_num,
-                            self.number_abundance,
-                            *log_abundance,
-                        )
-                    });
+            let kmer_hashes_to_update = kmers.iter().map(
+                |(kmer_hash, minimizer_hash, log_abundance, path_num, _chunk_index)| {
+                    Self::compute_location(
+                        *kmer_hash,
+                        *minimizer_hash,
+                        partitioned_bf_size,
+                        self.color_number,
+                        *path_num,
+                        self.number_abundance,
+                        *log_abundance,
+                    )
+                },
+            );
 
             // select the correct BF for the given partition
             let mut bloom_filter = self.data[partition_index]
@@ -70,9 +75,27 @@ impl Filters {
         }
     }
 
+    /// Returns the first position of the concerned column in the partition
+    pub const fn compute_base_position(
+        smer_hash: u64,
+        minimizer_hash: u64,
+        partitioned_bf_size: usize,
+        color_number: usize,
+        abundance_number: usize,
+    ) -> u64 {
+        let nb_block = partitioned_bf_size as u64 / LOW_BITS;
+        let block_id = minimizer_hash % nb_block;
+        let block_start = block_id * LOW_BITS;
+        let smer_hash = (block_start & MINIMIZER_BIT_MASK) | (smer_hash & KMER_BIT_MASK);
+
+        let position = smer_hash % (partitioned_bf_size as u64);
+        position * (color_number as u64) * (abundance_number as u64)
+    }
+
     // TODO should be private
     pub const fn compute_location(
-        hash_kmer: u64,
+        smer_hash: u64,
+        minimizer_hash: u64,
         partitioned_bf_size: usize,
         color_number: usize,      // the total nb of indexed fastas (in a chunk)
         path_color_number: usize, // the index of the current indexed fasta
@@ -80,9 +103,14 @@ impl Filters {
         log_abundance: u16,
     ) -> u32 {
         // compute the position to write
-        let location = (hash_kmer % (partitioned_bf_size as u64))
-            * (color_number as u64)
-            * (abundance_number as u64)
+        let base_position = Self::compute_base_position(
+            smer_hash,
+            minimizer_hash,
+            partitioned_bf_size,
+            color_number,
+            abundance_number,
+        );
+        let location = base_position
             + (path_color_number as u64) * (abundance_number as u64)
             + (log_abundance as u64);
         debug_assert!(location == (location as u32) as u64);

@@ -22,7 +22,7 @@ fn count_zeros(abundance_vector: &[u8], max_index: usize) -> usize {
 
 #[derive(Serialize, Deserialize)]
 pub struct DenseIndexPartition {
-    data: HashMap<u64, Vec<u8>>,
+    data: HashMap<u64, (u64, Vec<u8>)>,
 }
 
 impl DenseIndexPartition {
@@ -38,8 +38,9 @@ impl DenseIndexPartition {
         }
     }
 
-    pub fn insert(&mut self, kmer_hash: u64, abundance_vector: Vec<u8>) -> Option<Vec<u8>> {
-        self.data.insert(kmer_hash, abundance_vector)
+    pub fn insert(&mut self, kmer_hash: u64, minimizer_hash: u64, abundance_vector: Vec<u8>) {
+        self.data
+            .insert(kmer_hash, (minimizer_hash, abundance_vector));
     }
 
     pub fn contains_key(&self, kmer_hash: &u64) -> bool {
@@ -47,7 +48,7 @@ impl DenseIndexPartition {
     }
 
     pub fn get_mut(&mut self, kmer_hash: &u64) -> Option<&mut Vec<u8>> {
-        self.data.get_mut(kmer_hash)
+        self.data.get_mut(kmer_hash).map(|(_minimizer_hash, v)| v)
     }
 
     pub fn dump(&mut self, writer: &mut impl Write) -> std::io::Result<()> {
@@ -59,7 +60,7 @@ impl DenseIndexPartition {
     }
 
     pub fn get_abundance(&self, kmer: &u64) -> Option<&Vec<u8>> {
-        self.data.get(kmer)
+        self.data.get(kmer).map(|(_minimizer_hash, v)| v)
     }
 
     pub fn load_from_disk(file_path: &str) -> std::io::Result<Self> {
@@ -84,11 +85,11 @@ impl DenseIndexPartition {
         atomic_dense_kmers_count: &AtomicU64,
         atomic_sparse_kmers_count: &AtomicU64,
         chunk_index: usize,
-        partition_kmers: &mut HashMap<usize, Vec<(u64, u16, usize, usize)>>,
+        partition_kmers: &mut HashMap<usize, Vec<(u64, u64, u16, usize, usize)>>,
         partition_index: usize,
     ) {
         let mut kmers_to_remove: Vec<u64> = Vec::new();
-        for (kmer_hash, abundance_vector) in self.data.iter() {
+        for (kmer_hash, (minimizer_hash, abundance_vector)) in self.data.iter() {
             let number_of_zeros = count_zeros(abundance_vector, path_num);
             if number_of_zeros > threshold {
                 let color_count = path_num - number_of_zeros + 1;
@@ -104,6 +105,7 @@ impl DenseIndexPartition {
                             .or_default()
                             .push((
                                 *kmer_hash,
+                                *minimizer_hash,
                                 (*log_abundance - 1) as u16,
                                 path_index,
                                 chunk_index,
@@ -170,6 +172,7 @@ impl DenseIndex {
         &self,
         partition_index: usize,
         kmer_hash: u64,
+        minimizer_hash: u64,
         path_num_global: usize,
         threshold: usize,
         log_abundance: u16,
@@ -190,7 +193,7 @@ impl DenseIndex {
             // create a new abundance vector for the k-mer
             let mut abundance_vector: Vec<u8> = vec![0; color_number_global];
             abundance_vector[path_num_global] = (log_abundance + 1) as u8;
-            partition.insert(kmer_hash, abundance_vector);
+            partition.insert(kmer_hash, minimizer_hash, abundance_vector);
             return true;
         }
         false
@@ -205,7 +208,8 @@ impl DenseIndex {
         atomic_sparse_kmers_count: &AtomicU64,
         chunk_index: usize,
     ) {
-        let mut partition_kmers: HashMap<usize, Vec<(u64, u16, usize, usize)>> = HashMap::new(); // keep kmer info to fill BFs
+        let mut partition_kmers: HashMap<usize, Vec<(u64, u64, u16, usize, usize)>> =
+            HashMap::new(); // keep kmer info to fill BFs
         for (partition_index, hashmap) in self.data.iter().enumerate() {
             let mut dense_index = hashmap // select the correct BF for the given partition
                 .lock()

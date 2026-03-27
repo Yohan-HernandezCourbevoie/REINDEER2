@@ -50,7 +50,8 @@ where
 
     process_fasta_in_batches(reader, 10_000, |batch| {
         // read file 10_000 lines at once
-        let mut partition_kmers: HashMap<usize, Vec<(u64, u16, usize, usize)>> = HashMap::new(); // keep kmer info to fill BFs
+        let mut partition_kmers: HashMap<usize, Vec<(u64, u64, u16, usize, usize)>> =
+            HashMap::new(); // keep kmer info to fill BFs
 
         // this part reads the batches of sequences and records kmers info until the structure is too large in memory
         for record in batch {
@@ -94,6 +95,7 @@ where
                                 Some(dense_indexes) => dense_indexes.insert_if_dense(
                                     partition_index,
                                     smer_hash,
+                                    minimizer,
                                     path_num_global,
                                     threshold,
                                     log_abundance,
@@ -107,6 +109,7 @@ where
                                 // write the k-mer in a file of sparse k-mer from this color
                                 partition_kmers.entry(partition_index).or_default().push((
                                     smer_hash,
+                                    minimizer,
                                     log_abundance,
                                     path_num,
                                     chunk_index,

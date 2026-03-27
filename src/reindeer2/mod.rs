@@ -1021,17 +1021,6 @@ fn process_fasta_in_batches<R: io::BufRead>(
 
 // --- BF MANAGEMENT ---
 
-const fn compute_base_position(
-    smer_hash: u64,
-    partitioned_bf_size: usize,
-    color_number: usize,
-    abundance_number: usize,
-) -> u64 {
-    // return the first position of the concerned column in the partition
-    let position = smer_hash % (partitioned_bf_size as u64);
-    position * (color_number as u64) * (abundance_number as u64)
-}
-
 // fn _get_current_chunk_index(i: usize, chunk_sizes: &Vec<usize>, partition_nb: usize) -> usize {
 //     let mut cumulative_size = 0;
 
@@ -2846,6 +2835,7 @@ mod tests {
         let partition_index_insert = (minimizer % (partition_number as u64)) as usize;
         let position_to_write = Filters::compute_location(
             kmer_hash,
+            minimizer,
             partitioned_bf_size,
             color_number,
             path_color_number,
@@ -2869,8 +2859,9 @@ mod tests {
 
             let bitmap = &bloom_filters[partition_index_query];
 
-            let base_position = compute_base_position(
+            let base_position = Filters::compute_base_position(
                 kmer_hash,
+                minimizer,
                 partitioned_bf_size,
                 color_number,
                 abundance_number,

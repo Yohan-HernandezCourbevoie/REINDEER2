@@ -7,10 +7,10 @@ use std::fs::File;
 use std::io::{self, Read};
 use std::path::Path;
 
+use crate::reindeer2::filter::Filters;
 use crate::reindeer2::NB_FILE_IN_AN_INDEX;
 
 use super::{
-    compute_base_position,
     dense_index::DenseIndexPartition,
     filter::load_bloom_filter_from_big_file,
     minimizer_iter::{kmer_minimizers_all, Sampler},
@@ -29,11 +29,11 @@ pub fn build_partitions_smers<S>(
     partition_number: u64,
     canonical: bool,
     sampler: &S,
-) -> HashMap<usize, Vec<(usize, u32, u64)>>
+) -> HashMap<usize, Vec<(usize, u32, u64, u64)>>
 where
     S: Sampler,
 {
-    let mut partition_kmers: HashMap<usize, Vec<(usize, u32, u64)>> = HashMap::new();
+    let mut partition_kmers: HashMap<usize, Vec<(usize, u32, u64, u64)>> = HashMap::new();
     for (record_id, record) in batch.iter().enumerate() {
         let sequence = record.seq();
         // covers the case "usize is more than 64 bits"
@@ -56,6 +56,7 @@ where
                     record_id,
                     position as u32,
                     smer_hash,
+                    minimizer,
                 ));
             }
         }
@@ -69,7 +70,7 @@ where
 pub fn fold_into_hashmap(
     mut local_results: HashMap<usize, Vec<Vec<(u32, ApproxAbundance)>>>,
     partition_index: usize,
-    smers: Vec<(usize, u32, u64)>,
+    smers: Vec<(usize, u32, u64, u64)>,
     base: f64,
     bf_dir: &str,
     bf_size: u64,
@@ -99,7 +100,7 @@ pub fn fold_into_hashmap(
             DenseIndexPartition::new()
         };
         //  For each k-mer in this partition
-        for (sequence_id, smer_position, smer_hash) in smers {
+        for (sequence_id, smer_position, smer_hash, minimizer_hash) in smers {
             let approximate_counts = if hashmap.contains_key(&smer_hash) {
                 let log_abundance_vector = hashmap
                     .get_abundance(&smer_hash)
@@ -115,8 +116,9 @@ pub fn fold_into_hashmap(
                 approximate_counts
             } else {
                 // Compute base position
-                let base_position = compute_base_position(
+                let base_position = Filters::compute_base_position(
                     smer_hash,
+                    minimizer_hash,
                     (bf_size as usize) / partition_number,
                     color_number,
                     abundance_number,
