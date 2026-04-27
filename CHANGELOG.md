@@ -7,10 +7,6 @@ This project does **not** adheres to Semantic Versioning.
 
 ## [Unreleased]
 
-### Changed
-
-- Renamed option `count_right_after_angle_bracket` to `allow_count_right_after_angle_bracket`. Using this option does not crash if the count is in the descrption of the header.
-
 ## [1.1.1] - 2025-03-23
 
 ### Added
