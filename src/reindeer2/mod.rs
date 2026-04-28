@@ -223,7 +223,7 @@ pub struct Reindeer2 {
 
 /// Declares a variable. The variable is declared as mut iif `#[cfg(any(debug_assertions, test))]`.
 macro_rules! mut_if_debug {
-    ($name:ident = $val:expr) => {
+    ($name:ident = $val:expr_2021) => {
         #[cfg(any(debug_assertions, test))]
         let mut $name = $val;
 
