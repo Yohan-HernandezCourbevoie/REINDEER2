@@ -179,8 +179,7 @@ pub fn cell_compute_breakpoints(abund_values: &[ApproxAbundance], penalty: f64) 
         }) // TODO collect all valid values before
         .collect_vec();
     let breakpoints = pelt(&abund_values, pelt_reindeer2::score, penalty);
-    let breakpoints = breakpoints.iter().map(usize::to_string).join(",");
-    breakpoints
+    breakpoints.iter().map(usize::to_string).join(",")
 }
 
 #[cfg(test)]
