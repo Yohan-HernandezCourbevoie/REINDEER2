@@ -924,12 +924,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
 
 [[package]]
-name = "pelt"
+name = "pelt-reindeer2"
 version = "0.1.0"
-source = "git+https://github.com/lrobidou/pelt.git?rev=db7f8f85dac8bbc7da3f41b3c9e97d6befb17d9f#db7f8f85dac8bbc7da3f41b3c9e97d6befb17d9f"
-dependencies = [
- "clap",
-]
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ec76aefdc37b5ec9ccccd57f5c8139c0c3eeb4b7df510125ab1e2311303975aa"
 
 [[package]]
 name = "petgraph"
@@ -1186,7 +1184,7 @@ dependencies = [
  "libc",
  "log",
  "num-format",
- "pelt",
+ "pelt-reindeer2",
  "rand 0.9.2",
  "rayon",
  "roaring",
@@ -1483,7 +1481,8 @@ dependencies = [
 [[package]]
 name = "tar-get"
 version = "0.4.3"
-source = "git+https://github.com/lrobidou/tar-get.git?rev=44391c03624d54f765f4beeb4adbff5f3df34531#44391c03624d54f765f4beeb4adbff5f3df34531"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1e8bd52eb6d381c7133aea68f4f33963039ff8b06fdc928ef913f022f6a416fc"
 dependencies = [
  "serde",
  "thiserror 2.0.18",
