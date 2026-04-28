@@ -64,6 +64,7 @@ Advanced parameters:
 - `-b, --bloomfilter` the Bloom filter size in log2 scale
 - `-m, --minimizer` the minimizer size
 - `--nb-file-capacity` maximum number of files in the index. Default: reserve space only for the indexed files.
+- `--no-sort-files-by-size` index the files without sorting them by their size (sorting files makes the indexation faster when multithreaded). Default: false. 
 
 \* The value of the number of partitions is important when building large indexes. More information on how to choose the right value [here](https://github.com/Yohan-HernandezCourbevoie/REINDEER2/tree/dev/doc/partitions.md).
 

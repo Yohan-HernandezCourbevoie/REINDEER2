@@ -8,7 +8,7 @@ QUERY_OUTPUT="$LOCAL_FOLDER/results.tsv"
 EXPECTED_QUERY_OUTPUT="$LOCAL_FOLDER/expected.tsv"
 
 cargo build --quiet
-RUST_LOG=warn $reindeer2 index --input $INPUT_FOF -k 31 -o integration_test_index
+RUST_LOG=warn $reindeer2 index --input $INPUT_FOF -k 31 -o integration_test_index --no-sort-files-by-size
 RUST_LOG=warn $reindeer2 query --fasta $QUERY_INPUT --index ./integration_test_index --output-format matrix-median --output $QUERY_OUTPUT
 
 python3 "$LOCAL_FOLDER/files_equal.py" $QUERY_OUTPUT $EXPECTED_QUERY_OUTPUT

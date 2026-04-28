@@ -7,6 +7,7 @@ use log::warn;
 use rand::Rng;
 use std::io::{self};
 use std::num::NonZero;
+use std::path::Path;
 use std::time::Instant;
 
 use cli::Cli;
@@ -108,7 +109,9 @@ fn main() -> io::Result<()> {
             minimizer_sampling,
             allow_count_right_after_angle_bracket,
             findere,
+            no_sort_files_by_size,
         }) => {
+            let sort_files_by_size = !no_sort_files_by_size;
             let dense_option = dense;
             let canonical = !stranded;
             let output_dir = output_dir.unwrap_or_else(|| {
@@ -242,8 +245,16 @@ fn main() -> io::Result<()> {
                 capacity: nb_files,
             };
             let mut index = Reindeer2::new(parameters, output_dir);
+            let input_path = Path::new(&input);
+            let input_file_name = input_path
+                .file_name()
+                .expect("impossible to extract the name of the input file")
+                .to_str()
+                .expect("the input file's name is not in UTF-8");
             index.build(
+                input_file_name,
                 file_paths,
+                sort_files_by_size,
                 chunks_size,
                 tolerated_number_of_zeros,
                 allow_count_right_after_angle_bracket,
