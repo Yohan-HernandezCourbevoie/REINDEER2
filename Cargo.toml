@@ -2,7 +2,7 @@
 name = "reindeer2"
 version = "1.1.2"
 edition = "2021"
-authors = ["Camille Marchet", "Yohan Hernandez--Courbevoie"]
+authors = ["Camille Marchet", "Yohan Hernandez--Courbevoie", "Lucas Robidou"]
 license-file = "LICENSE"
 description = "REINDEER2: k-mer quantification in large collections of samples"
 
