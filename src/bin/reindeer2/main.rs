@@ -13,8 +13,8 @@ use cli::Cli;
 use cli::OutputFormatCli;
 use overflow_detection::{get_min_number_of_files, get_number_of_partitions};
 use reindeer2::reindeer2::{
-    merge_multiple_indexes, read_fof_file, BreakpointsNormalize, MatrixFormat, OutputFormat,
-    Parameters, Reindeer2, SamplingStrategy,
+    BreakpointsNormalize, MatrixFormat, OutputFormat, Parameters, Reindeer2, SamplingStrategy,
+    merge_multiple_indexes, read_fof_file,
 };
 
 use crate::cli::{IndexArgs, InfosArgs, MergeArgs, QueryArgs};
@@ -183,8 +183,14 @@ fn main() -> io::Result<()> {
             );
 
             if (kmer - findere_z) <= 16 {
-                warn!("Indexing with k = {} and z = {}. A high false positive rate is expected. Using (k-z) > 16 is recommanded.", kmer, findere_z);
-                println!("Warning: with current chosen values (k = {}, findere's z = {}), the index might have a lot of false positives. We recommand using using (k-z) > 16.", kmer, findere_z);
+                warn!(
+                    "Indexing with k = {} and z = {}. A high false positive rate is expected. Using (k-z) > 16 is recommanded.",
+                    kmer, findere_z
+                );
+                println!(
+                    "Warning: with current chosen values (k = {}, findere's z = {}), the index might have a lot of false positives. We recommand using using (k-z) > 16.",
+                    kmer, findere_z
+                );
             }
 
             let tolerated_number_of_zeros = 0;

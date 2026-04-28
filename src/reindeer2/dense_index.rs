@@ -4,8 +4,8 @@ use std::{
     io::{BufWriter, Read, Write},
     path::Path,
     sync::{
-        atomic::{AtomicU64, Ordering},
         Mutex,
+        atomic::{AtomicU64, Ordering},
     },
 };
 

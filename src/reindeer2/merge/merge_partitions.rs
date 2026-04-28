@@ -10,8 +10,8 @@ use std::{
 };
 
 use crate::reindeer2::{
-    create_and_reserve_tar_get_file, merge::merge_partition_slices_interleaved,
-    storage::filters::load_raw_bloom_filter, NB_FILE_IN_AN_INDEX,
+    NB_FILE_IN_AN_INDEX, create_and_reserve_tar_get_file,
+    merge::merge_partition_slices_interleaved, storage::filters::load_raw_bloom_filter,
 };
 
 /// Removes partitions (they are unecessary after a merge).
@@ -170,7 +170,7 @@ mod tests {
     #[rstest]
     fn test_merge_partition_bloom_filters(random_directory: AutoRemoveDirectory) {
         use roaring::RoaringBitmap;
-        use std::fs::{create_dir_all, File};
+        use std::fs::{File, create_dir_all};
         use std::io::Write;
 
         let test_dir = random_directory.filename().to_str().unwrap();

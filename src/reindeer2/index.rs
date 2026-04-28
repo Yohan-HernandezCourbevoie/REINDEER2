@@ -4,12 +4,12 @@ use std::collections::HashMap;
 use std::io;
 use std::num::NonZero;
 use std::sync::atomic::Ordering;
-use std::sync::{atomic, Arc, Mutex};
+use std::sync::{Arc, Mutex, atomic};
 
 use crate::reindeer2::{
-    compute_log_abundance, extract_count,
-    minimizer_iter::{kmer_minimizers_sampled, KmerMinimizerIteratorError, Sampler},
-    process_fasta_in_batches, read_file, HeaderType,
+    HeaderType, compute_log_abundance, extract_count,
+    minimizer_iter::{KmerMinimizerIteratorError, Sampler, kmer_minimizers_sampled},
+    process_fasta_in_batches, read_file,
 };
 use crate::reindeer2::{dense_index::DenseIndex, storage::filters::Filters};
 
@@ -79,7 +79,11 @@ where
                         ) {
                             Ok(iterator) => iterator,
                             Err(KmerMinimizerIteratorError::SequenceTooSmall { k }) => {
-                                eprintln!("Warning: when indexing file {path}, the read {seq_str} will be ignored. To be indexed, its length (={}) must be greater or equal to k (={})", seq_str.len(), k);
+                                eprintln!(
+                                    "Warning: when indexing file {path}, the read {seq_str} will be ignored. To be indexed, its length (={}) must be greater or equal to k (={})",
+                                    seq_str.len(),
+                                    k
+                                );
                                 continue;
                             }
                         };

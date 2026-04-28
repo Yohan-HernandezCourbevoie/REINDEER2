@@ -16,7 +16,7 @@ use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
 use std::num::NonZero;
 use std::panic;
 use std::path::Path;
-use std::sync::{atomic, Arc, Mutex};
+use std::sync::{Arc, Mutex, atomic};
 
 pub use merge::merge_multiple_indexes;
 
@@ -27,7 +27,7 @@ use zstd::stream::decode_all;
 
 use crate::reindeer2::dense_index::DenseIndex;
 use crate::reindeer2::minimizer_iter::{KmerSampler, MinimizerSampler, NoSampler, Sampler};
-use crate::reindeer2::query::{fimpera, load_kmer_counts_vector, ApproxAbundance};
+use crate::reindeer2::query::{ApproxAbundance, fimpera, load_kmer_counts_vector};
 use crate::reindeer2::storage::filters::Filters;
 
 const NB_FILE_IN_AN_INDEX: usize = 1024;

@@ -2,9 +2,9 @@ mod common;
 
 use std::num::NonZero;
 
-use common::{check_number_of_partitions, is_all_same, AutoRemoveDirectory, AutoRemoveFile};
+use common::{AutoRemoveDirectory, AutoRemoveFile, check_number_of_partitions, is_all_same};
 
-use reindeer2::reindeer2::{read_fof_file, OutputFormat, Parameters, Reindeer2};
+use reindeer2::reindeer2::{OutputFormat, Parameters, Reindeer2, read_fof_file};
 
 fn get_input_fof() -> String {
     String::from("tests/chunk_data/fof.txt")

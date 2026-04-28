@@ -4,8 +4,8 @@ use std::io::{self, Write};
 
 use super::KmerCountsAndNormalizeValue;
 use crate::reindeer2::query::{
-    format::{count_to_string_witout_star_maybe_normalized, get_full_header},
     ApproxAbundance,
+    format::{count_to_string_witout_star_maybe_normalized, get_full_header},
 };
 
 use super::compute_median;

@@ -22,10 +22,10 @@ use std::io::{self, Write};
 use bio::io::fasta;
 
 use super::KmerCountsAndNormalizeValue;
+use crate::reindeer2::query::ApproxAbundance;
 use crate::reindeer2::query::format::enriched_output_format::{
     BreakpointsXorEnrichedNormalize, EnrichedMatrixFormat,
 };
-use crate::reindeer2::query::ApproxAbundance;
 
 use cell_computation::{
     cell_compute_average, cell_compute_average_normalized, cell_compute_breakpoints,

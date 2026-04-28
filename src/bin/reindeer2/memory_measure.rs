@@ -1,4 +1,4 @@
-use libc::{getrusage, rusage, RUSAGE_SELF};
+use libc::{RUSAGE_SELF, getrusage, rusage};
 use std::mem::MaybeUninit;
 
 pub fn format_int_with_spaces(mut n: i64) -> String {
