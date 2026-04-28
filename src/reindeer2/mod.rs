@@ -334,7 +334,7 @@ impl Reindeer2 {
         file_paths: Vec<String>,
         chunks_size: usize,
         threshold: usize,
-        count_right_after_angle_bracket: bool,
+        allow_count_right_after_angle_bracket: bool,
     ) -> io::Result<(Vec<String>, String)> {
         mut_if_debug!(total_kmers = atomic::AtomicU64::new(0));
         mut_if_debug!(atomic_dense_kmers_count = atomic::AtomicU64::new(0));
@@ -406,18 +406,14 @@ impl Reindeer2 {
                             let first_record = fasta_reader.records().next();
 
                             if let Some(Ok(record)) = first_record {
-                                let header = if count_right_after_angle_bracket {
-                                    record.id()
-                                } else {
-                                    let header_option = record.desc();
-                                    header_option.unwrap_or("no header found")
-                                };
-                                let h_type = match determine_header_type(header) {
-                                    Ok(ht) => ht,
-                                    Err(e) => {
-                                        log::error!("Unsupported header type ({}): {}", path, e);
-                                        return;
-                                    }
+                                let h_type = get_first_header_type(
+                                    &record,
+                                    allow_count_right_after_angle_bracket,
+                                    path,
+                                );
+                                let (h_type, count_right_after_angle_bracket) = match h_type {
+                                    Some(h_type) => h_type,
+                                    None => return,
                                 };
 
                                 if let Err(e) = match &parameters.sampling_strategy {
