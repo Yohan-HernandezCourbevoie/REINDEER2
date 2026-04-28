@@ -1295,6 +1295,40 @@ enum HeaderType {
     Logan,
 }
 
+fn get_first_header_type(
+    record: &fasta::Record,
+    allow_count_right_after_angle_bracket: bool,
+    path: &str,
+) -> Option<(HeaderType, bool)> {
+    // if we are allowed to search for a header in the id of a record
+    // (an id being the part right after the angle bracket of a record)
+    // we try search there first
+    if allow_count_right_after_angle_bracket {
+        if let Ok(ht) = determine_header_type(record.id()) {
+            return Some((ht, true));
+        }
+    }
+
+    // no match in the id, or we were not allowed to search there
+    match record.desc() {
+        Some(header) => match determine_header_type(header) {
+            Ok(ht) => Some((ht, false)),
+            Err(e) => {
+                log::error!("Unsupported header type ({}): {}", path, e);
+                None
+            }
+        },
+        None => {
+            log::error!(
+                "Unsupported header type ({}): no desc in record {}",
+                path,
+                record
+            );
+            None
+        }
+    }
+}
+
 fn determine_header_type(header: &str) -> Result<HeaderType, io::Error> {
     if header.contains("km:f:") {
         Ok(HeaderType::BCalm)
