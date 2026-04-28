@@ -353,6 +353,15 @@ impl Reindeer2 {
         #[cfg(any(debug_assertions, test))]
         let mut atomic_sparse_fp_seen = atomic::AtomicU64::new(0);
 
+        // TODO better error handling
+        let (_, dir_path) = create_dir_and_files(
+            parameters.partition_number,
+            &self.index_dir,
+            file_of_file_name,
+            &mut file_paths,
+            sort_files_by_size,
+        )?;
+
         let kmer_counts_vector: Arc<Mutex<Vec<usize>>> =
             Arc::new(Mutex::new(vec![0; parameters.nb_color]));
         let chunks = split_fof(&file_paths, chunks_size)?;
@@ -369,15 +378,6 @@ impl Reindeer2 {
         log::debug!("In debug mode... the tool may take (much) longer than usual.");
 
         log::info!("Initializing Bloom filter slices...");
-
-        // TODO better error handling
-        let (_, dir_path) = create_dir_and_files(
-            parameters.partition_number,
-            &self.index_dir,
-            file_of_file_name,
-            &mut file_paths,
-            sort_files_by_size,
-        )?;
 
         // Shared data structures protected by Mutex for safe parallel access
         let maybe_dense_indexes: Option<Arc<DenseIndex>> = if parameters.dense_option {
