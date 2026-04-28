@@ -223,7 +223,9 @@ fn main() -> io::Result<()> {
             //     )?;
             // } else {
             // read the file of files  and extract file paths and color count
-            let (file_paths, color_nb) = read_fof_file(&input)?;
+            let (file_paths, color_nb) = read_fof_file(&input).unwrap_or_else(|err| {
+                panic!("should have been able to read the input file {input} ({err})")
+            });
 
             let nb_files = get_min_number_of_files(&file_paths, nb_file_capacity);
             let partitions = get_number_of_partitions(nb_files, abundance.get(), bf_size);
