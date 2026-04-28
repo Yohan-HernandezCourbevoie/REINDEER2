@@ -334,7 +334,7 @@ impl Reindeer2 {
         file_paths: Vec<String>,
         chunks_size: usize,
         threshold: usize,
-        count_right_after_angle_bracket: bool,
+        allow_count_right_after_angle_bracket: bool,
     ) -> io::Result<(Vec<String>, String)> {
         mut_if_debug!(total_kmers = atomic::AtomicU64::new(0));
         mut_if_debug!(atomic_dense_kmers_count = atomic::AtomicU64::new(0));
@@ -406,18 +406,14 @@ impl Reindeer2 {
                             let first_record = fasta_reader.records().next();
 
                             if let Some(Ok(record)) = first_record {
-                                let header = if count_right_after_angle_bracket {
-                                    record.id()
-                                } else {
-                                    let header_option = record.desc();
-                                    header_option.unwrap_or("no header found")
-                                };
-                                let h_type = match determine_header_type(header) {
-                                    Ok(ht) => ht,
-                                    Err(e) => {
-                                        log::error!("Unsupported header type ({}): {}", path, e);
-                                        return;
-                                    }
+                                let h_type = get_first_header_type(
+                                    &record,
+                                    allow_count_right_after_angle_bracket,
+                                    path,
+                                );
+                                let (h_type, count_right_after_angle_bracket) = match h_type {
+                                    Some(h_type) => h_type,
+                                    None => return,
                                 };
 
                                 if let Err(e) = match &parameters.sampling_strategy {
@@ -1297,6 +1293,40 @@ fn read_file(file_path: &str) -> io::Result<Box<dyn BufRead>> {
 enum HeaderType {
     BCalm,
     Logan,
+}
+
+fn get_first_header_type(
+    record: &fasta::Record,
+    allow_count_right_after_angle_bracket: bool,
+    path: &str,
+) -> Option<(HeaderType, bool)> {
+    // if we are allowed to search for a header in the id of a record
+    // (an id being the part right after the angle bracket of a record)
+    // we try search there first
+    if allow_count_right_after_angle_bracket {
+        if let Ok(ht) = determine_header_type(record.id()) {
+            return Some((ht, true));
+        }
+    }
+
+    // no match in the id, or we were not allowed to search there
+    match record.desc() {
+        Some(header) => match determine_header_type(header) {
+            Ok(ht) => Some((ht, false)),
+            Err(e) => {
+                log::error!("Unsupported header type ({}): {}", path, e);
+                None
+            }
+        },
+        None => {
+            log::error!(
+                "Unsupported header type ({}): no desc in record {}",
+                path,
+                record
+            );
+            None
+        }
+    }
 }
 
 fn determine_header_type(header: &str) -> Result<HeaderType, io::Error> {

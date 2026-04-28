@@ -1,5 +1,5 @@
 use itertools::Itertools;
-use pelt::pelt;
+use pelt_reindeer2::pelt;
 
 use super::super::compute_median;
 use super::super::count_to_string_with_star;
@@ -178,7 +178,7 @@ pub fn cell_compute_breakpoints(abund_values: &[ApproxAbundance], penalty: f64) 
             )
         }) // TODO collect all valid values before
         .collect_vec();
-    let breakpoints = pelt(&abund_values, pelt::score, penalty);
+    let breakpoints = pelt(&abund_values, pelt_reindeer2::score, penalty);
     let breakpoints = breakpoints.iter().map(usize::to_string).join(",");
     breakpoints
 }
