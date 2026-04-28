@@ -582,9 +582,10 @@ impl Reindeer2 {
                 &dir_path, // output
                 partitioned_bf_size,
                 parameters.abundance_number.get(),
-                color_chunks,
+                &color_chunks,
                 parameters.partition_number,
             )?;
+            merge::remove_merged_partitions(&dir_path, &color_chunks, parameters.partition_number)?;
         }
 
         // write metadata info to disk
@@ -3604,6 +3605,19 @@ mod tests {
             //("seq5".to_string(), 4, 57549),
             (">seq2 ka:f:12".to_string(), String::from("file2Q"), 12),
         ];
+
+        let nb_files = fs::read_dir(test_dir)
+            .expect("Failed to read directory")
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.path().is_file())
+            .count();
+        // NB_FILE_IN_AN_INDEX partitions
+        // 9 fa files
+        // index_info
+        // kmer_counts_per_color
+        // fof
+        // query_results
+        assert_eq!(nb_files, NB_FILE_IN_AN_INDEX + 9 + 1 + 1 + 1 + 1);
 
         for (expected, actual) in expected_results.iter().zip(results.iter()) {
             assert_eq!(
