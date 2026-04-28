@@ -1,9 +1,9 @@
 mod dense_index;
-mod filter;
 mod index;
 mod merge;
 mod minimizer_iter;
 mod query;
+mod storage;
 mod test_utils;
 use bio::io::fasta;
 use flate2::read::GzDecoder;
@@ -26,9 +26,9 @@ use thousands::Separable;
 use zstd::stream::decode_all;
 
 use crate::reindeer2::dense_index::DenseIndex;
-use crate::reindeer2::filter::Filters;
 use crate::reindeer2::minimizer_iter::{KmerSampler, MinimizerSampler, NoSampler, Sampler};
 use crate::reindeer2::query::{fimpera, load_kmer_counts_vector, ApproxAbundance};
+use crate::reindeer2::storage::filters::Filters;
 
 const NB_FILE_IN_AN_INDEX: usize = 1024;
 

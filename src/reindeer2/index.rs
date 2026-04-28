@@ -11,7 +11,7 @@ use crate::reindeer2::{
     minimizer_iter::{kmer_minimizers_sampled, KmerMinimizerIteratorError, Sampler},
     process_fasta_in_batches, read_file, HeaderType,
 };
-use crate::reindeer2::{dense_index::DenseIndex, filter::Filters};
+use crate::reindeer2::{dense_index::DenseIndex, storage::filters::Filters};
 
 // --- INDEX FUNCTIONS ---
 

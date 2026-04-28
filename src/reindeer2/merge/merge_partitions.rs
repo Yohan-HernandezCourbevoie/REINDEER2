@@ -10,8 +10,8 @@ use std::{
 };
 
 use crate::reindeer2::{
-    create_and_reserve_tar_get_file, filter::load_raw_bloom_filter,
-    merge::merge_partition_slices_interleaved, NB_FILE_IN_AN_INDEX,
+    create_and_reserve_tar_get_file, merge::merge_partition_slices_interleaved,
+    storage::filters::load_raw_bloom_filter, NB_FILE_IN_AN_INDEX,
 };
 
 /// Merges all partitions of an index being built.

@@ -9,7 +9,7 @@ use std::{
     },
 };
 
-use crate::reindeer2::filter::Filters;
+use crate::reindeer2::storage::filters::Filters;
 use serde::{Deserialize, Serialize};
 
 fn count_zeros(abundance_vector: &[u8], max_index: usize) -> usize {
