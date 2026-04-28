@@ -135,18 +135,18 @@ where
         bloom_filters.extend_by_draining_partitions_map(&mut partition_kmers);
     })?;
     // flush the dense indexes from sparse k-mers after each file *in the first chunk*
-    if chunk_index == 0 {
-        if let Some(dense_indexes) = maybe_dense_indexes {
-            dense_indexes.remove_sparse_entries(
-                bloom_filters,
-                path_num,
-                threshold,
-                max_map_size,
-                atomic_dense_kmers_count,
-                atomic_sparse_kmers_count,
-                chunk_index,
-            );
-        }
+    if chunk_index == 0
+        && let Some(dense_indexes) = maybe_dense_indexes
+    {
+        dense_indexes.remove_sparse_entries(
+            bloom_filters,
+            path_num,
+            threshold,
+            max_map_size,
+            atomic_dense_kmers_count,
+            atomic_sparse_kmers_count,
+            chunk_index,
+        );
     }
     kmer_counts_vector
         .lock()
