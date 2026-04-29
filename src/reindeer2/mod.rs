@@ -3741,9 +3741,10 @@ mod tests {
         // 9 fa files
         // index_info
         // kmer_counts_per_color
-        // fof
+        // fof.txt
         // query_results
-        assert_eq!(nb_files, NB_FILE_IN_AN_INDEX + 9 + 1 + 1 + 1 + 1);
+        // fof
+        assert_eq!(nb_files, NB_FILE_IN_AN_INDEX + 9 + 1 + 1 + 1 + 1 + 1);
 
         for (expected, actual) in expected_results.iter().zip(results.iter()) {
             assert_eq!(
