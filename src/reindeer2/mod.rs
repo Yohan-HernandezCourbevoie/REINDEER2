@@ -1336,10 +1336,8 @@ fn get_first_header_type(
     // if we are allowed to search for a header in the id of a record
     // (an id being the part right after the angle bracket of a record)
     // we try search there first
-    if allow_count_right_after_angle_bracket {
-        if let Ok(ht) = determine_header_type(record.id()) {
-            return Some((ht, true));
-        }
+    if allow_count_right_after_angle_bracket && let Ok(ht) = determine_header_type(record.id()) {
+        return Some((ht, true));
     }
 
     // no match in the id, or we were not allowed to search there
