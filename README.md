@@ -51,7 +51,7 @@ For the **index** mode, the mandatory parameters are the file of files (a plain 
 
 General parameters:
 - `-o, --output-dir` an output directory for the index (default: random name in the form of RD2_index_)
-- `-a, --abundance` the abundance granularity (number of levels or discretized abundance values)
+- `-a, --abundance` the abundance granularity (number of levels or discretized abundance values) (default: 255) (see ![the relation between abundance levels and approximation ratio](/doc/levels_and_approximation.pdf))
 - `-A, --abundance-max` the maximal abundance to take into account
 - `-d, --dense` (true/false) allows to index dense k-mers - shared k-mers among datasets - more efficiently (default: false)
 <!-- - `-u, --muset` (true/false) the index takes as input the output directory of Muset, containing at least 'unitigs.fa' and 'unitigs.abundance.mat' (default: false) -->
@@ -61,15 +61,17 @@ General parameters:
 - `--abundance-min` minimum abundance for a k-mer to be indexed (default: 0, i.e., index all k-mers)
 
 Advanced parameters: 
-- `-b, --bloomfilter` the Bloom filter size in log2 scale
-- `-m, --minimizer` the minimizer size
+- `-b, --bloomfilter` the Bloom filter size in log2 scale (default: 32)
+- `-m, --minimizer` the minimizer size (default: 15)
 - `--nb-file-capacity` maximum number of files in the index. Default: reserve space only for the indexed files.
-- `--no-sort-files-by-size` index the files without sorting them by their size (sorting files makes the indexation faster when multithreaded). Default: false. 
+- `--no-sort-files-by-size` index the files without sorting them by their size (sorting files makes the indexation faster when multithreaded). Default: false (i.e., sort the input to speed up indexation). 
 
-\* The value of the number of partitions is important when building large indexes. More information on how to choose the right value [here](https://github.com/Yohan-HernandezCourbevoie/REINDEER2/tree/dev/doc/partitions.md).
+\* The value of the number of partitions is important when building large indexes. More information on how to choose the right value [here](doc/partitions.md).
 
 
 ### Query
+Warning: REINDEER 2's query results do not respect the order given in the indexed file of file. Please parse the query output rather than assuming the query will repect the order of the indexed file of file.
+
 
 For **query** mode, the parameters are the FASTA file containing the sequence(s) to be queried and the index directory.
 
