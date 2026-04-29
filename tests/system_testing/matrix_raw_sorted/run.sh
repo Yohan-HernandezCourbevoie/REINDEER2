@@ -1,14 +1,14 @@
 #!/bin/bash
 
 reindeer2="./target/debug/reindeer2"
-LOCAL_FOLDER="tests/system_testing/matrix_raw"
-INPUT_FOF="$LOCAL_FOLDER/datasets/matrix_raw.fof"
+LOCAL_FOLDER="tests/system_testing/matrix_raw_sorted"
+INPUT_FOF="$LOCAL_FOLDER/datasets/matrix_raw_sorted.fof"
 QUERY_INPUT="$LOCAL_FOLDER/query.fa"
 QUERY_OUTPUT="$LOCAL_FOLDER/results.tsv"
 EXPECTED_QUERY_OUTPUT="$LOCAL_FOLDER/expected.tsv"
 
 cargo build --quiet
-RUST_LOG=warn $reindeer2 index --input $INPUT_FOF -k 31 -o integration_test_index --no-sort-files-by-size
+RUST_LOG=warn $reindeer2 index --input $INPUT_FOF -k 31 -o integration_test_index
 RUST_LOG=warn $reindeer2 query --fasta $QUERY_INPUT --index ./integration_test_index --output-format matrix-raw --output $QUERY_OUTPUT
 
 python3 "$LOCAL_FOLDER/files_equal.py" $QUERY_OUTPUT $EXPECTED_QUERY_OUTPUT

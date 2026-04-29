@@ -7,6 +7,7 @@ use log::warn;
 use rand::Rng;
 use std::io::{self};
 use std::num::NonZero;
+use std::path::Path;
 use std::time::Instant;
 
 use cli::Cli;
@@ -108,7 +109,9 @@ fn main() -> io::Result<()> {
             minimizer_sampling,
             allow_count_right_after_angle_bracket,
             findere,
+            no_sort_files_by_size,
         }) => {
+            let sort_files_by_size = !no_sort_files_by_size;
             let dense_option = dense;
             let canonical = !stranded;
             let output_dir = output_dir.unwrap_or_else(|| {
@@ -220,7 +223,9 @@ fn main() -> io::Result<()> {
             //     )?;
             // } else {
             // read the file of files  and extract file paths and color count
-            let (file_paths, color_nb) = read_fof_file(&input)?;
+            let (file_paths, color_nb) = read_fof_file(&input).unwrap_or_else(|err| {
+                panic!("should have been able to read the input file {input} ({err})")
+            });
 
             let nb_files = get_min_number_of_files(&file_paths, nb_file_capacity);
             let partitions = get_number_of_partitions(nb_files, abundance.get(), bf_size);
@@ -242,8 +247,16 @@ fn main() -> io::Result<()> {
                 capacity: nb_files,
             };
             let mut index = Reindeer2::new(parameters, output_dir);
+            let input_path = Path::new(&input);
+            let input_file_name = input_path
+                .file_name()
+                .expect("impossible to extract the name of the input file")
+                .to_str()
+                .expect("the input file's name is not in UTF-8");
             index.build(
+                input_file_name,
                 file_paths,
+                sort_files_by_size,
                 chunks_size,
                 tolerated_number_of_zeros,
                 allow_count_right_after_angle_bracket,
