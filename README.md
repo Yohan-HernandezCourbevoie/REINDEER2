@@ -66,7 +66,8 @@ Advanced parameters:
 - `--nb-file-capacity` maximum number of files in the index. Default: reserve space only for the indexed files.
 - `--no-sort-files-by-size` index the files without sorting them by their size (sorting files makes the indexation faster when multithreaded). Default: false (i.e., sort the input to speed up indexation). 
 
-\* The value of the number of partitions is important when building large indexes. More information on how to choose the right value [here](doc/partitions.md).
+<!-- The value of the number of partitions is important when building large indexes. -->
+\* More information on how to choose the right parameters [here](doc/parameters.md).
 
 
 ### Query
