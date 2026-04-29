@@ -3933,6 +3933,93 @@ shared_revcomp_with_other_test_file\t0-19:3\t0-19:10",
     }
 
     #[apply(findere_fixture)]
+    fn test_output_rd1_files_not_sorted_in_input(
+        #[case] z: usize,
+        #[values(true, false)] sort_files_by_size: bool,
+        random_directory: AutoRemoveDirectory,
+    ) {
+        let test_dir = random_directory.filename().to_str().unwrap();
+        fs::create_dir_all(test_dir).expect("Failed to create test directory");
+
+        let file1_path = String::from("tests/unit_tests_data/random_seq_with_revcomp.fa");
+        let file2_path = String::from("tests/unit_tests_data/random_seq.fa");
+        let file_paths = vec![file2_path, file1_path];
+
+        let parameters = Parameters {
+            k: 31,
+            m: 15,
+            bf_size: 1024 * 1024,
+            partition_number: 4,
+            nb_color: 2,
+            abundance_number: NonZero::new(256).unwrap(),
+            abundance_min: 0,
+            abundance_max: NonZero::new(65535).unwrap(),
+            dense_option: false,
+            canonical: true,
+            sampling_strategy: None,
+            findere_z: z,
+            capacity: wrong_capacity(),
+        };
+        let chunks_size = 128;
+        let threshold = parameters.nb_color;
+
+        let mut index = Reindeer2::new(parameters, String::from(test_dir));
+        let (_, index_dir) = index
+            .build(
+                "fof",
+                file_paths.clone(),
+                sort_files_by_size,
+                chunks_size,
+                threshold,
+                false,
+            )
+            .expect("Failed to build index");
+
+        let query_results_path = format!("{}/query_results.csv", index_dir);
+
+        let index_from_disk = Reindeer2::load_from_disk(&index_dir).unwrap();
+        index_from_disk
+            .query(
+                &file_paths[0],
+                &index_dir,
+                &query_results_path,
+                OutputFormat::AbundanceMatrix {
+                    format: MatrixFormat::Raw(None),
+                },
+                0.5,
+            )
+            .expect("Failed to query sequences");
+
+        // Validate the results written to the query result file
+        let actual = fs::read_to_string(&query_results_path).unwrap();
+        let actual = actual.trim();
+
+        let expected = if sort_files_by_size {
+            String::from(
+                "query\trandom_seq_with_revcomp\trandom_seq
+header_0\t0-69:*\t0-69:1
+header_1\t0-69:*\t0-69:1
+header_2\t0-69:*\t0-69:1
+header_3\t0-69:*\t0-69:1
+header_4\t0-69:*\t0-69:1
+shared_revcomp_with_other_test_file\t0-19:3\t0-19:10",
+            )
+        } else {
+            String::from(
+                "query\trandom_seq\trandom_seq_with_revcomp
+header_0\t0-69:1\t0-69:*
+header_1\t0-69:1\t0-69:*
+header_2\t0-69:1\t0-69:*
+header_3\t0-69:1\t0-69:*
+header_4\t0-69:1\t0-69:*
+shared_revcomp_with_other_test_file\t0-19:10\t0-19:3",
+            )
+        };
+
+        assert_equal_sorted_content_with_equal_header(&expected, actual);
+    }
+
+    #[apply(findere_fixture)]
     fn test_output_duplication(
         #[case] z: usize,
         #[values(true, false)] sort_files_by_size: bool,
