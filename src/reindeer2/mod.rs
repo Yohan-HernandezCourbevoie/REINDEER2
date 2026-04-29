@@ -1100,6 +1100,7 @@ const fn compute_base_position(
 
 // --- WRITE INDEX ON DISK ---
 
+// TODO error handling
 fn create_dir_and_files(
     num_partition: usize,
     output_dir: &str,
@@ -1113,20 +1114,25 @@ fn create_dir_and_files(
         true => std::env::current_dir()?.join(output_path),
         false => output_path.to_path_buf(),
     };
+
     // TODO TOCTOU bug
     if !(partition_dir.try_exists()?) {
         fs::create_dir_all(&partition_dir)?;
-        if sort_files_by_size {
-            sort_paths_by_file_size(files);
-        }
-        let fof_path = output_path.join(file_of_file_name);
-        let file = fs::File::create(fof_path)?;
-        let mut writer = BufWriter::new(file);
-        for file in files {
-            writeln!(writer, "{file}")?;
-        }
-        writer.flush()?;
     }
+
+    if sort_files_by_size {
+        sort_paths_by_file_size(files);
+    }
+
+    // keep a copy of the file of file
+    let fof_path = output_path.join(file_of_file_name);
+    let file = fs::File::create(fof_path)?;
+    let mut writer = BufWriter::new(file);
+    for file in files {
+        writeln!(writer, "{file}")?;
+    }
+    writer.flush()?;
+
     let file_paths = Vec::with_capacity(num_partition);
     let partition_dir_string = partition_dir.to_string_lossy().into_owned();
     Ok((file_paths, partition_dir_string))
