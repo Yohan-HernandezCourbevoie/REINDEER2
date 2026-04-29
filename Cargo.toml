@@ -33,6 +33,7 @@ tar-get = "0.4.3"
 [dev-dependencies]
 rstest = "0.26.1"
 rstest_reuse = "0.7.0"
+tempfile = "3.27.0"
 
 [dev-dependencies.uuid]
 version = "1.19.0"
