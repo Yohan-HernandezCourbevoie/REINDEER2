@@ -1,18 +1,21 @@
 #!/bin/bash
 
-reindeer2="./target/debug/reindeer2"
-LOCAL_FOLDER="tests/system_testing/matrix_raw_breakpoints"
-INPUT_FOF="$LOCAL_FOLDER/datasets/matrix_raw_breakpoints.fof"
-QUERY_INPUT="$LOCAL_FOLDER/query.fa"
-QUERY_OUTPUT="$LOCAL_FOLDER/results.tsv"
-EXPECTED_QUERY_OUTPUT="$LOCAL_FOLDER/expected.tsv"
+##### variable definitions #####
+reindeer2=$(realpath "./target/debug/reindeer2")  # we must define `reindeer2` as it is not installed yet
+LOCAL_FOLDER=$(dirname $0)
+INPUT_FOF="datasets/fof.fof"
+QUERY_INPUT="query.fa"
+QUERY_OUTPUT="results.tsv"
+EXPECTED_QUERY_OUTPUT="expected.tsv"
+
+cd $LOCAL_FOLDER
 
 cargo build --quiet
 
-RUST_LOG=warn $reindeer2 index --input $INPUT_FOF -k 31 -o integration_test_index
+RUST_LOG=warn $reindeer2 index --input $INPUT_FOF -k 31 -o integration_test_index --no-sort-files-by-size
 RUST_LOG=warn $reindeer2 query --fasta $QUERY_INPUT --index ./integration_test_index --output-format matrix-raw --breakpoints 0.3 --output $QUERY_OUTPUT
 
-python3 "$LOCAL_FOLDER/check_files_are_similar.py" $QUERY_OUTPUT $EXPECTED_QUERY_OUTPUT
+python3 check_files_are_similar.py $QUERY_OUTPUT $EXPECTED_QUERY_OUTPUT
 is_same=$?
 
 rm -r ./integration_test_index 

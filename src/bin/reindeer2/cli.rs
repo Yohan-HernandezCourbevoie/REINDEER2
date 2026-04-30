@@ -109,6 +109,11 @@ pub struct IndexArgs {
     ///  - if k-z <= 16, the false positive rate will increase
     #[arg(long, value_name = "z")]
     pub findere: Option<usize>,
+
+    /// Expert parameter: sort file by size before indexing.
+    /// This speeds up multithreaded indexation, because the files in each chunk of work are less imbalanced.
+    #[arg(long, default_value_t = false)]
+    pub no_sort_files_by_size: bool,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, ValueEnum)]

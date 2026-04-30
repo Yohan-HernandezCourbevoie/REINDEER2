@@ -1,11 +1,11 @@
 use itertools::Itertools;
 use pelt_reindeer2::pelt;
 
+use super::super::KmerCountsAndNormalizeValue;
 use super::super::compute_median;
 use super::super::count_to_string_with_star;
-use super::super::KmerCountsAndNormalizeValue;
-use crate::reindeer2::query::format::count_to_string_with_star_normalized;
 use crate::reindeer2::query::ApproxAbundance;
+use crate::reindeer2::query::format::count_to_string_with_star_normalized;
 
 /// Computes a single cell of the matrix when we want the average of elements.
 /// Returns nan if `abund_values` is empty or if it has no valid values.
@@ -179,8 +179,7 @@ pub fn cell_compute_breakpoints(abund_values: &[ApproxAbundance], penalty: f64) 
         }) // TODO collect all valid values before
         .collect_vec();
     let breakpoints = pelt(&abund_values, pelt_reindeer2::score, penalty);
-    let breakpoints = breakpoints.iter().map(usize::to_string).join(",");
-    breakpoints
+    breakpoints.iter().map(usize::to_string).join(",")
 }
 
 #[cfg(test)]

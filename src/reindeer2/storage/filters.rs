@@ -10,10 +10,10 @@ use std::{
     sync::Mutex,
 };
 
-use crate::reindeer2::{create_and_reserve_tar_get_file, NB_FILE_IN_AN_INDEX};
+use crate::reindeer2::{NB_FILE_IN_AN_INDEX, create_and_reserve_tar_get_file};
 
 #[cfg(any(debug_assertions, test))]
-use std::sync::{atomic::AtomicU64, Arc};
+use std::sync::{Arc, atomic::AtomicU64};
 
 pub struct Filters {
     data: Vec<Mutex<RoaringBitmap>>,

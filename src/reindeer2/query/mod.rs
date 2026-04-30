@@ -12,11 +12,11 @@ use crate::reindeer2::NB_FILE_IN_AN_INDEX;
 use super::{
     compute_base_position,
     dense_index::DenseIndexPartition,
-    filter::load_bloom_filter_from_big_file,
-    minimizer_iter::{kmer_minimizers_all, Sampler},
+    minimizer_iter::{Sampler, kmer_minimizers_all},
+    storage::filters::load_bloom_filter_from_big_file,
 };
 use bio::io::fasta;
-pub use format::{write_header, write_kmer_query, EnrichedOutputFormat};
+pub use format::{EnrichedOutputFormat, write_header, write_kmer_query};
 
 pub use approx_abundance::ApproxAbundance;
 pub use findere::fimpera;
