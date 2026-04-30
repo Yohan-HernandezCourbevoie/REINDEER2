@@ -58,5 +58,4 @@ jobs:
       - name: Run system tests
         run: |
           chmod +x tests/system_testing/run.sh
-          pwd
           tests/system_testing/run.sh
