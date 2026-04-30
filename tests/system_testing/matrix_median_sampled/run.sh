@@ -1,15 +1,20 @@
 #!/bin/bash
 
-reindeer2="./target/debug/reindeer2"
-LOCAL_FOLDER="tests/system_testing/matrix_median_sampled"
-INPUT_FOF="$LOCAL_FOLDER/datasets/matrix_median.fof"
-QUERY_INPUT="$LOCAL_FOLDER/query.fa"
-QUERY_OUTPUT="$LOCAL_FOLDER/results.tsv"
-EXPECTED_QUERY_OUTPUT_0="$LOCAL_FOLDER/expected_0.tsv"
-EXPECTED_QUERY_OUTPUT_1="$LOCAL_FOLDER/expected_1.tsv"
-EXPECTED_QUERY_OUTPUT_2="$LOCAL_FOLDER/expected_2.tsv"
-EXPECTED_QUERY_OUTPUT_3="$LOCAL_FOLDER/expected_3.tsv"
-EXPECTED_QUERY_OUTPUT_4="$LOCAL_FOLDER/expected_4.tsv"
+##### variable definitions #####
+reindeer2=$(realpath "./target/debug/reindeer2")  # we must define `reindeer2` as it is not installed yet
+LOCAL_FOLDER=$(dirname $0)
+INPUT_FOF="datasets/fof.fof"
+QUERY_INPUT="query.fa"
+QUERY_OUTPUT="results.tsv"
+EXPECTED_QUERY_OUTPUT="expected.tsv"
+
+cd $LOCAL_FOLDER
+
+EXPECTED_QUERY_OUTPUT_0="expected_0.tsv"
+EXPECTED_QUERY_OUTPUT_1="expected_1.tsv"
+EXPECTED_QUERY_OUTPUT_2="expected_2.tsv"
+EXPECTED_QUERY_OUTPUT_3="expected_3.tsv"
+EXPECTED_QUERY_OUTPUT_4="expected_4.tsv"
 
 cargo build --quiet
 
@@ -22,7 +27,7 @@ for sampling in 0 1 2 3 4; do
     RUST_LOG=warn "$reindeer2" index --input "$INPUT_FOF" -k 31 --kmer-sampling "$sampling" -o integration_test_index --no-sort-files-by-size
     RUST_LOG=warn "$reindeer2" query --fasta "$QUERY_INPUT" --index ./integration_test_index --output-format matrix-median --output "$QUERY_OUTPUT"
 
-    python3 "$LOCAL_FOLDER/files_equal.py" "$QUERY_OUTPUT" "$expected"
+    python3 files_equal.py "$QUERY_OUTPUT" "$expected"
 
     rm -r ./integration_test_index
     rm "$QUERY_OUTPUT"
