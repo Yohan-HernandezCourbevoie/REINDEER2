@@ -53,7 +53,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: build project
-        run: cargo build --release
+        run: cargo build
 
       - name: Run system tests
         run: |

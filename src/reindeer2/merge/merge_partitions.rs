@@ -89,7 +89,7 @@ pub fn merge_all_partitions_of_chunks(
                     &chunk_files_for_partition,
                     partitioned_bf_size,
                     abundance_number,
-                    &color_counts_per_chunk,
+                    color_counts_per_chunk,
                     &mut file,
                 )?;
 

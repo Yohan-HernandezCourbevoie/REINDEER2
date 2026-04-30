@@ -10,7 +10,7 @@ use crate::reindeer2::query::{
 
 use super::compute_median;
 
-fn get_non_zero_value(approx_abundance: &ApproxAbundance) -> Option<u16> {
+const fn get_non_zero_value(approx_abundance: &ApproxAbundance) -> Option<u16> {
     if let Some(value) = approx_abundance.to_value()
         && value > 0
     {
@@ -19,7 +19,7 @@ fn get_non_zero_value(approx_abundance: &ApproxAbundance) -> Option<u16> {
     None
 }
 
-fn is_zero(approx_abundance: &ApproxAbundance) -> bool {
+const fn is_zero(approx_abundance: &ApproxAbundance) -> bool {
     if let Some(value) = approx_abundance.to_value() {
         value == 0
     } else {

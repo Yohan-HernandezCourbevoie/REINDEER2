@@ -1,20 +1,21 @@
 #!/bin/bash
 
-reindeer2="./target/debug/reindeer2"
-LOCAL_FOLDER="tests/system_testing/matrix_raw_sampled"
-INPUT_FOF="$LOCAL_FOLDER/datasets/matrix_raw.fof"
-QUERY_INPUT="$LOCAL_FOLDER/query.fa"
-QUERY_OUTPUT="$LOCAL_FOLDER/results.tsv"
-EXPECTED_QUERY_OUTPUT="$LOCAL_FOLDER/expected.tsv"
+##### variable definitions #####
+reindeer2=$(realpath "./target/debug/reindeer2")  # we must define `reindeer2` as it is not installed yet
+LOCAL_FOLDER=$(dirname $0)
+INPUT_FOF="datasets/fof.fof"
+QUERY_INPUT="query.fa"
+QUERY_OUTPUT="results.tsv"
+EXPECTED_QUERY_OUTPUT="expected.tsv"
 
-cargo build --quiet
+EXPECTED_QUERY_OUTPUT_0="expected_0.tsv"
+EXPECTED_QUERY_OUTPUT_1="expected_1.tsv"
+EXPECTED_QUERY_OUTPUT_2="expected_2.tsv"
+EXPECTED_QUERY_OUTPUT_3="expected_3.tsv"
+EXPECTED_QUERY_OUTPUT_4="expected_4.tsv"
+EXPECTED_QUERY_OUTPUT_5="expected_5.tsv"
 
-EXPECTED_QUERY_OUTPUT_0="$LOCAL_FOLDER/expected_0.tsv"
-EXPECTED_QUERY_OUTPUT_1="$LOCAL_FOLDER/expected_1.tsv"
-EXPECTED_QUERY_OUTPUT_2="$LOCAL_FOLDER/expected_2.tsv"
-EXPECTED_QUERY_OUTPUT_3="$LOCAL_FOLDER/expected_3.tsv"
-EXPECTED_QUERY_OUTPUT_4="$LOCAL_FOLDER/expected_4.tsv"
-EXPECTED_QUERY_OUTPUT_5="$LOCAL_FOLDER/expected_5.tsv"
+cd $LOCAL_FOLDER
 
 cargo build --quiet
 
