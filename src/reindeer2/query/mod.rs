@@ -168,16 +168,18 @@ fn query_smer(
     base: f64,
     color: usize,
 ) -> ApproxAbundance {
-    let mut res = ApproxAbundance::new_absent();
-    for abundance in 0..abundance_number {
-        let position_to_check =
-            base_position + (color as u64) * (abundance_number as u64) + (abundance as u64);
+    let base_position = base_position as u32;
+    let color = color as u32;
+    let abundance_number = abundance_number as u32;
 
-        if bitmap.contains(position_to_check as u32) {
-            res = ApproxAbundance::from_position_of_hit_in_the_filter(abundance, base);
-        }
+    let start = base_position + color * abundance_number;
+    let end = start + abundance_number;
+
+    if let Some(positive_position) = bitmap.range(start..end).next_back() {
+        let abundance = (positive_position - start) as u16;
+        return ApproxAbundance::from_position_of_hit_in_the_filter(abundance, base);
     }
-    res
+    ApproxAbundance::new_absent()
 }
 
 // TOUN
@@ -261,14 +263,23 @@ pub fn merge_results(
     mut acc: HashMap<usize, Vec<Vec<(u32, ApproxAbundance)>>>,
     local: HashMap<usize, Vec<Vec<(u32, ApproxAbundance)>>>,
 ) -> HashMap<usize, Vec<Vec<(u32, ApproxAbundance)>>> {
-    for (seq_id, color_vecs) in local {
-        let entry = acc
-            .entry(seq_id)
-            .or_insert_with(|| vec![Vec::new(); color_vecs.len()]);
+    use std::collections::hash_map::Entry;
 
-        // Merge each color's abundances
-        for (color_idx, local_abunds) in color_vecs.iter().enumerate() {
-            entry[color_idx].extend(local_abunds.iter().copied());
+    for (seq_id, color_vecs) in local {
+        match acc.entry(seq_id) {
+            Entry::Occupied(mut e) => {
+                let acc_vecs = e.get_mut();
+                for (color_idx, local_abunds) in color_vecs.into_iter().enumerate() {
+                    let target = &mut acc_vecs[color_idx];
+                    // Reserve all capacity upfront — eliminates realloc churn
+                    target.reserve(local_abunds.len());
+                    target.extend_from_slice(&local_abunds);
+                }
+            }
+            Entry::Vacant(e) => {
+                // Just insert directly — no extend needed at all
+                e.insert(color_vecs);
+            }
         }
     }
     acc
