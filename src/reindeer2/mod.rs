@@ -747,6 +747,38 @@ impl Reindeer2 {
 
         fimpera(smer_res, parameters.findere_z)
     }
+
+    pub fn rename(&mut self, old_name: &str, new_name: String) -> io::Result<ReplaceOutcome> {
+        let outcome =
+            replace_first_if_not_already_in(&mut self.indexed_file_names, old_name, new_name);
+        self.save_to_disk()?;
+        Ok(outcome)
+    }
+}
+
+pub enum ReplaceOutcome {
+    NotFound,
+    WouldAppearMoreThanOnce,
+    Replaced,
+}
+
+fn replace_first_if_not_already_in(
+    vec: &mut [String],
+    target: &str,
+    replacement: String,
+) -> ReplaceOutcome {
+    // do not replace if an occurence is already here (would create a duplicate)
+    if vec.iter().position(|s| s == &replacement).is_some() {
+        return ReplaceOutcome::WouldAppearMoreThanOnce;
+    }
+
+    // replace in case of a match
+    if let Some(pos) = vec.iter().position(|s| s == target) {
+        vec[pos] = replacement;
+        return ReplaceOutcome::Replaced;
+    }
+
+    ReplaceOutcome::NotFound
 }
 
 fn get_file_names(file_paths: &[String]) -> Vec<String> {

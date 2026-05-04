@@ -18,7 +18,7 @@ use reindeer2::reindeer2::{
     merge_multiple_indexes, read_fof_file,
 };
 
-use crate::cli::{IndexArgs, InfosArgs, MergeArgs, QueryArgs};
+use crate::cli::{IndexArgs, InfosArgs, MergeArgs, QueryArgs, RenameArgs};
 
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
@@ -354,6 +354,31 @@ fn main() -> io::Result<()> {
             let infos = index.get_index_infos();
 
             println!("{infos}");
+        }
+        cli::Command::Rename(RenameArgs {
+            index,
+            old_name,
+            new_name,
+        }) => {
+            let index_dir = index;
+            let mut index = Reindeer2::load_from_disk(&index_dir)
+                .expect("should have been able to load index infos from disk");
+            let outcome = index
+                .rename(&old_name, new_name.clone())
+                .expect("should have been able to write updated index to disk");
+
+            use reindeer2::reindeer2::ReplaceOutcome;
+            match outcome {
+                ReplaceOutcome::NotFound => {
+                    log::error!("{old_name} was not found");
+                }
+                ReplaceOutcome::WouldAppearMoreThanOnce => {
+                    log::error!("{new_name} already appears in the list of indexed files");
+                }
+                ReplaceOutcome::Replaced => {
+                    println!("{old_name} was renamed to {new_name}");
+                }
+            };
         }
     }
 

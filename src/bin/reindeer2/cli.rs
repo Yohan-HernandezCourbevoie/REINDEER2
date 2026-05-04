@@ -23,6 +23,8 @@ pub enum Command {
     Merge(MergeArgs),
     /// Get infos about a REINDEER2 index
     Infos(InfosArgs),
+    /// Rename a dataset in a REINDEER 2 index
+    Rename(RenameArgs),
 }
 
 // #[derive(Copy, Clone, Debug, PartialEq, ValueEnum)]
@@ -179,6 +181,21 @@ pub struct MergeArgs {
     /// Define a number of threads available
     #[arg(short, long, value_name = "THREADS", default_value_t = 1)]
     pub threads: usize,
+}
+
+#[derive(Args, Debug)]
+pub struct RenameArgs {
+    /// Path to the directory containing the prebuilt index
+    #[arg(short, long, value_name = "DIR")]
+    pub index: String,
+
+    /// Name of the dataset to change
+    #[arg(short, long, value_name = "OLD")]
+    pub old_name: String,
+
+    /// Define a number of threads available
+    #[arg(short, long, value_name = "NEW")]
+    pub new_name: String,
 }
 
 #[derive(Args, Debug)]
