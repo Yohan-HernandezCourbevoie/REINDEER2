@@ -29,9 +29,9 @@ pub fn format_int_with_spaces(mut n: i64) -> String {
 
 pub fn get_max_rss() -> i64 {
     let mut usage = MaybeUninit::<rusage>::uninit();
-    let usage = unsafe {
+    unsafe {
         getrusage(RUSAGE_SELF, usage.as_mut_ptr());
-        usage.assume_init()
-    };
+    }
+    let usage = unsafe { usage.assume_init() };
     usage.ru_maxrss
 }
