@@ -130,7 +130,7 @@ fn main() -> io::Result<()> {
                 rayon::ThreadPoolBuilder::new()
                     .num_threads(1)
                     .build_global()
-                    .unwrap();
+                    .expect("should have been able to set up the threads (maybe the setup function was called twice ?)");
                 if kmer > 32 {
                     panic!(
                         "ERROR : With the '--dense' option set to 'true', the k-mer size must be <= 32."
@@ -140,7 +140,7 @@ fn main() -> io::Result<()> {
                 rayon::ThreadPoolBuilder::new()
                     .num_threads(threads)
                     .build_global()
-                    .unwrap();
+                    .expect("should have been able to set up the threads (maybe the setup function was called twice ?)");
             }
             let abundance = if abundance > 255 && dense_option {
                 log::warn!(
@@ -290,7 +290,7 @@ fn main() -> io::Result<()> {
             rayon::ThreadPoolBuilder::new()
                 .num_threads(threads)
                 .build_global()
-                .unwrap();
+                .expect("should have been able to set up the threads (maybe the setup function was called twice ?)");
 
             let fasta_file = fasta;
             let index_dir = index;
@@ -335,7 +335,7 @@ fn main() -> io::Result<()> {
             rayon::ThreadPoolBuilder::new()
                 .num_threads(threads)
                 .build_global()
-                .unwrap();
+                .expect("should have been able to set up the threads (maybe the setup function was called twice ?)");
 
             let output_dir = output_dir.unwrap_or_else(|| {
                 format!("RD2_index_{}", rand::rng().random::<u64>()) // Generate a unique directory name

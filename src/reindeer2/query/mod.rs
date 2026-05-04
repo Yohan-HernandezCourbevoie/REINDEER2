@@ -196,6 +196,7 @@ pub fn update_color_abundances(
 ) {
     debug_assert!(abundance_number < u16::MAX as usize); // TODO make this check before ?
     let abundance_number: u16 = abundance_number as u16; // TODO take u16 as parameter ?
+    #[allow(clippy::needless_range_loop, reason = "clarity")]
     for color in 0..color_number {
         let smer_approx_abundance =
             query_smer(bitmap, base_position, abundance_number, base, color);
