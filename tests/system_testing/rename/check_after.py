@@ -21,9 +21,8 @@ EXPECTED_INFOS = [
 
 def check(rd2_output: str):
     prefix = """index directory: "integration_test_index"\nparameters: Parameters {"""
-    # suffix = """, }\nindexed filenames and k-mers: \n[  ("datasetB", 5850),\n  ("datasetA", 5940),\n]\n\n"""
     suffix = """,\n}\nindexed filenames and k-mers: [\n  ("datasetB", 5850),\n  ("datasetC", 5940),\n]\n\n"""
-    # suffix = """[\n  ("datasetB", 5850),\n  ("datasetA", 5940),\n]\n\n"""
+
     assert rd2_output.startswith(prefix)
     rd2_output = rd2_output.removeprefix(prefix)
     assert rd2_output.endswith(suffix)
