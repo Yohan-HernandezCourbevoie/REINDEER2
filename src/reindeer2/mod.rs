@@ -747,6 +747,39 @@ impl Reindeer2 {
 
         fimpera(smer_res, parameters.findere_z)
     }
+
+    pub fn rename(&mut self, old_name: &str, new_name: String) -> io::Result<ReplaceOutcome> {
+        let outcome =
+            replace_first_if_not_already_in(&mut self.indexed_file_names, old_name, new_name);
+        self.save_to_disk()?;
+        Ok(outcome)
+    }
+}
+
+#[derive(Debug, PartialEq)]
+pub enum ReplaceOutcome {
+    NotFound,
+    WouldAppearMoreThanOnce,
+    Replaced,
+}
+
+fn replace_first_if_not_already_in(
+    vec: &mut [String],
+    target: &str,
+    replacement: String,
+) -> ReplaceOutcome {
+    // do not replace if an occurence is already here (would create a duplicate)
+    if vec.iter().position(|s| s == &replacement).is_some() {
+        return ReplaceOutcome::WouldAppearMoreThanOnce;
+    }
+
+    // replace in case of a match
+    if let Some(pos) = vec.iter().position(|s| s == target) {
+        vec[pos] = replacement;
+        return ReplaceOutcome::Replaced;
+    }
+
+    ReplaceOutcome::NotFound
 }
 
 fn get_file_names(file_paths: &[String]) -> Vec<String> {
@@ -4308,5 +4341,49 @@ shared_revcomp_with_other_test_file\t0-19:*\t0-19:10",
         assert_eq!(total_capacity, parameters.partition_number as u64);
 
         Ok(())
+    }
+
+    #[test]
+    fn test_replace_first_if_not_already_in_would_appear_more_than_once() {
+        let mut input = [
+            String::from("a"),
+            String::from("b"),
+            String::from("c"),
+            String::from("d"),
+        ];
+        let original = input.clone();
+        let outcome = replace_first_if_not_already_in(&mut input, "a", String::from("b"));
+        assert_eq!(outcome, ReplaceOutcome::WouldAppearMoreThanOnce);
+        assert_eq!(original, input);
+    }
+
+    #[test]
+    fn test_replace_first_if_not_already_in_not_found() {
+        let mut input = [
+            String::from("a"),
+            String::from("b"),
+            String::from("c"),
+            String::from("d"),
+        ];
+        let original = input.clone();
+        let outcome = replace_first_if_not_already_in(&mut input, "h", String::from("e"));
+        assert_eq!(outcome, ReplaceOutcome::NotFound);
+        assert_eq!(original, input);
+    }
+
+    #[test]
+    fn test_replace_first_if_not_already_in_replace() {
+        let mut input = [
+            String::from("a"),
+            String::from("b"),
+            String::from("c"),
+            String::from("d"),
+        ];
+        let mut expected = input.clone();
+        expected[1] = String::from("e");
+
+        let outcome = replace_first_if_not_already_in(&mut input, "b", String::from("e"));
+        assert_eq!(outcome, ReplaceOutcome::Replaced);
+        assert_eq!(expected, input);
     }
 }

@@ -95,6 +95,12 @@ The **infos** command prints informations about an index.
 
 `reindeer2 infos <index_path>`
 
+### Rename
+
+The **rename** command renames a dataset in an index.
+The parameters are the index directory, the name of the dataset to modify in the index, and the new name.
+
+`reindeer2 rename --index <DIR> --old-name <OLD> --new-name <NEW>`
 
 <!--
 #### CSV file with --color false (default)
