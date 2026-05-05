@@ -7,17 +7,21 @@ use log::warn;
 use rand::Rng;
 use std::io::{self};
 use std::num::NonZero;
+use std::path::Path;
 use std::time::Instant;
 
 use cli::Cli;
 use cli::OutputFormatCli;
 use overflow_detection::{get_min_number_of_files, get_number_of_partitions};
 use reindeer2::reindeer2::{
-    merge_multiple_indexes, read_fof_file, BreakpointsNormalize, MatrixFormat, OutputFormat,
-    Parameters, Reindeer2, SamplingStrategy,
+    BreakpointsNormalize, MatrixFormat, OutputFormat, Parameters, Reindeer2, SamplingStrategy,
+    merge_multiple_indexes, read_fof_file,
 };
 
-use crate::cli::{IndexArgs, InfosArgs, MergeArgs, QueryArgs};
+use crate::cli::{IndexArgs, InfosArgs, MergeArgs, QueryArgs, RenameArgs};
+
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 impl OutputFormatCli {
     fn to_output_format(self, normalized: Option<u64>, breakpoints: Option<f64>) -> OutputFormat {
@@ -108,7 +112,9 @@ fn main() -> io::Result<()> {
             minimizer_sampling,
             allow_count_right_after_angle_bracket,
             findere,
+            no_sort_files_by_size,
         }) => {
+            let sort_files_by_size = !no_sort_files_by_size;
             let dense_option = dense;
             let canonical = !stranded;
             let output_dir = output_dir.unwrap_or_else(|| {
@@ -124,7 +130,7 @@ fn main() -> io::Result<()> {
                 rayon::ThreadPoolBuilder::new()
                     .num_threads(1)
                     .build_global()
-                    .unwrap();
+                    .expect("should have been able to set up the threads (maybe the setup function was called twice ?)");
                 if kmer > 32 {
                     panic!(
                         "ERROR : With the '--dense' option set to 'true', the k-mer size must be <= 32."
@@ -134,7 +140,7 @@ fn main() -> io::Result<()> {
                 rayon::ThreadPoolBuilder::new()
                     .num_threads(threads)
                     .build_global()
-                    .unwrap();
+                    .expect("should have been able to set up the threads (maybe the setup function was called twice ?)");
             }
             let abundance = if abundance > 255 && dense_option {
                 log::warn!(
@@ -183,8 +189,14 @@ fn main() -> io::Result<()> {
             );
 
             if (kmer - findere_z) <= 16 {
-                warn!("Indexing with k = {} and z = {}. A high false positive rate is expected. Using (k-z) > 16 is recommanded.", kmer, findere_z);
-                println!("Warning: with current chosen values (k = {}, findere's z = {}), the index might have a lot of false positives. We recommand using using (k-z) > 16.", kmer, findere_z);
+                warn!(
+                    "Indexing with k = {} and z = {}. A high false positive rate is expected. Using (k-z) > 16 is recommanded.",
+                    kmer, findere_z
+                );
+                println!(
+                    "Warning: with current chosen values (k = {}, findere's z = {}), the index might have a lot of false positives. We recommand using using (k-z) > 16.",
+                    kmer, findere_z
+                );
             }
 
             let tolerated_number_of_zeros = 0;
@@ -214,7 +226,9 @@ fn main() -> io::Result<()> {
             //     )?;
             // } else {
             // read the file of files  and extract file paths and color count
-            let (file_paths, color_nb) = read_fof_file(&input)?;
+            let (file_paths, color_nb) = read_fof_file(&input).unwrap_or_else(|err| {
+                panic!("should have been able to read the input file {input} ({err})")
+            });
 
             let nb_files = get_min_number_of_files(&file_paths, nb_file_capacity);
             let partitions = get_number_of_partitions(nb_files, abundance.get(), bf_size);
@@ -236,8 +250,16 @@ fn main() -> io::Result<()> {
                 capacity: nb_files,
             };
             let mut index = Reindeer2::new(parameters, output_dir);
+            let input_path = Path::new(&input);
+            let input_file_name = input_path
+                .file_name()
+                .expect("impossible to extract the name of the input file")
+                .to_str()
+                .expect("the input file's name is not in UTF-8");
             index.build(
+                input_file_name,
                 file_paths,
+                sort_files_by_size,
                 chunks_size,
                 tolerated_number_of_zeros,
                 allow_count_right_after_angle_bracket,
@@ -268,7 +290,7 @@ fn main() -> io::Result<()> {
             rayon::ThreadPoolBuilder::new()
                 .num_threads(threads)
                 .build_global()
-                .unwrap();
+                .expect("should have been able to set up the threads (maybe the setup function was called twice ?)");
 
             let fasta_file = fasta;
             let index_dir = index;
@@ -313,7 +335,7 @@ fn main() -> io::Result<()> {
             rayon::ThreadPoolBuilder::new()
                 .num_threads(threads)
                 .build_global()
-                .unwrap();
+                .expect("should have been able to set up the threads (maybe the setup function was called twice ?)");
 
             let output_dir = output_dir.unwrap_or_else(|| {
                 format!("RD2_index_{}", rand::rng().random::<u64>()) // Generate a unique directory name
@@ -332,6 +354,31 @@ fn main() -> io::Result<()> {
             let infos = index.get_index_infos();
 
             println!("{infos}");
+        }
+        cli::Command::Rename(RenameArgs {
+            index,
+            old_name,
+            new_name,
+        }) => {
+            let index_dir = index;
+            let mut index = Reindeer2::load_from_disk(&index_dir)
+                .expect("should have been able to load index infos from disk");
+            let outcome = index
+                .rename(&old_name, new_name.clone())
+                .expect("should have been able to write updated index to disk");
+
+            use reindeer2::reindeer2::ReplaceOutcome;
+            match outcome {
+                ReplaceOutcome::NotFound => {
+                    log::error!("{old_name} was not found");
+                }
+                ReplaceOutcome::WouldAppearMoreThanOnce => {
+                    log::error!("{new_name} already appears in the list of indexed files");
+                }
+                ReplaceOutcome::Replaced => {
+                    println!("{old_name} was renamed to {new_name}");
+                }
+            };
         }
     }
 

@@ -9,7 +9,7 @@ pub trait Sampler {
 pub struct NoSampler {}
 
 impl NoSampler {
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {}
     }
 }
@@ -27,7 +27,7 @@ pub struct MinimizerSampler {
 }
 
 impl MinimizerSampler {
-    pub fn new(last_bits_to_zero: u64) -> Self {
+    pub const fn new(last_bits_to_zero: u64) -> Self {
         let minimizer_mask = (1u64 << last_bits_to_zero) - 1;
         Self { minimizer_mask }
     }
@@ -46,7 +46,7 @@ pub struct KmerSampler {
 }
 
 impl KmerSampler {
-    pub fn new(last_bits_to_zero: u64) -> Self {
+    pub const fn new(last_bits_to_zero: u64) -> Self {
         let kmer_mask = (1u64 << last_bits_to_zero) - 1;
         Self { kmer_mask }
     }

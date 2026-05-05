@@ -4,7 +4,7 @@ mod merge_partitions;
 use roaring::RoaringBitmap;
 
 pub use merge_indexes::merge_multiple_indexes;
-pub use merge_partitions::merge_all_partitions_of_chunks;
+pub use merge_partitions::{merge_all_partitions_of_chunks, remove_merged_partitions};
 
 /* example for build_new_bitset_with_gaps_from_merged + interleave_slices_with_zero_runs
  merged = 110001 000000 (2 "colums" in the partition, 2 datasets, 3 abundances)

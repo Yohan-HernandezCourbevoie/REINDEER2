@@ -1,0 +1,53 @@
+# How to choose your index parameters
+
+## The size of the partitions
+
+
+<!-- TODO update this ? remove it ?-->
+<!-- However, due to implementation restriction, **the maximum size of a partition is always $2^{32}$ bits**. -->
+
+
+### Indexing with REINDEER2
+
+When indexing a collection, REINDEER2 starts by checking if the number of partitions is high enough to handle the size of the index.
+
+If not, REINDEER2 will set by default the smallest number of partitions that will work with the parameters. However, since the number of partitions have been chosen to fit the parameters (including the number of datasets), adding new datasets won't be possible.
+
+
+### Merging indexes with REINDEER2
+
+When merging indexes, REINDEER2 checks that the parameters used for both the indexes were the same.
+<!-- It also checks that the number of partitions is high enough to handle the new size of the future merged index. -->
+
+If not, the merge won't be available. It is not yet possible to modify the indexes in order to allow the merge.
+
+
+
+## How to choose your parameters?
+
+
+
+### Bloom filters size
+
+The Bloom filters size is highly correlated with the false positive rate at query time. Depending on the average number of distinct k-mers in your datasets, you can find the right Bloom filters size in log2 (between 26 and 34) suiting your expectations in terms of average false positive rate.
+
+
+| Bloom filters size |   0.10 |   0.25 |   0.50 |   0.75 |      1 |   1.25 |   1.50 |
+| ------------------ | ------ | ------ | ------ | ------ | ------ | ------ | ------ |
+| 26                 | 77.47% | 97.59% | 99.94% |   100% |   100% |   100% |   100% |
+| 28                 | 31.10% | 60.60% | 84.47% | 93.88% | 97.59% | 99.05% | 99.63% |
+| 30                 |  8.89% | 20.77% | 37.23% | 50.27% | 60.60% | 68.78% | 75.27% |
+| 32                 |  2.30% |  5.65% | 10.99% | 16.02% | 20.77% | 25.25% | 29.48% |
+| 34                 |  0.58% |  1.44% |  2.87% |  4.27% |  5.65% |  7.02% |  8.36% |
+
+
+
+### Number of levels
+
+The number of abundance levels determine directly the average approximation ratio between discretized abundances and real abundances values.
+
+You will find in the following figure the average approximation ratio associated with a range of numbers of abundance levels.
+
+
+![Abundance levels and approximation ratio](levels_and_approximation.pdf)
+

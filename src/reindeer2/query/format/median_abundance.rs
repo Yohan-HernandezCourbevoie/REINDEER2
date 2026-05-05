@@ -4,22 +4,22 @@ use std::io::{self, Write};
 
 use super::KmerCountsAndNormalizeValue;
 use crate::reindeer2::query::{
-    format::{count_to_string_witout_star_maybe_normalized, get_full_header},
     ApproxAbundance,
+    format::{count_to_string_witout_star_maybe_normalized, get_full_header},
 };
 
 use super::compute_median;
 
-fn get_non_zero_value(approx_abundance: &ApproxAbundance) -> Option<u16> {
-    if let Some(value) = approx_abundance.to_value() {
-        if value > 0 {
-            return Some(value);
-        }
+const fn get_non_zero_value(approx_abundance: &ApproxAbundance) -> Option<u16> {
+    if let Some(value) = approx_abundance.to_value()
+        && value > 0
+    {
+        return Some(value);
     }
     None
 }
 
-fn is_zero(approx_abundance: &ApproxAbundance) -> bool {
+const fn is_zero(approx_abundance: &ApproxAbundance) -> bool {
     if let Some(value) = approx_abundance.to_value() {
         value == 0
     } else {

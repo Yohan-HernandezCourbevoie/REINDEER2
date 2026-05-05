@@ -20,10 +20,10 @@ pub fn get_min_number_of_files<T>(
         Some(requested_number_of_files) => {
             if requested_number_of_files < number_of_files {
                 let msg = format!(
-                "The requested number of file was {}, but there are {} files to index. Continuing with space for exactly {} files. \
+                    "The requested number of file was {}, but there are {} files to index. Continuing with space for exactly {} files. \
                 If you want to be able to add more datasets, increase the number of requested files.",
-                requested_number_of_files, number_of_files, number_of_files
-            );
+                    requested_number_of_files, number_of_files, number_of_files
+                );
                 log::warn!("{msg}");
                 println!("{msg}");
                 number_of_files

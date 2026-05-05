@@ -1,10 +1,12 @@
 mod dense_index;
-mod filter;
 mod index;
 mod merge;
 mod minimizer_iter;
 mod query;
+mod sort_file_of_file;
+mod storage;
 mod test_utils;
+
 use bio::io::fasta;
 use flate2::read::GzDecoder;
 use itertools::Itertools;
@@ -16,9 +18,10 @@ use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
 use std::num::NonZero;
 use std::panic;
 use std::path::Path;
-use std::sync::{atomic, Arc, Mutex};
+use std::sync::{Arc, Mutex, atomic};
 
 pub use merge::merge_multiple_indexes;
+pub use sort_file_of_file::sort_paths_by_file_size;
 
 #[cfg(any(debug_assertions, test))]
 use thousands::Separable;
@@ -26,9 +29,9 @@ use thousands::Separable;
 use zstd::stream::decode_all;
 
 use crate::reindeer2::dense_index::DenseIndex;
-use crate::reindeer2::filter::Filters;
 use crate::reindeer2::minimizer_iter::{KmerSampler, MinimizerSampler, NoSampler, Sampler};
-use crate::reindeer2::query::{fimpera, load_kmer_counts_vector, ApproxAbundance};
+use crate::reindeer2::query::{ApproxAbundance, fimpera, load_kmer_counts_vector};
+use crate::reindeer2::storage::filters::Filters;
 
 const NB_FILE_IN_AN_INDEX: usize = 1024;
 
@@ -223,7 +226,7 @@ pub struct Reindeer2 {
 
 /// Declares a variable. The variable is declared as mut iif `#[cfg(any(debug_assertions, test))]`.
 macro_rules! mut_if_debug {
-    ($name:ident = $val:expr) => {
+    ($name:ident = $val:expr_2021) => {
         #[cfg(any(debug_assertions, test))]
         let mut $name = $val;
 
@@ -331,7 +334,9 @@ impl Reindeer2 {
     /// Build the index by indexing the files in `file_paths` using the parameters passed during the construction of the struct.
     pub fn build(
         &mut self,
-        file_paths: Vec<String>,
+        file_of_file_name: &str,
+        mut file_paths: Vec<String>,
+        sort_files_by_size: bool,
         chunks_size: usize,
         threshold: usize,
         allow_count_right_after_angle_bracket: bool,
@@ -347,6 +352,15 @@ impl Reindeer2 {
 
         #[cfg(any(debug_assertions, test))]
         let mut atomic_sparse_fp_seen = atomic::AtomicU64::new(0);
+
+        // TODO better error handling
+        let (_, dir_path) = create_dir_and_files(
+            parameters.partition_number,
+            &self.index_dir,
+            file_of_file_name,
+            &mut file_paths,
+            sort_files_by_size,
+        )?;
 
         let kmer_counts_vector: Arc<Mutex<Vec<usize>>> =
             Arc::new(Mutex::new(vec![0; parameters.nb_color]));
@@ -364,8 +378,6 @@ impl Reindeer2 {
         log::debug!("In debug mode... the tool may take (much) longer than usual.");
 
         log::info!("Initializing Bloom filter slices...");
-
-        let (_, dir_path) = create_dir_and_files(parameters.partition_number, &self.index_dir)?;
 
         // Shared data structures protected by Mutex for safe parallel access
         let maybe_dense_indexes: Option<Arc<DenseIndex>> = if parameters.dense_option {
@@ -582,9 +594,10 @@ impl Reindeer2 {
                 &dir_path, // output
                 partitioned_bf_size,
                 parameters.abundance_number.get(),
-                color_chunks,
+                &color_chunks,
                 parameters.partition_number,
             )?;
+            merge::remove_merged_partitions(&dir_path, &color_chunks, parameters.partition_number)?;
         }
 
         // write metadata info to disk
@@ -734,6 +747,39 @@ impl Reindeer2 {
 
         fimpera(smer_res, parameters.findere_z)
     }
+
+    pub fn rename(&mut self, old_name: &str, new_name: String) -> io::Result<ReplaceOutcome> {
+        let outcome =
+            replace_first_if_not_already_in(&mut self.indexed_file_names, old_name, new_name);
+        self.save_to_disk()?;
+        Ok(outcome)
+    }
+}
+
+#[derive(Debug, PartialEq)]
+pub enum ReplaceOutcome {
+    NotFound,
+    WouldAppearMoreThanOnce,
+    Replaced,
+}
+
+fn replace_first_if_not_already_in(
+    vec: &mut [String],
+    target: &str,
+    replacement: String,
+) -> ReplaceOutcome {
+    // do not replace if an occurence is already here (would create a duplicate)
+    if vec.iter().position(|s| s == &replacement).is_some() {
+        return ReplaceOutcome::WouldAppearMoreThanOnce;
+    }
+
+    // replace in case of a match
+    if let Some(pos) = vec.iter().position(|s| s == target) {
+        vec[pos] = replacement;
+        return ReplaceOutcome::Replaced;
+    }
+
+    ReplaceOutcome::NotFound
 }
 
 fn get_file_names(file_paths: &[String]) -> Vec<String> {
@@ -1087,9 +1133,13 @@ const fn compute_base_position(
 
 // --- WRITE INDEX ON DISK ---
 
+// TODO error handling
 fn create_dir_and_files(
     num_partition: usize,
     output_dir: &str,
+    file_of_file_name: &str,
+    files: &mut Vec<String>,
+    sort_files_by_size: bool,
 ) -> io::Result<(Vec<String>, String)> {
     log::info!("Writing partitioned files in directory: {}", output_dir);
     let output_path = Path::new(output_dir);
@@ -1097,9 +1147,25 @@ fn create_dir_and_files(
         true => std::env::current_dir()?.join(output_path),
         false => output_path.to_path_buf(),
     };
+
+    // TODO TOCTOU bug
     if !(partition_dir.try_exists()?) {
         fs::create_dir_all(&partition_dir)?;
     }
+
+    if sort_files_by_size {
+        sort_paths_by_file_size(files);
+    }
+
+    // keep a copy of the file of file
+    let fof_path = output_path.join(file_of_file_name);
+    let file = fs::File::create(fof_path)?;
+    let mut writer = BufWriter::new(file);
+    for file in files {
+        writeln!(writer, "{file}")?;
+    }
+    writer.flush()?;
+
     let file_paths = Vec::with_capacity(num_partition);
     let partition_dir_string = partition_dir.to_string_lossy().into_owned();
     Ok((file_paths, partition_dir_string))
@@ -1303,10 +1369,8 @@ fn get_first_header_type(
     // if we are allowed to search for a header in the id of a record
     // (an id being the part right after the angle bracket of a record)
     // we try search there first
-    if allow_count_right_after_angle_bracket {
-        if let Ok(ht) = determine_header_type(record.id()) {
-            return Some((ht, true));
-        }
+    if allow_count_right_after_angle_bracket && let Ok(ht) = determine_header_type(record.id()) {
+        return Some((ht, true));
     }
 
     // no match in the id, or we were not allowed to search there
@@ -1784,12 +1848,20 @@ mod tests {
         chunks_size: usize,
         threshold: usize,
         file_paths: Vec<String>,
+        sort_files_by_size: bool,
         query_file_id: usize,
         test_dir: impl Into<String>,
     ) -> String {
         let mut index = Reindeer2::new(parameters, test_dir.into());
         let (_file_paths, index_dir) = index
-            .build(file_paths.clone(), chunks_size, threshold, false)
+            .build(
+                "fof",
+                file_paths.clone(),
+                sort_files_by_size,
+                chunks_size,
+                threshold,
+                false,
+            )
             .expect("Failed to build index");
 
         let query_results_path = format!("{}/query_results.csv", index_dir);
@@ -1826,6 +1898,7 @@ mod tests {
     #[apply(findere_fixture)]
     fn test_build_and_query_index_single_sparse(
         #[case] z: usize,
+        #[values(true, false)] sort_files_by_size: bool,
         random_directory: AutoRemoveDirectory,
     ) {
         let test_dir = random_directory.filename().to_str().unwrap();
@@ -1869,7 +1942,14 @@ mod tests {
 
         let mut index = Reindeer2::new(parameters, String::from(test_dir));
         let (_file_paths, index_dir) = index
-            .build(vec![file1_path.clone()], chunks_size, threshold, false)
+            .build(
+                "fof",
+                vec![file1_path.clone()],
+                sort_files_by_size,
+                chunks_size,
+                threshold,
+                false,
+            )
             .expect("Failed to build index");
 
         let query_results_path = format!("{}/query_results.csv", index_dir);
@@ -1902,6 +1982,7 @@ mod tests {
     #[apply(findere_fixture)]
     fn test_build_and_query_index_single_dense(
         #[case] z: usize,
+        #[values(true, false)] sort_files_by_size: bool,
         random_directory: AutoRemoveDirectory,
     ) {
         let test_dir = random_directory.filename().to_str().unwrap();
@@ -1948,6 +2029,7 @@ mod tests {
             chunks_size,
             threshold,
             vec![file1_path],
+            sort_files_by_size,
             0,
             test_dir,
         );
@@ -1966,7 +2048,11 @@ mod tests {
     }
 
     #[apply(findere_fixture)]
-    fn test_build_and_query_index_sparse(#[case] z: usize, random_directory: AutoRemoveDirectory) {
+    fn test_build_and_query_index_sparse(
+        #[case] z: usize,
+        #[values(true, false)] sort_files_by_size: bool,
+        random_directory: AutoRemoveDirectory,
+    ) {
         let test_dir = random_directory.filename().to_str().unwrap();
         fs::create_dir_all(test_dir).expect("Failed to create test directory");
 
@@ -2021,6 +2107,7 @@ mod tests {
             chunks_size,
             threshold,
             vec![file1_path, file2_path],
+            sort_files_by_size,
             0,
             test_dir,
         );
@@ -2038,7 +2125,11 @@ mod tests {
     }
 
     #[apply(findere_fixture)]
-    fn test_build_and_query_index_dense(#[case] z: usize, random_directory: AutoRemoveDirectory) {
+    fn test_build_and_query_index_dense(
+        #[case] z: usize,
+        #[values(true, false)] sort_files_by_size: bool,
+        random_directory: AutoRemoveDirectory,
+    ) {
         let test_dir = random_directory.filename().to_str().unwrap();
         fs::create_dir_all(test_dir).expect("Failed to create test directory");
 
@@ -2093,6 +2184,7 @@ mod tests {
             chunks_size,
             threshold,
             vec![file1_path, file2_path],
+            sort_files_by_size,
             0,
             test_dir,
         );
@@ -2114,6 +2206,7 @@ mod tests {
     #[apply(findere_fixture)]
     fn test_build_and_query_index_longseq_simple_sparse(
         #[case] z: usize,
+        #[values(true, false)] sort_files_by_size: bool,
         random_directory: AutoRemoveDirectory,
     ) {
         let test_dir = random_directory.filename().to_str().unwrap();
@@ -2167,6 +2260,7 @@ mod tests {
             chunks_size,
             threshold,
             vec![file1_path, file2_path],
+            sort_files_by_size,
             1,
             test_dir,
         );
@@ -2184,6 +2278,7 @@ mod tests {
     #[apply(findere_fixture)]
     fn test_build_and_query_index_longseq_simple_dense(
         #[case] z: usize,
+        #[values(true, false)] sort_files_by_size: bool,
         random_directory: AutoRemoveDirectory,
     ) {
         let test_dir = random_directory.filename().to_str().unwrap();
@@ -2237,6 +2332,7 @@ mod tests {
             chunks_size,
             threshold,
             vec![file1_path, file2_path],
+            sort_files_by_size,
             1,
             test_dir,
         );
@@ -2252,7 +2348,11 @@ mod tests {
     }
 
     #[apply(findere_fixture)]
-    fn test_build_and_query_index2_sparse(#[case] z: usize, random_directory: AutoRemoveDirectory) {
+    fn test_build_and_query_index2_sparse(
+        #[case] z: usize,
+        #[values(true, false)] sort_files_by_size: bool,
+        random_directory: AutoRemoveDirectory,
+    ) {
         use std::io::Write;
 
         let test_dir = random_directory.filename().to_str().unwrap();
@@ -2309,6 +2409,7 @@ mod tests {
             chunks_size,
             threshold,
             vec![file1_path, file2_path],
+            sort_files_by_size,
             1,
             test_dir,
         );
@@ -2326,7 +2427,11 @@ mod tests {
     }
 
     #[apply(findere_fixture)]
-    fn test_build_and_query_index2_dense(#[case] z: usize, random_directory: AutoRemoveDirectory) {
+    fn test_build_and_query_index2_dense(
+        #[case] z: usize,
+        #[values(true, false)] sort_files_by_size: bool,
+        random_directory: AutoRemoveDirectory,
+    ) {
         use std::io::Write;
 
         let test_dir = random_directory.filename().to_str().unwrap();
@@ -2383,6 +2488,7 @@ mod tests {
             chunks_size,
             threshold,
             vec![file1_path, file2_path],
+            sort_files_by_size,
             1,
             test_dir,
         );
@@ -2402,6 +2508,7 @@ mod tests {
     #[apply(findere_fixture)]
     fn test_build_and_query_index_sharedk_sparse(
         #[case] z: usize,
+        #[values(true, false)] sort_files_by_size: bool,
         random_directory: AutoRemoveDirectory,
     ) {
         let test_dir = random_directory.filename().to_str().unwrap();
@@ -2459,6 +2566,7 @@ mod tests {
             chunks_size,
             threshold,
             vec![file1_path, file2_path],
+            sort_files_by_size,
             0,
             test_dir,
         );
@@ -2480,6 +2588,7 @@ mod tests {
     #[apply(findere_fixture)]
     fn test_build_and_query_index_sharedk_dense(
         #[case] z: usize,
+        #[values(true, false)] sort_files_by_size: bool,
         random_directory: AutoRemoveDirectory,
     ) {
         let test_dir = random_directory.filename().to_str().unwrap();
@@ -2537,6 +2646,7 @@ mod tests {
             chunks_size,
             threshold,
             vec![file1_path, file2_path],
+            sort_files_by_size,
             0,
             test_dir,
         );
@@ -2558,6 +2668,7 @@ mod tests {
     #[apply(findere_fixture)]
     fn test_build_and_query_index_sharedk_sparse_smallchunks(
         #[case] z: usize,
+        #[values(true, false)] sort_files_by_size: bool,
         random_directory: AutoRemoveDirectory,
     ) {
         let test_dir = random_directory.filename().to_str().unwrap();
@@ -2615,6 +2726,7 @@ mod tests {
             chunks_size,
             threshold,
             vec![file1_path, file2_path],
+            sort_files_by_size,
             0,
             test_dir,
         );
@@ -2636,6 +2748,7 @@ mod tests {
     #[apply(findere_fixture)]
     fn test_build_and_query_index_sharedk_dense_smallchunks(
         #[case] z: usize,
+        #[values(true, false)] sort_files_by_size: bool,
         random_directory: AutoRemoveDirectory,
     ) {
         let test_dir = random_directory.filename().to_str().unwrap();
@@ -2693,6 +2806,7 @@ mod tests {
             chunks_size,
             threshold,
             vec![file1_path, file2_path],
+            sort_files_by_size,
             0,
             test_dir,
         );
@@ -2714,6 +2828,7 @@ mod tests {
     #[apply(findere_fixture)]
     fn test_build_and_query_index_long_sparse(
         #[case] z: usize,
+        #[values(true, false)] sort_files_by_size: bool,
         random_directory: AutoRemoveDirectory,
     ) {
         let test_dir = random_directory.filename().to_str().unwrap();
@@ -2767,6 +2882,7 @@ mod tests {
             chunks_size,
             threshold,
             vec![file1_path, file2_path],
+            sort_files_by_size,
             0,
             test_dir,
         );
@@ -2786,6 +2902,7 @@ mod tests {
     #[apply(findere_fixture)]
     fn test_build_and_query_index_long_dense(
         #[case] z: usize,
+        #[values(true, false)] sort_files_by_size: bool,
         random_directory: AutoRemoveDirectory,
     ) {
         let test_dir = random_directory.filename().to_str().unwrap();
@@ -2839,6 +2956,7 @@ mod tests {
             chunks_size,
             threshold,
             vec![file1_path, file2_path],
+            sort_files_by_size,
             0,
             test_dir,
         );
@@ -3079,6 +3197,7 @@ mod tests {
     #[apply(findere_fixture)]
     fn test_build_and_query_index_with_chunks_and_merge(
         #[case] z: usize,
+        #[values(true, false)] sort_files_by_size: bool,
         random_directory: AutoRemoveDirectory,
     ) {
         let test_dir = random_directory.filename().to_str().unwrap();
@@ -3132,8 +3251,15 @@ mod tests {
         let chunks_size = 128;
         let threshold = parameters.nb_color;
 
-        let query_results_path =
-            create_build_query(parameters, chunks_size, threshold, filepaths, 0, test_dir);
+        let query_results_path = create_build_query(
+            parameters,
+            chunks_size,
+            threshold,
+            filepaths,
+            sort_files_by_size,
+            0,
+            test_dir,
+        );
 
         let mut results = load_query_result_csv(query_results_path);
         let mut expected_results = [(">seq1 ka:f:30".to_string(), String::from("file1Q"), 29)];
@@ -3202,6 +3328,7 @@ mod tests {
     #[apply(findere_fixture)]
     fn test_build_and_query_index_with_chunks_and_merge2(
         #[case] z: usize,
+        #[values(true, false)] sort_files_by_size: bool,
         random_directory: AutoRemoveDirectory,
     ) {
         let test_dir = random_directory.filename().to_str().unwrap();
@@ -3273,8 +3400,15 @@ mod tests {
             file5_path.clone(),
             file6_path.clone(),
         ];
-        let query_results_path =
-            create_build_query(parameters, chunks_size, threshold, file_paths, 5, test_dir);
+        let query_results_path = create_build_query(
+            parameters,
+            chunks_size,
+            threshold,
+            file_paths,
+            sort_files_by_size,
+            5,
+            test_dir,
+        );
 
         let mut results = load_query_result_csv(query_results_path);
         let mut expected_results = [
@@ -3292,6 +3426,7 @@ mod tests {
     #[apply(findere_fixture)]
     fn test_build_and_query_index_with_chunks_and_merge3(
         #[case] z: usize,
+        #[values(true, false)] sort_files_by_size: bool,
         random_directory: AutoRemoveDirectory,
     ) {
         let test_dir = random_directory.filename().to_str().unwrap();
@@ -3381,8 +3516,15 @@ mod tests {
             file8_path.clone(),
             file9_path.clone(),
         ];
-        let query_results_path =
-            create_build_query(parameters, chunks_size, threshold, file_paths, 4, test_dir);
+        let query_results_path = create_build_query(
+            parameters,
+            chunks_size,
+            threshold,
+            file_paths,
+            sort_files_by_size,
+            4,
+            test_dir,
+        );
 
         let mut results = load_query_result_csv(query_results_path);
         let mut expected_results = [(
@@ -3401,6 +3543,7 @@ mod tests {
     #[apply(findere_fixture)]
     fn test_build_and_query_index_with_chunks_and_merge4(
         #[case] z: usize,
+        #[values(true, false)] sort_files_by_size: bool,
         random_directory: AutoRemoveDirectory,
     ) {
         let test_dir = random_directory.filename().to_str().unwrap();
@@ -3479,8 +3622,15 @@ mod tests {
             file4_path.clone(),
             file5_path.clone(),
         ];
-        let query_results_path =
-            create_build_query(parameters, chunks_size, threshold, file_paths, 4, test_dir);
+        let query_results_path = create_build_query(
+            parameters,
+            chunks_size,
+            threshold,
+            file_paths,
+            sort_files_by_size,
+            4,
+            test_dir,
+        );
 
         let mut results = load_query_result_csv(query_results_path);
         let mut expected_results = [
@@ -3503,6 +3653,7 @@ mod tests {
     #[apply(findere_fixture)]
     fn test_build_and_query_index_with_chunks_and_merge_longseq(
         #[case] z: usize,
+        #[values(true, false)] sort_files_by_size: bool,
         random_directory: AutoRemoveDirectory,
     ) {
         let test_dir = random_directory.filename().to_str().unwrap();
@@ -3596,14 +3747,35 @@ mod tests {
             file8_path.clone(),
             file9_path.clone(),
         ];
-        let query_results_path =
-            create_build_query(parameters, chunks_size, threshold, file_paths, 1, test_dir);
+        let query_results_path = create_build_query(
+            parameters,
+            chunks_size,
+            threshold,
+            file_paths,
+            sort_files_by_size,
+            1,
+            test_dir,
+        );
 
         let results = load_query_result_csv(query_results_path);
         let expected_results = [
             //("seq5".to_string(), 4, 57549),
             (">seq2 ka:f:12".to_string(), String::from("file2Q"), 12),
         ];
+
+        let nb_files = fs::read_dir(test_dir)
+            .expect("Failed to read directory")
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.path().is_file())
+            .count();
+        // NB_FILE_IN_AN_INDEX partitions
+        // 9 fa files
+        // index_info
+        // kmer_counts_per_color
+        // fof.txt
+        // query_results
+        // fof
+        assert_eq!(nb_files, NB_FILE_IN_AN_INDEX + 9 + 1 + 1 + 1 + 1 + 1);
 
         for (expected, actual) in expected_results.iter().zip(results.iter()) {
             assert_eq!(
@@ -3615,7 +3787,11 @@ mod tests {
     }
 
     #[apply(findere_fixture)]
-    fn test_color_graph(#[case] z: usize, random_directory: AutoRemoveDirectory) {
+    fn test_color_graph(
+        #[case] z: usize,
+        #[values(true, false)] sort_files_by_size: bool,
+        random_directory: AutoRemoveDirectory,
+    ) {
         let test_dir = random_directory.filename().to_str().unwrap();
         fs::create_dir_all(test_dir).expect("Failed to create test directory");
 
@@ -3654,7 +3830,14 @@ mod tests {
         let mut index = Reindeer2::new(parameters, String::from(test_dir));
 
         let (_file_paths, index_dir) = index
-            .build(vec![fasta_path.clone()], chunks_size, threshold, false)
+            .build(
+                "fof",
+                vec![fasta_path.clone()],
+                sort_files_by_size,
+                chunks_size,
+                threshold,
+                false,
+            )
             .expect("Failed to build index");
 
         let index_from_disk =
@@ -3706,7 +3889,11 @@ mod tests {
     }
 
     #[apply(findere_fixture)]
-    fn test_output_rd1(#[case] z: usize, random_directory: AutoRemoveDirectory) {
+    fn test_output_rd1(
+        #[case] z: usize,
+        #[values(true, false)] sort_files_by_size: bool,
+        random_directory: AutoRemoveDirectory,
+    ) {
         let test_dir = random_directory.filename().to_str().unwrap();
         fs::create_dir_all(test_dir).expect("Failed to create test directory");
 
@@ -3734,7 +3921,14 @@ mod tests {
 
         let mut index = Reindeer2::new(parameters, String::from(test_dir));
         let (_, index_dir) = index
-            .build(file_paths.clone(), chunks_size, threshold, false)
+            .build(
+                "fof",
+                file_paths.clone(),
+                sort_files_by_size,
+                chunks_size,
+                threshold,
+                false,
+            )
             .expect("Failed to build index");
 
         let query_results_path = format!("{}/query_results.csv", index_dir);
@@ -3770,7 +3964,98 @@ shared_revcomp_with_other_test_file\t0-19:3\t0-19:10",
     }
 
     #[apply(findere_fixture)]
-    fn test_output_duplication(#[case] z: usize, random_directory: AutoRemoveDirectory) {
+    fn test_output_rd1_files_not_sorted_in_input(
+        #[case] z: usize,
+        #[values(true, false)] sort_files_by_size: bool,
+        random_directory: AutoRemoveDirectory,
+    ) {
+        let test_dir = random_directory.filename().to_str().unwrap();
+        fs::create_dir_all(test_dir).expect("Failed to create test directory");
+
+        let file1_path = String::from("tests/unit_tests_data/random_seq_with_revcomp.fa");
+        let file2_path = String::from("tests/unit_tests_data/random_seq.fa");
+        let file_paths = vec![file2_path, file1_path];
+
+        let parameters = Parameters {
+            k: 31,
+            m: 15,
+            bf_size: 1024 * 1024,
+            partition_number: 4,
+            nb_color: 2,
+            abundance_number: NonZero::new(256).unwrap(),
+            abundance_min: 0,
+            abundance_max: NonZero::new(65535).unwrap(),
+            dense_option: false,
+            canonical: true,
+            sampling_strategy: None,
+            findere_z: z,
+            capacity: wrong_capacity(),
+        };
+        let chunks_size = 128;
+        let threshold = parameters.nb_color;
+
+        let mut index = Reindeer2::new(parameters, String::from(test_dir));
+        let (_, index_dir) = index
+            .build(
+                "fof",
+                file_paths.clone(),
+                sort_files_by_size,
+                chunks_size,
+                threshold,
+                false,
+            )
+            .expect("Failed to build index");
+
+        let query_results_path = format!("{}/query_results.csv", index_dir);
+
+        let index_from_disk = Reindeer2::load_from_disk(&index_dir).unwrap();
+        index_from_disk
+            .query(
+                &file_paths[0],
+                &index_dir,
+                &query_results_path,
+                OutputFormat::AbundanceMatrix {
+                    format: MatrixFormat::Raw(None),
+                },
+                0.5,
+            )
+            .expect("Failed to query sequences");
+
+        // Validate the results written to the query result file
+        let actual = fs::read_to_string(&query_results_path).unwrap();
+        let actual = actual.trim();
+
+        let expected = if sort_files_by_size {
+            String::from(
+                "query\trandom_seq_with_revcomp\trandom_seq
+header_0\t0-69:*\t0-69:1
+header_1\t0-69:*\t0-69:1
+header_2\t0-69:*\t0-69:1
+header_3\t0-69:*\t0-69:1
+header_4\t0-69:*\t0-69:1
+shared_revcomp_with_other_test_file\t0-19:3\t0-19:10",
+            )
+        } else {
+            String::from(
+                "query\trandom_seq\trandom_seq_with_revcomp
+header_0\t0-69:1\t0-69:*
+header_1\t0-69:1\t0-69:*
+header_2\t0-69:1\t0-69:*
+header_3\t0-69:1\t0-69:*
+header_4\t0-69:1\t0-69:*
+shared_revcomp_with_other_test_file\t0-19:10\t0-19:3",
+            )
+        };
+
+        assert_equal_sorted_content_with_equal_header(&expected, actual);
+    }
+
+    #[apply(findere_fixture)]
+    fn test_output_duplication(
+        #[case] z: usize,
+        #[values(true, false)] sort_files_by_size: bool,
+        random_directory: AutoRemoveDirectory,
+    ) {
         let test_dir = random_directory.filename().to_str().unwrap();
         fs::create_dir_all(test_dir).expect("Failed to create test directory");
 
@@ -3798,7 +4083,14 @@ shared_revcomp_with_other_test_file\t0-19:3\t0-19:10",
 
         let mut index = Reindeer2::new(parameters, String::from(test_dir));
         let (_, index_dir) = index
-            .build(file_paths.clone(), chunks_size, threshold, false)
+            .build(
+                "fof",
+                file_paths.clone(),
+                sort_files_by_size,
+                chunks_size,
+                threshold,
+                false,
+            )
             .expect("Failed to build index");
 
         let query_results_path = format!("{}/query_results.csv", index_dir);
@@ -3831,7 +4123,11 @@ header_0\t0-69:*\t0-69:1",
     }
 
     #[apply(findere_fixture)]
-    fn test_output_rd1_non_canonical(#[case] z: usize, random_directory: AutoRemoveDirectory) {
+    fn test_output_rd1_non_canonical(
+        #[case] z: usize,
+        #[values(true, false)] sort_files_by_size: bool,
+        random_directory: AutoRemoveDirectory,
+    ) {
         let test_dir = random_directory.filename().to_str().unwrap();
         fs::create_dir_all(test_dir).expect("Failed to create test directory");
 
@@ -3859,7 +4155,14 @@ header_0\t0-69:*\t0-69:1",
 
         let mut index = Reindeer2::new(parameters, String::from(test_dir));
         let (_, index_dir) = index
-            .build(file_paths.clone(), chunks_size, threshold, false)
+            .build(
+                "fof",
+                file_paths.clone(),
+                sort_files_by_size,
+                chunks_size,
+                threshold,
+                false,
+            )
             .expect("Failed to build index");
 
         let query_results_path = format!("{}/query_results.csv", index_dir);
@@ -3911,6 +4214,7 @@ shared_revcomp_with_other_test_file\t0-19:*\t0-19:10",
     #[apply(findere_fixture)]
     fn test_merge_multiple_indexes(
         #[case] z: usize,
+        #[values(true, false)] sort_files_by_size: bool,
         random_directory: AutoRemoveDirectory,
     ) -> io::Result<()> {
         let test_dir = random_directory.filename().to_str().unwrap();
@@ -3974,7 +4278,9 @@ shared_revcomp_with_other_test_file\t0-19:*\t0-19:10",
         let index1_file_paths = vec![file1_path.clone()];
         let mut index = Reindeer2::new(parameters.clone(), String::from(&index1_index_dir));
         index.build(
+            "fof",
             index1_file_paths,
+            sort_files_by_size,
             chunks_size,
             tolerated_number_of_zeros,
             false,
@@ -3985,7 +4291,9 @@ shared_revcomp_with_other_test_file\t0-19:*\t0-19:10",
         let index2_file_paths = vec![file2_path.clone(), file3_path.clone()];
         let mut index = Reindeer2::new(parameters.clone(), String::from(&index2_index_dir));
         index.build(
+            "fof",
             index2_file_paths,
+            sort_files_by_size,
             chunks_size,
             tolerated_number_of_zeros,
             false,
@@ -4033,5 +4341,49 @@ shared_revcomp_with_other_test_file\t0-19:*\t0-19:10",
         assert_eq!(total_capacity, parameters.partition_number as u64);
 
         Ok(())
+    }
+
+    #[test]
+    fn test_replace_first_if_not_already_in_would_appear_more_than_once() {
+        let mut input = [
+            String::from("a"),
+            String::from("b"),
+            String::from("c"),
+            String::from("d"),
+        ];
+        let original = input.clone();
+        let outcome = replace_first_if_not_already_in(&mut input, "a", String::from("b"));
+        assert_eq!(outcome, ReplaceOutcome::WouldAppearMoreThanOnce);
+        assert_eq!(original, input);
+    }
+
+    #[test]
+    fn test_replace_first_if_not_already_in_not_found() {
+        let mut input = [
+            String::from("a"),
+            String::from("b"),
+            String::from("c"),
+            String::from("d"),
+        ];
+        let original = input.clone();
+        let outcome = replace_first_if_not_already_in(&mut input, "h", String::from("e"));
+        assert_eq!(outcome, ReplaceOutcome::NotFound);
+        assert_eq!(original, input);
+    }
+
+    #[test]
+    fn test_replace_first_if_not_already_in_replace() {
+        let mut input = [
+            String::from("a"),
+            String::from("b"),
+            String::from("c"),
+            String::from("d"),
+        ];
+        let mut expected = input.clone();
+        expected[1] = String::from("e");
+
+        let outcome = replace_first_if_not_already_in(&mut input, "b", String::from("e"));
+        assert_eq!(outcome, ReplaceOutcome::Replaced);
+        assert_eq!(expected, input);
     }
 }

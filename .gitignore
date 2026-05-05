@@ -1,5 +1,3 @@
 target/
 
-PACAS_index_*/
-output/
-files_to_index/
+ignored/
