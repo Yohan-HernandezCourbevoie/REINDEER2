@@ -1,0 +1,4 @@
+query	datasetB	datasetC
+all_present_with_variations	0-19:48,20-69:99,70-79:*	0-19:48,20-69:99,70-79:10
+single_present_kmer	0:48	0:48
+present_kmers_then_nothing	0-7:48,8-25:*	0-7:48,8-25:*
