@@ -32,21 +32,21 @@ rm -r $QUERY_OUTPUT
 
 # Compare
 if [[ "$RD2OUTPUT" == *"$EXPECTED_OUTPUT"* ]]; then
-    exit 0
+    :
 else
     echo "Test failed"
     exit 1
 fi
 
 if [ $is_same_before_rename -eq 0 ]; then
-    exit 0
+    :
 else
     echo "Test failed"
     exit 1
 fi
 
 if [ $is_same_after_rename -eq 0 ]; then
-    exit 0
+    :
 else
     echo "Test failed"
     exit 1
