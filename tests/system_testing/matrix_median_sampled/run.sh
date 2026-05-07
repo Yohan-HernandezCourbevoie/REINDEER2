@@ -24,11 +24,11 @@ for sampling in 0 1 2 3 4; do
     expected_var="EXPECTED_QUERY_OUTPUT_${sampling}"
     expected="${!expected_var}"
 
-    RUST_LOG=warn "$reindeer2" index --input "$INPUT_FOF" -k 31 --kmer-sampling "$sampling" -o integration_test_index --no-sort-files-by-size
-    RUST_LOG=warn "$reindeer2" query --fasta "$QUERY_INPUT" --index ./integration_test_index --output-format matrix-median --output "$QUERY_OUTPUT"
+    RUST_LOG=warn $reindeer2 index --input $INPUT_FOF -k 31 --kmer-sampling $sampling -o integration_test_index --no-sort-files-by-size
+    RUST_LOG=warn $reindeer2 query --fasta $QUERY_INPUT --index ./integration_test_index --output-format matrix-median --output $QUERY_OUTPUT -C 0
 
-    python3 files_equal.py "$QUERY_OUTPUT" "$expected"
+    python3 files_equal.py $QUERY_OUTPUT $expected
 
     rm -r ./integration_test_index
-    rm "$QUERY_OUTPUT"
+    rm $QUERY_OUTPUT
 done

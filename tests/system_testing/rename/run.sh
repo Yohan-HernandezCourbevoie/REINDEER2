@@ -28,6 +28,7 @@ is_same_query_output=$?
 rm -r ./integration_test_index 
 rm -r output_before_rename.txt
 rm -r output_after_rename.txt
+rm -r $QUERY_OUTPUT
 
 # Compare
 if [[ "$RD2OUTPUT" == *"$EXPECTED_OUTPUT"* ]]; then
