@@ -51,18 +51,19 @@ pub fn write_header_matrix(
 fn write_matrix_content<F, W, R>(
     sequence_results: &[Vec<Vec<ApproxAbundance>>],
     batch: &[fasta::Record],
+    coverage: f32,
     cell_computation: F,
     writer: &mut W,
 ) -> io::Result<()>
 where
-    F: Fn(&[ApproxAbundance]) -> R,
+    F: Fn(&[ApproxAbundance], f32) -> R,
     W: Write,
     R: Display,
 {
     for (color_vectors, record) in sequence_results.iter().zip(batch) {
         write!(writer, "{}", record.id())?;
         for abund_values in color_vectors {
-            let value = cell_computation(abund_values);
+            let value = cell_computation(abund_values, coverage);
             write!(writer, "{SEPARATOR}{value}")?;
         }
         writeln!(writer)?;
@@ -74,19 +75,20 @@ where
 fn write_normalized_matrix_content<F, W, R>(
     sequence_results: &[Vec<Vec<ApproxAbundance>>],
     batch: &[fasta::Record],
+    coverage: f32,
     normalize: &KmerCountsAndNormalizeValue,
     cell_computation: F,
     writer: &mut W,
 ) -> io::Result<()>
 where
-    F: Fn(&[ApproxAbundance], &KmerCountsAndNormalizeValue, usize) -> R,
+    F: Fn(&[ApproxAbundance], f32, &KmerCountsAndNormalizeValue, usize) -> R,
     W: Write,
     R: Display,
 {
     for (color_vectors, record) in sequence_results.iter().zip(batch) {
         write!(writer, "{}", record.id())?;
         for (color_id, abund_values) in color_vectors.iter().enumerate() {
-            let value = cell_computation(abund_values, normalize, color_id);
+            let value = cell_computation(abund_values, coverage, normalize, color_id);
             write!(writer, "{SEPARATOR}{value}")?;
         }
         writeln!(writer)?;
@@ -98,6 +100,7 @@ where
 pub fn write_abundance_matrix(
     sequence_results: &[Vec<Vec<ApproxAbundance>>],
     batch: &[fasta::Record],
+    coverage: f32,
     format: &EnrichedMatrixFormat,
     writer: &mut impl Write,
 ) -> io::Result<()> {
@@ -107,11 +110,18 @@ pub fn write_abundance_matrix(
             Some(normalize) => write_normalized_matrix_content(
                 sequence_results,
                 batch,
+                coverage,
                 normalize,
                 cell_compute_average_normalized,
                 writer,
             ),
-            None => write_matrix_content(sequence_results, batch, cell_compute_average, writer),
+            None => write_matrix_content(
+                sequence_results,
+                batch,
+                coverage,
+                cell_compute_average,
+                writer,
+            ),
         },
         MatrixFormat::Raw(raw_infos) => {
             match raw_infos {
@@ -119,35 +129,47 @@ pub fn write_abundance_matrix(
                     // Here, we would like to use `cell_compute_breakpoints` as an argument of `write_matrix_content`.
                     // Unfortunately, its signature doesn't match what `write_matrix_content` accepts.
                     // Therefore, we use a lambda that captures `penalty` and ignore the parameters we are not interested in.
-                    let cell_compute = |abund_values: &[ApproxAbundance]| {
-                        cell_compute_breakpoints(abund_values, *penalty)
+                    let cell_compute = |abund_values: &[ApproxAbundance], coverage: f32| {
+                        cell_compute_breakpoints(abund_values, coverage, *penalty)
                     };
                     // we can now pass the lambda to `write_matrix_content`
-                    write_matrix_content(sequence_results, batch, cell_compute, writer)
+                    write_matrix_content(sequence_results, batch, coverage, cell_compute, writer)
                 }
                 Some(BreakpointsXorEnrichedNormalize::Normalize(normalized)) => {
                     write_normalized_matrix_content(
                         sequence_results,
                         batch,
+                        coverage,
                         normalized,
                         cell_compute_reindeer1_normalized,
                         writer,
                     )
                 }
-                None => {
-                    write_matrix_content(sequence_results, batch, cell_compute_reindeer1, writer)
-                }
+                None => write_matrix_content(
+                    sequence_results,
+                    batch,
+                    coverage,
+                    cell_compute_reindeer1,
+                    writer,
+                ),
             }
         }
         MatrixFormat::Median { normalized } => match normalized {
             Some(normalize) => write_normalized_matrix_content(
                 sequence_results,
                 batch,
+                coverage,
                 normalize,
                 cell_compute_median_normalized,
                 writer,
             ),
-            None => write_matrix_content(sequence_results, batch, cell_compute_median, writer),
+            None => write_matrix_content(
+                sequence_results,
+                batch,
+                coverage,
+                cell_compute_median,
+                writer,
+            ),
         },
     }
 }

@@ -133,7 +133,7 @@ pub fn write_kmer_query(
             graph_coloring(sequence_results, batch, normalized, writer)
         }
         EnrichedOutputFormat::AbundanceMatrix { format } => {
-            write_abundance_matrix(sequence_results, batch, format, &mut writer)
+            write_abundance_matrix(sequence_results, batch, coverage, format, &mut writer)
         }
         EnrichedOutputFormat::Median { normalized } => write_median_abundance(
             sequence_results,
