@@ -9,79 +9,116 @@ use crate::reindeer2::query::format::count_to_string_with_star_normalized;
 
 /// Computes a single cell of the matrix when we want the average of elements.
 /// Returns nan if `abund_values` is empty or if it has no valid values.
-pub fn cell_compute_average(abund_values: &[ApproxAbundance]) -> String {
+pub fn cell_compute_average(abund_values: &[ApproxAbundance], coverage: f32) -> String {
     if abund_values.is_empty() {
         return f64::NAN.to_string();
     }
-    let (sum, count) = abund_values
+    let (sum, count, non_zero_count) = abund_values
         .iter()
         .filter_map(|abund_values| abund_values.to_value())
-        .fold((0usize, 0usize), |(s, c), abund_value| {
-            (s + abund_value as usize, c + 1)
+        .fold((0usize, 0usize, 0usize), |(s, c, nzc), abund_value| {
+            let value = abund_value as usize;
+            let nzc_update = if value > 0 { 1 } else { 0 };
+            (s + value, c + 1, nzc + nzc_update)
         });
     if count == 0 {
         return "/".to_string();
     }
-    let average: f64 = sum as f64 / count as f64;
-    average.to_string()
+
+    if non_zero_count as f32 / count as f32 >= coverage {
+        let average: f64 = sum as f64 / count as f64;
+        average.to_string()
+    } else {
+        String::from("*")
+    }
 }
 
 /// Computes a single cell of the matrix when we want the *normalized* average of elements.
 pub fn cell_compute_average_normalized(
     abund_values: &[ApproxAbundance],
+    coverage: f32,
     normalize: &KmerCountsAndNormalizeValue,
     color_id: usize,
 ) -> String {
     if abund_values.is_empty() {
         return f64::NAN.to_string();
     }
-    let (sum, count) = abund_values
+    let (sum, count, non_zero_count) = abund_values
         .iter()
         .filter_map(|abund_values| abund_values.to_value())
-        .fold((0usize, 0usize), |(s, c), abund_value| {
-            (s + abund_value as usize, c + 1)
+        .fold((0usize, 0usize, 0usize), |(s, c, nzc), abund_value| {
+            let value = abund_value as usize;
+            let nzc_update = if value > 0 { 1 } else { 0 };
+            (s + abund_value as usize, c + 1, nzc + nzc_update)
         });
     if count == 0 {
         return "/".to_string();
     }
-    let average: f64 = sum as f64 / count as f64;
-    // TODO discuss if normalizing before or after average
-    let KmerCountsAndNormalizeValue {
-        kmer_counts,
-        normalize_value,
-    } = normalize;
-    (average / kmer_counts[color_id] as f64 * (*normalize_value as f64)).to_string()
+
+    if non_zero_count as f32 / count as f32 >= coverage {
+        let average: f64 = sum as f64 / count as f64;
+        // TODO discuss if normalizing before or after average
+        let KmerCountsAndNormalizeValue {
+            kmer_counts,
+            normalize_value,
+        } = normalize;
+        (average / kmer_counts[color_id] as f64 * (*normalize_value as f64)).to_string()
+    } else {
+        String::from("*")
+    }
 }
 
-/// Computes a single cell of the matrix when we want the median of elements.
-pub fn cell_compute_median(abund_values: &[ApproxAbundance]) -> String {
-    // TODO discuss do we cast in f64, just as when normalizing ?
+fn get_valid_values(abund_values: &[ApproxAbundance]) -> (Vec<u16>, i32) {
+    let mut non_zero_count = 0;
     let valid_values = abund_values
         .iter()
         .filter_map(|value| value.to_value())
+        .inspect(|value| {
+            if *value > 0 {
+                non_zero_count += 1;
+            }
+        })
         .collect_vec();
+    (valid_values, non_zero_count)
+}
+
+/// Computes a single cell of the matrix when we want the median of elements.
+pub fn cell_compute_median(abund_values: &[ApproxAbundance], coverage: f32) -> String {
+    // TODO discuss do we cast in f64, just as when normalizing ?
+    let (valid_values, non_zero_count) = get_valid_values(abund_values);
     if !abund_values.is_empty() && valid_values.is_empty() {
         // we used to have values, but they are all gone due to the filtration :(
         return "/".to_string();
     }
+
+    if (non_zero_count as f32 / valid_values.len() as f32) < coverage {
+        // coverage is too low
+        return String::from("*");
+    }
+
     compute_median(&valid_values).to_string()
 }
 
 /// Computes a single cell of the matrix when we want the *normalized* median of elements.
 pub fn cell_compute_median_normalized(
     abund_values: &[ApproxAbundance],
+    coverage: f32,
     normalize: &KmerCountsAndNormalizeValue,
     color_id: usize,
 ) -> String {
-    let valid_values = abund_values
-        .iter()
-        .filter_map(|value| value.to_value())
-        .collect_vec();
+    let (valid_values, non_zero_count) = get_valid_values(abund_values);
+
     let median = compute_median(&valid_values);
     if !abund_values.is_empty() && valid_values.is_empty() {
         // we used to have values, but they are all gone due to the filtration :(
         return "/".to_string();
     }
+
+    if (non_zero_count as f32 / valid_values.len() as f32) < coverage {
+        // coverage is too low
+        return String::from("*");
+    }
+
     // TODO discuss if normalizing before or after median
     // TODO discuss if we convert to f64 even if no normalization
     let KmerCountsAndNormalizeValue {
@@ -92,11 +129,23 @@ pub fn cell_compute_median_normalized(
 }
 
 /// Computes a single cell of the matrix when we want an output like RD1.
-pub fn cell_compute_reindeer1(abund_values: &[ApproxAbundance]) -> String {
+pub fn cell_compute_reindeer1(abund_values: &[ApproxAbundance], coverage: f32) -> String {
     let mut start = 0;
     let mut current = abund_values[0];
+    let mut non_zero_count = 0;
+    let mut nb_valid_values = 0;
 
-    (1..=abund_values.len())
+    let representation = (1..=abund_values.len())
+        .inspect(|&i| {
+            if i < abund_values.len()
+                && let Some(value) = abund_values[i].to_value()
+            {
+                if value > 0 {
+                    non_zero_count += 1;
+                }
+                nb_valid_values += 1;
+            }
+        })
         .filter_map(|i| {
             if i == abund_values.len() || abund_values[i] != current {
                 // new different value or end of query => we must write
@@ -119,19 +168,41 @@ pub fn cell_compute_reindeer1(abund_values: &[ApproxAbundance]) -> String {
                 None
             }
         })
-        .join(",")
+        .join(",");
+
+    if (non_zero_count as f32 / nb_valid_values as f32) < coverage {
+        // coverage is too low
+        let start = 0;
+        let end = abund_values.len() - 1;
+        return format!("{start}-{end}:*");
+    }
+
+    representation
 }
 
 /// Computes a single cell of the matrix when we want a *normalized* output like RD1.
 pub fn cell_compute_reindeer1_normalized(
     abund_values: &[ApproxAbundance],
+    coverage: f32,
     normalize: &KmerCountsAndNormalizeValue,
     color_id: usize,
 ) -> String {
     let mut start = 0;
     let mut current = abund_values[0];
+    let mut non_zero_count = 0;
+    let mut nb_valid_values = 0;
 
-    (1..=abund_values.len())
+    let representation = (1..=abund_values.len())
+        .inspect(|&i| {
+            if i < abund_values.len()
+                && let Some(value) = abund_values[i].to_value()
+            {
+                if value > 0 {
+                    non_zero_count += 1;
+                }
+                nb_valid_values += 1;
+            }
+        })
         .filter_map(|i| {
             if i == abund_values.len() || abund_values[i] != current {
                 // new different value or end of query => we must write
@@ -154,11 +225,24 @@ pub fn cell_compute_reindeer1_normalized(
                 None
             }
         })
-        .join(",")
+        .join(",");
+
+    if (non_zero_count as f32 / nb_valid_values as f32) < coverage {
+        // coverage is too low
+        let start = 0;
+        let end = abund_values.len() - 1;
+        return format!("{start}-{end}:*");
+    }
+
+    representation
 }
 
 /// Computes a single cell of the matrix when we want to output the breakpoints along the query.
-pub fn cell_compute_breakpoints(abund_values: &[ApproxAbundance], penalty: f64) -> String {
+pub fn cell_compute_breakpoints(
+    abund_values: &[ApproxAbundance],
+    coverage: f32,
+    penalty: f64,
+) -> String {
     // TODO make it impossible to trigger this from the command line
     #[cfg(debug_assertions)]
     {
@@ -168,6 +252,8 @@ pub fn cell_compute_breakpoints(abund_values: &[ApproxAbundance], penalty: f64) 
             "Cannot compute breakpoints if not querying all k-mers. Please disable sampling."
         );
     }
+    let mut non_zero_count = 0;
+
     let abund_values = abund_values
         .iter()
         .copied()
@@ -176,8 +262,19 @@ pub fn cell_compute_breakpoints(abund_values: &[ApproxAbundance], penalty: f64) 
                 x.to_value()
                     .unwrap_or_else(|| panic!("could not compute the value of {:?}", x)),
             )
+        })
+        .inspect(|&value| {
+            if value > 0 {
+                non_zero_count += 1;
+            }
         }) // TODO collect all valid values before
         .collect_vec();
+
+    if (non_zero_count as f32 / abund_values.len() as f32) < coverage {
+        // coverage is too low
+        return String::from("*");
+    }
+
     let breakpoints = pelt(&abund_values, pelt_reindeer2::score, penalty);
     breakpoints.iter().map(usize::to_string).join(",")
 }
@@ -192,14 +289,17 @@ mod tests {
 
     #[test]
     fn test_cell_compute_average() {
-        assert_eq!(cell_compute_average(&[Approx::new(1)]), "1");
+        assert_eq!(cell_compute_average(&[Approx::new(1)], 0.0), "1");
         assert_eq!(
-            cell_compute_average(&[Approx::new(1), Approx::new(2)]),
+            cell_compute_average(&[Approx::new(1), Approx::new(2)], 0.0),
             "1.5"
         );
-        assert_eq!(cell_compute_average(&[Approx::new(1), Approx::new(9)]), "5");
         assert_eq!(
-            cell_compute_average(&(0..100).map(Approx::new).collect_vec()),
+            cell_compute_average(&[Approx::new(1), Approx::new(9)], 0.0),
+            "5"
+        );
+        assert_eq!(
+            cell_compute_average(&(0..100).map(Approx::new).collect_vec(), 0.0),
             "49.5",
         );
     }
@@ -211,16 +311,17 @@ mod tests {
             normalize_value: 100,
         };
         assert_eq!(
-            cell_compute_average_normalized(&[Approx::new(1)], &normalize, 0),
+            cell_compute_average_normalized(&[Approx::new(1)], 0.0, &normalize, 0),
             "10",
         );
         assert_eq!(
-            cell_compute_average_normalized(&[Approx::new(4)], &normalize, 1),
+            cell_compute_average_normalized(&[Approx::new(4)], 0.0, &normalize, 1),
             "80",
         );
         assert_eq!(
             cell_compute_average_normalized(
                 &[Approx::new(1), Approx::new(2), Approx::new(1)],
+                0.0,
                 &normalize,
                 0,
             ),
@@ -230,14 +331,17 @@ mod tests {
 
     #[test]
     fn test_cell_compute_median() {
-        assert_eq!(cell_compute_median(&[Approx::new(1)]), "1");
+        assert_eq!(cell_compute_median(&[Approx::new(1)], 0.0), "1");
         assert_eq!(
-            cell_compute_median(&[Approx::new(1), Approx::new(2)]),
+            cell_compute_median(&[Approx::new(1), Approx::new(2)], 0.0),
             "1.5",
         );
-        assert_eq!(cell_compute_median(&[Approx::new(1), Approx::new(9)]), "5",);
         assert_eq!(
-            cell_compute_median(&(0..100).map(Approx::new).collect_vec()),
+            cell_compute_median(&[Approx::new(1), Approx::new(9)], 0.0),
+            "5",
+        );
+        assert_eq!(
+            cell_compute_median(&(0..100).map(Approx::new).collect_vec(), 0.0),
             "49.5",
         );
     }
@@ -249,19 +353,24 @@ mod tests {
             normalize_value: 100,
         };
         assert_eq!(
-            cell_compute_median_normalized(&[Approx::new(1)], &normalize, 0),
+            cell_compute_median_normalized(&[Approx::new(1)], 0.0, &normalize, 0),
             "10",
         );
         assert_eq!(
-            cell_compute_median_normalized(&[Approx::new(1), Approx::new(2)], &normalize, 1),
+            cell_compute_median_normalized(&[Approx::new(1), Approx::new(2)], 0.0, &normalize, 1),
             "30",
         );
         assert_eq!(
-            cell_compute_median_normalized(&[Approx::new(1), Approx::new(9)], &normalize, 0),
+            cell_compute_median_normalized(&[Approx::new(1), Approx::new(9)], 0.0, &normalize, 0),
             "50",
         );
         assert_eq!(
-            cell_compute_median_normalized(&(0..100).map(Approx::new).collect_vec(), &normalize, 0),
+            cell_compute_median_normalized(
+                &(0..100).map(Approx::new).collect_vec(),
+                0.0,
+                &normalize,
+                0
+            ),
             "495",
         );
     }
@@ -269,49 +378,55 @@ mod tests {
     #[test]
     fn test_cell_compute_reindeer1() {
         // single number
-        assert_eq!(cell_compute_reindeer1(&[Approx::new(1)]), "0:1");
+        assert_eq!(cell_compute_reindeer1(&[Approx::new(1)], 0.0), "0:1");
         // two numbers
         assert_eq!(
-            cell_compute_reindeer1(&[Approx::new(1), Approx::new(2)]),
+            cell_compute_reindeer1(&[Approx::new(1), Approx::new(2)], 0.0),
             "0:1,1:2"
         );
         assert_eq!(
-            cell_compute_reindeer1(&[Approx::new(1), Approx::new(9)]),
+            cell_compute_reindeer1(&[Approx::new(1), Approx::new(9)], 0.0),
             "0:1,1:9"
         );
         // stretch in the middle
         assert_eq!(
-            cell_compute_reindeer1(&[
-                Approx::new(3),
-                Approx::new(4),
-                Approx::new(5),
-                Approx::new(1),
-                Approx::new(1),
-                Approx::new(1),
-                Approx::new(8)
-            ]),
+            cell_compute_reindeer1(
+                &[
+                    Approx::new(3),
+                    Approx::new(4),
+                    Approx::new(5),
+                    Approx::new(1),
+                    Approx::new(1),
+                    Approx::new(1),
+                    Approx::new(8)
+                ],
+                0.0
+            ),
             "0:3,1:4,2:5,3-5:1,6:8"
         );
         // stretch as start and stop
         assert_eq!(
-            cell_compute_reindeer1(&[
-                Approx::new(3),
-                Approx::new(3),
-                Approx::new(4),
-                Approx::new(5),
-                Approx::new(1),
-                Approx::new(1),
-                Approx::new(1),
-                Approx::new(8),
-                Approx::new(7),
-                Approx::new(7),
-                Approx::new(7),
-                Approx::new(7)
-            ]),
+            cell_compute_reindeer1(
+                &[
+                    Approx::new(3),
+                    Approx::new(3),
+                    Approx::new(4),
+                    Approx::new(5),
+                    Approx::new(1),
+                    Approx::new(1),
+                    Approx::new(1),
+                    Approx::new(8),
+                    Approx::new(7),
+                    Approx::new(7),
+                    Approx::new(7),
+                    Approx::new(7)
+                ],
+                0.0
+            ),
             "0-1:3,2:4,3:5,4-6:1,7:8,8-11:7"
         );
         // one stretch
-        assert_eq!(cell_compute_reindeer1(&[Approx::new(5); 44]), "0-43:5");
+        assert_eq!(cell_compute_reindeer1(&[Approx::new(5); 44], 0.0), "0-43:5");
     }
 
     #[test]
@@ -322,16 +437,26 @@ mod tests {
         };
         // single number
         assert_eq!(
-            cell_compute_reindeer1_normalized(&[Approx::new(1)], &normalize, 0),
+            cell_compute_reindeer1_normalized(&[Approx::new(1)], 0.0, &normalize, 0),
             "0:10"
         );
         // two numbers
         assert_eq!(
-            cell_compute_reindeer1_normalized(&[Approx::new(1), Approx::new(2)], &normalize, 0),
+            cell_compute_reindeer1_normalized(
+                &[Approx::new(1), Approx::new(2)],
+                0.0,
+                &normalize,
+                0
+            ),
             "0:10,1:20"
         );
         assert_eq!(
-            cell_compute_reindeer1_normalized(&[Approx::new(1), Approx::new(9)], &normalize, 1),
+            cell_compute_reindeer1_normalized(
+                &[Approx::new(1), Approx::new(9)],
+                0.0,
+                &normalize,
+                1
+            ),
             "0:20,1:180"
         );
         // stretch in the middle
@@ -346,6 +471,7 @@ mod tests {
                     Approx::new(1),
                     Approx::new(8)
                 ],
+                0.0,
                 &normalize,
                 0
             ),
@@ -368,6 +494,7 @@ mod tests {
                     Approx::new(7),
                     Approx::new(7)
                 ],
+                0.0,
                 &normalize,
                 0
             ),
@@ -375,7 +502,7 @@ mod tests {
         );
         // one stretch
         assert_eq!(
-            cell_compute_reindeer1_normalized(&[Approx::new(5); 44], &normalize, 0),
+            cell_compute_reindeer1_normalized(&[Approx::new(5); 44], 0.0, &normalize, 0),
             "0-43:50"
         );
     }
@@ -385,7 +512,7 @@ mod tests {
         let input = [0, 0, 0, 0, 4, 4, 4, 4, 80, 80, 80, 0, 0, 0];
         let input = input.into_iter().map(Approx::new).collect_vec();
         let penalty = 1.0;
-        let raw_result = cell_compute_breakpoints(&input, penalty);
+        let raw_result = cell_compute_breakpoints(&input, 0.0, penalty);
         let numbers: HashSet<usize> = raw_result
             .split(",")
             .map(|val| val.parse().unwrap())
