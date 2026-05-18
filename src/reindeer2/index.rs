@@ -88,7 +88,7 @@ where
                             }
                         };
 
-                        kmer_count += count_value as usize * (seq.len() - k);
+                        kmer_count += count_value as usize * (seq.len() - k + 1);
                         for (smer_hash, minimizer) in smer_minimizers {
                             let partition_index = (minimizer % (partition_number as u64)) as usize;
                             total_kmers.fetch_add(1, Ordering::Relaxed);
