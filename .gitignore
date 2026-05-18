@@ -1,5 +1,7 @@
 target/
 
-PACAS_index_*/
-output/
-files_to_index/
+ignored/
+
+index_rna_10/
+
+coverage/

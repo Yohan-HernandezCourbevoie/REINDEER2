@@ -4,12 +4,12 @@ use std::{
     io::{BufWriter, Read, Write},
     path::Path,
     sync::{
-        atomic::{AtomicU64, Ordering},
         Mutex,
+        atomic::{AtomicU64, Ordering},
     },
 };
 
-use crate::reindeer2::filter::Filters;
+use crate::reindeer2::storage::filters::Filters;
 use serde::{Deserialize, Serialize};
 
 fn count_zeros(abundance_vector: &[u8], max_index: usize) -> usize {

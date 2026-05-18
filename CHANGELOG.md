@@ -7,6 +7,24 @@ This project does **not** adheres to Semantic Versioning.
 
 ## [Unreleased]
 
+### [1.1.3] - 2025-05-18
+
+### Added
+
+- Add license
+- Add possibility to rename a dataset in the index (`reindeer2 rename`)
+
+### Changed
+
+- Add Lucas Robidou to the author list
+- Use [Rust edition 2024](https://doc.rust-lang.org/edition-guide/rust-2024/index.html)
+- Files are sorted by size before indexation. Use `--no-sort-files-by-size` to use the order in the input file of file.
+
+### Fixed
+
+- Remove intermediate files after index construction
+- Fix normalization count
+
 ### [1.1.2] - 2025-04-28
 
 - Renamed option `count_right_after_angle_bracket` to `allow_count_right_after_angle_bracket`. Using this option does not crash if the count is in the descrption of the header.

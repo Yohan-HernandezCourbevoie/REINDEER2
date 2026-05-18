@@ -44,11 +44,11 @@ impl ApproxAbundance {
     }
 
     #[cfg(test)]
-    pub fn new(val: u16) -> Self {
+    pub const fn new(val: u16) -> Self {
         Self { value: val + 2 }
     }
 
-    pub fn new_not_queried() -> Self {
+    pub const fn new_not_queried() -> Self {
         Self {
             value: Self::NOT_QUERIED,
         }
@@ -58,7 +58,7 @@ impl ApproxAbundance {
         self.value != Self::NOT_QUERIED
     }
 
-    pub fn to_value(self) -> Option<u16> {
+    pub const fn to_value(self) -> Option<u16> {
         if self.is_queried() {
             if self.value == Self::QUERIED_BUT_ABSENT {
                 Some(0)
@@ -74,7 +74,7 @@ impl ApproxAbundance {
         candidates.iter().max()
     }
 
-    pub fn new_absent() -> Self {
+    pub const fn new_absent() -> Self {
         Self {
             value: Self::QUERIED_BUT_ABSENT,
         }

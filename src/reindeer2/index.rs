@@ -4,14 +4,14 @@ use std::collections::HashMap;
 use std::io;
 use std::num::NonZero;
 use std::sync::atomic::Ordering;
-use std::sync::{atomic, Arc, Mutex};
+use std::sync::{Arc, Mutex, atomic};
 
 use crate::reindeer2::{
-    compute_log_abundance, extract_count,
-    minimizer_iter::{kmer_minimizers_sampled, KmerMinimizerIteratorError, Sampler},
-    process_fasta_in_batches, read_file, HeaderType,
+    HeaderType, compute_log_abundance, extract_count,
+    minimizer_iter::{KmerMinimizerIteratorError, Sampler, kmer_minimizers_sampled},
+    process_fasta_in_batches, read_file,
 };
-use crate::reindeer2::{dense_index::DenseIndex, filter::Filters};
+use crate::reindeer2::{dense_index::DenseIndex, storage::filters::Filters};
 
 // --- INDEX FUNCTIONS ---
 
@@ -79,12 +79,16 @@ where
                         ) {
                             Ok(iterator) => iterator,
                             Err(KmerMinimizerIteratorError::SequenceTooSmall { k }) => {
-                                eprintln!("Warning: when indexing file {path}, the read {seq_str} will be ignored. To be indexed, its length (={}) must be greater or equal to k (={})", seq_str.len(), k);
+                                eprintln!(
+                                    "Warning: when indexing file {path}, the read {seq_str} will be ignored. To be indexed, its length (={}) must be greater or equal to k (={})",
+                                    seq_str.len(),
+                                    k
+                                );
                                 continue;
                             }
                         };
 
-                        kmer_count += count_value as usize * (seq.len() - k);
+                        kmer_count += count_value as usize * (seq.len() - k + 1);
                         for (smer_hash, minimizer) in smer_minimizers {
                             let partition_index = (minimizer % (partition_number as u64)) as usize;
                             total_kmers.fetch_add(1, Ordering::Relaxed);
@@ -131,18 +135,18 @@ where
         bloom_filters.extend_by_draining_partitions_map(&mut partition_kmers);
     })?;
     // flush the dense indexes from sparse k-mers after each file *in the first chunk*
-    if chunk_index == 0 {
-        if let Some(dense_indexes) = maybe_dense_indexes {
-            dense_indexes.remove_sparse_entries(
-                bloom_filters,
-                path_num,
-                threshold,
-                max_map_size,
-                atomic_dense_kmers_count,
-                atomic_sparse_kmers_count,
-                chunk_index,
-            );
-        }
+    if chunk_index == 0
+        && let Some(dense_indexes) = maybe_dense_indexes
+    {
+        dense_indexes.remove_sparse_entries(
+            bloom_filters,
+            path_num,
+            threshold,
+            max_map_size,
+            atomic_dense_kmers_count,
+            atomic_sparse_kmers_count,
+            chunk_index,
+        );
     }
     kmer_counts_vector
         .lock()

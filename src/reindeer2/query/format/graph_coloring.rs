@@ -6,8 +6,8 @@ use itertools::Itertools;
 use crate::reindeer2::query::ApproxAbundance;
 
 use super::{
-    compute_median, count_to_string_witout_star_maybe_normalized, get_full_header,
-    KmerCountsAndNormalizeValue,
+    KmerCountsAndNormalizeValue, compute_median, count_to_string_witout_star_maybe_normalized,
+    get_full_header,
 };
 
 // rewrites a bcalm-like graph so that headers have abund info (one of the possible query operations)

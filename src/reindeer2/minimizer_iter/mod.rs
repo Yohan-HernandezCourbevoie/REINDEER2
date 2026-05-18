@@ -3,7 +3,7 @@ mod sequence_utils;
 
 use itertools::Itertools;
 pub use samplers::{KmerSampler, MinimizerSampler, NoSampler, Sampler};
-use sequence_utils::{is_canonical, new_sk_iterator, reverse_complement, SKInfos};
+use sequence_utils::{SKInfos, is_canonical, new_sk_iterator, reverse_complement};
 
 use thiserror::Error;
 use xxhash_rust::xxh3;

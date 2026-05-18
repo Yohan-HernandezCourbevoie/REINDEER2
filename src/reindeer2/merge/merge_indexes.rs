@@ -9,8 +9,8 @@ use std::{
 };
 
 use crate::reindeer2::{
-    create_and_reserve_tar_get_file, merge::merge_partition_slices_interleaved, Parameters,
-    Reindeer2, NB_FILE_IN_AN_INDEX,
+    NB_FILE_IN_AN_INDEX, Parameters, Reindeer2, create_and_reserve_tar_get_file,
+    merge::merge_partition_slices_interleaved,
 };
 
 fn read_lines_of_file_of_indexes(indexes_fof: &str) -> io::Result<Vec<String>> {

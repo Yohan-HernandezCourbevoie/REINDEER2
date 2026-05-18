@@ -10,19 +10,46 @@ use std::{
 };
 
 use crate::reindeer2::{
-    create_and_reserve_tar_get_file, filter::load_raw_bloom_filter,
-    merge::merge_partition_slices_interleaved, NB_FILE_IN_AN_INDEX,
+    NB_FILE_IN_AN_INDEX, create_and_reserve_tar_get_file,
+    merge::merge_partition_slices_interleaved, storage::filters::load_raw_bloom_filter,
 };
 
+/// Removes partitions (they are unecessary after a merge).
+pub fn remove_merged_partitions(
+    chunk_files_dir: &str,
+    color_counts_per_chunk: &[usize], // number of colors in each chunk
+    num_partitions: usize,
+) -> io::Result<()> {
+    let nb_chunk = color_counts_per_chunk.len();
+    let nb_partition_in_a_file = num_partitions.div_ceil(NB_FILE_IN_AN_INDEX);
+    let chunk_files_path = Path::new(chunk_files_dir);
+
+    (0..NB_FILE_IN_AN_INDEX)
+        .into_par_iter()
+        .try_for_each(|file_id| {
+            let range_start = nb_partition_in_a_file * file_id;
+            let range_end = min(nb_partition_in_a_file * (file_id + 1), num_partitions);
+
+            for partition_idx in range_start..range_end {
+                for chunk_idx in 0..nb_chunk {
+                    let path = chunk_files_path.join(format!(
+                        "partition_bloom_filters_c{chunk_idx}_p{partition_idx}.bin",
+                    ));
+                    std::fs::remove_file(path)?;
+                }
+            }
+            Ok::<(), io::Error>(())
+        })?;
+    Ok(())
+}
+
 /// Merges all partitions of an index being built.
-///
-/// The initial partitions
 pub fn merge_all_partitions_of_chunks(
     chunk_files_dir: &str,
     output_dir: &str,
     partitioned_bf_size: usize,
     abundance_number: usize,
-    color_counts_per_chunk: Vec<usize>, // number of colors in each chunk
+    color_counts_per_chunk: &[usize], // number of colors in each chunk
     num_partitions: usize,
 ) -> io::Result<()> {
     let start_time = Instant::now();
@@ -62,7 +89,7 @@ pub fn merge_all_partitions_of_chunks(
                     &chunk_files_for_partition,
                     partitioned_bf_size,
                     abundance_number,
-                    &color_counts_per_chunk,
+                    color_counts_per_chunk,
                     &mut file,
                 )?;
 
@@ -143,7 +170,7 @@ mod tests {
     #[rstest]
     fn test_merge_partition_bloom_filters(random_directory: AutoRemoveDirectory) {
         use roaring::RoaringBitmap;
-        use std::fs::{create_dir_all, File};
+        use std::fs::{File, create_dir_all};
         use std::io::Write;
 
         let test_dir = random_directory.filename().to_str().unwrap();
