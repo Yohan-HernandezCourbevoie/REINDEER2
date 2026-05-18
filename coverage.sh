@@ -1,0 +1,38 @@
+# ---------------------------------------------------------------------------- #
+#
+# Generate test coverage:
+# * report on terminal
+# * lcov file
+# * html
+#
+# See CONTRIBUTING.md for dependency installation
+#
+# USAGE
+# -----
+# ./coverage.sh
+# or
+# ./coverage.sh <name_of_the_module_to_test>
+#
+# ---------------------------------------------------------------------------- #
+module_name=$1
+IGNORE_PATTERN="bin/reindeer2/.*\.rs"
+
+LCOV_FILE=.lcov.info
+#
+# Clean files
+#
+rm $LCOV_FILE 2>/dev/null
+cargo llvm-cov clean --workspace
+#
+# Terminal visual report
+#
+cargo llvm-cov nextest $module_name --ignore-filename-regex "$IGNORE_PATTERN"
+#
+# Generate lcov file in .lcov.info
+#
+cargo llvm-cov report --lcov --output-path $LCOV_FILE --ignore-filename-regex "$IGNORE_PATTERN"
+#
+# Generate html file in target/llvm-cov/html
+#
+genhtml $LCOV_FILE --output-directory=coverage/html
+mv .lcov.info coverage/lcov.info
