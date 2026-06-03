@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project does **not** adheres to Semantic Versioning.
 
 ## [Unreleased]
+### [1.1.4] - 2025-06-03
+
+### Changed
+
+- Changed public interface of the library.
+  - Added a query and a merge module.
+  - Among other changes, using reindeer2 now only requires to refer to reindeer2::Reindeer2 instead of reindeer2::reindeer2::Reindeer2. 
 
 ### [1.1.3] - 2025-05-18
 
