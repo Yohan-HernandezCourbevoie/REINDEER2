@@ -13,9 +13,9 @@ use std::time::Instant;
 use cli::Cli;
 use cli::OutputFormatCli;
 use overflow_detection::{get_min_number_of_files, get_number_of_partitions};
-use reindeer2::reindeer2::{
+use reindeer2::{
     BreakpointsNormalize, MatrixFormat, OutputFormat, Parameters, Reindeer2, SamplingStrategy,
-    merge_multiple_indexes, read_fof_file,
+    merge::merge_multiple_indexes, read_fof_file,
 };
 
 use crate::cli::{IndexArgs, InfosArgs, MergeArgs, QueryArgs, RenameArgs};
@@ -367,7 +367,7 @@ fn main() -> io::Result<()> {
                 .rename(&old_name, new_name.clone())
                 .expect("should have been able to write updated index to disk");
 
-            use reindeer2::reindeer2::ReplaceOutcome;
+            use reindeer2::ReplaceOutcome;
             match outcome {
                 ReplaceOutcome::NotFound => {
                     log::error!("{old_name} was not found");

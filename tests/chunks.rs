@@ -4,7 +4,7 @@ use std::num::NonZero;
 
 use common::{AutoRemoveDirectory, AutoRemoveFile, check_number_of_partitions, is_all_same};
 
-use reindeer2::reindeer2::{OutputFormat, Parameters, Reindeer2, read_fof_file};
+use reindeer2::{OutputFormat, Parameters, Reindeer2, read_fof_file};
 
 fn get_input_fof() -> String {
     String::from("tests/chunk_data/fof.txt")
@@ -68,7 +68,7 @@ fn no_effect_chunk() {
 
         let coverage = 0.5;
         let output_format = OutputFormat::AbundanceMatrix {
-            format: reindeer2::reindeer2::MatrixFormat::Raw(None),
+            format: reindeer2::MatrixFormat::Raw(None),
         };
         let query_output =
             AutoRemoveFile::create_from_path(format!("{}_query_results.csv", index_dir_name));
