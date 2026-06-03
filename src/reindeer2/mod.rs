@@ -2,7 +2,7 @@ mod dense_index;
 mod index;
 mod merge;
 mod minimizer_iter;
-mod query;
+pub mod query;
 mod sort_file_of_file;
 mod storage;
 mod test_utils;
@@ -756,6 +756,7 @@ impl Reindeer2 {
     }
 }
 
+/// Outcome of trying to replace a name in an index
 #[derive(Debug, PartialEq)]
 pub enum ReplaceOutcome {
     NotFound,

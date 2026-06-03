@@ -10,5 +10,17 @@
 #![deny(unused)]
 #![deny(clippy::allow_attributes_without_reason)]
 #![warn(clippy::missing_const_for_fn)]
+mod reindeer2;
 
-pub mod reindeer2;
+pub use reindeer2::{
+    BreakpointsNormalize, MatrixFormat, OutputFormat, Parameters, Reindeer2, ReplaceOutcome,
+    SamplingStrategy, read_fof_file,
+};
+
+pub mod query {
+    pub use super::reindeer2::query;
+}
+
+pub mod merge {
+    pub use super::reindeer2::merge_multiple_indexes;
+}
