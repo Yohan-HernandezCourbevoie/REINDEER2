@@ -821,7 +821,7 @@ fn get_file_names(file_paths: &[String]) -> Vec<String> {
 }
 
 /// Collects the iterator in batches and runs `process_batch` on each batch.
-fn process_fasta_in_batches<R: io::BufRead>(
+pub fn process_fasta_in_batches<R: io::BufRead>(
     reader: R,
     batch_size: usize,
     mut process_batch: impl FnMut(&[fasta::Record]),
@@ -1446,7 +1446,7 @@ fn extract_count_from_logan_header(header: &str) -> Result<u16, io::Error> {
 
 // --- ABUNDANCE ENCODING ---
 
-fn compute_log_abundance(value: NonZero<u16>, base: f64, max: NonZero<u16>) -> u16 {
+pub fn compute_log_abundance(value: NonZero<u16>, base: f64, max: NonZero<u16>) -> u16 {
     assert!(base > 0.0, "base must be greater than 0");
     let value = value.get();
     let max = max.get();
@@ -1461,7 +1461,7 @@ fn compute_log_abundance(value: NonZero<u16>, base: f64, max: NonZero<u16>) -> u
     }
 }
 
-fn approximate_value(log_value: u16, base: f64) -> u16 {
+pub fn approximate_value(log_value: u16, base: f64) -> u16 {
     if base <= 0.0 {
         panic!("base must be greater than 0");
     }
@@ -1475,7 +1475,7 @@ fn approximate_value(log_value: u16, base: f64) -> u16 {
 }
 
 // TOUN
-fn compute_base(abundance_number: NonZero<usize>, abundance_max: NonZero<u16>) -> f64 {
+pub fn compute_base(abundance_number: NonZero<usize>, abundance_max: NonZero<u16>) -> f64 {
     let abundance_numberf = abundance_number.get() as f64;
     const TOL: f64 = 1e-9;
     let abundance_maxf = abundance_max.get() as f64;

@@ -7,7 +7,10 @@ use bio::io::fasta;
 use std::io::{self, Write};
 
 use abundance_matrix::{write_abundance_matrix, write_header_matrix};
-pub use enriched_output_format::{EnrichedOutputFormat, KmerCountsAndNormalizeValue};
+pub use enriched_output_format::{
+    BreakpointsXorEnrichedNormalize, EnrichedMatrixFormat, EnrichedOutputFormat,
+    KmerCountsAndNormalizeValue,
+};
 use graph_coloring::graph_coloring;
 use median_abundance::write_median_abundance;
 
