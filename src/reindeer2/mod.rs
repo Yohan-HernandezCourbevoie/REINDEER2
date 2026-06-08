@@ -360,7 +360,11 @@ impl Reindeer2 {
             file_of_file_name,
             &mut file_paths,
             sort_files_by_size,
-        )?;
+        )
+        .map_err(|e| {
+            log::error!("Failed to create the index directory: {e}");
+            e
+        })?;
 
         let kmer_counts_vector: Arc<Mutex<Vec<usize>>> =
             Arc::new(Mutex::new(vec![0; parameters.nb_color]));
@@ -541,11 +545,9 @@ impl Reindeer2 {
             }
 
             if chunks.len() > 1 {
-                if let Err(e) = bloom_filters.write_to_disk_as_multiple_small_files(
-                    &dir_path,
-                    &color_chunks,
-                    chunk_i,
-                ) {
+                if let Err(e) =
+                    bloom_filters.write_to_disk_tar_get_files_single_chunk(&dir_path, &chunk_i)
+                {
                     eprintln!("Error writing Bloom filters for chunk {}: {}", chunk_i, e);
                 }
             } else {
@@ -559,7 +561,10 @@ impl Reindeer2 {
 
         // After processing all chunks, write the dense indexes to disk
         if let Some(dense_indexes) = maybe_dense_indexes {
-            dense_indexes.write_to_disk(&dir_path)?;
+            dense_indexes.write_to_disk(&dir_path).map_err(|e| {
+                log::error!("Failed to write the dense index: {e}");
+                e
+            })?;
         }
 
         write_kmer_counts_to_disk(&dir_path, &kmer_counts_vector)?;
@@ -596,8 +601,15 @@ impl Reindeer2 {
                 parameters.abundance_number.get(),
                 &color_chunks,
                 parameters.partition_number,
-            )?;
-            merge::remove_merged_partitions(&dir_path, &color_chunks, parameters.partition_number)?;
+            )
+            .map_err(|e| {
+                log::error!("Merge of intermediate files failed: {e}");
+                e
+            })?;
+            merge::remove_merged_partitions(&dir_path, color_chunks.len()).map_err(|e| {
+                log::error!("Cleanup of intermediate files failed: {e}");
+                e
+            })?;
         }
 
         // write metadata info to disk
@@ -809,7 +821,7 @@ fn get_file_names(file_paths: &[String]) -> Vec<String> {
 }
 
 /// Collects the iterator in batches and runs `process_batch` on each batch.
-fn process_fasta_in_batches<R: io::BufRead>(
+pub fn process_fasta_in_batches<R: io::BufRead>(
     reader: R,
     batch_size: usize,
     mut process_batch: impl FnMut(&[fasta::Record]),
@@ -1434,7 +1446,7 @@ fn extract_count_from_logan_header(header: &str) -> Result<u16, io::Error> {
 
 // --- ABUNDANCE ENCODING ---
 
-fn compute_log_abundance(value: NonZero<u16>, base: f64, max: NonZero<u16>) -> u16 {
+pub fn compute_log_abundance(value: NonZero<u16>, base: f64, max: NonZero<u16>) -> u16 {
     assert!(base > 0.0, "base must be greater than 0");
     let value = value.get();
     let max = max.get();
@@ -1449,7 +1461,7 @@ fn compute_log_abundance(value: NonZero<u16>, base: f64, max: NonZero<u16>) -> u
     }
 }
 
-fn approximate_value(log_value: u16, base: f64) -> u16 {
+pub fn approximate_value(log_value: u16, base: f64) -> u16 {
     if base <= 0.0 {
         panic!("base must be greater than 0");
     }
@@ -1463,7 +1475,7 @@ fn approximate_value(log_value: u16, base: f64) -> u16 {
 }
 
 // TOUN
-fn compute_base(abundance_number: NonZero<usize>, abundance_max: NonZero<u16>) -> f64 {
+pub fn compute_base(abundance_number: NonZero<usize>, abundance_max: NonZero<u16>) -> f64 {
     let abundance_numberf = abundance_number.get() as f64;
     const TOL: f64 = 1e-9;
     let abundance_maxf = abundance_max.get() as f64;

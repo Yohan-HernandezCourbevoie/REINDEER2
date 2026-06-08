@@ -6,7 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project does **not** adheres to Semantic Versioning.
 
 ## [Unreleased]
-### [1.1.4] - 2025-06-03
+
+## [1.1.5] - 2026-06-08
+
+### Changed
+
+- Added more public functions to the library.
+
+### Fixed
+
+- The intermediate indexation steps now use only 1024 files per chunk.
+- The dates of the changelog has been fixed (2026 instead of 2025)
+- The header level of the changelog has been fixed.
+
+
+## [1.1.4] - 2026-06-03
 
 ### Changed
 
@@ -14,7 +28,7 @@ This project does **not** adheres to Semantic Versioning.
   - Added a query and a merge module.
   - Among other changes, using reindeer2 now only requires to refer to reindeer2::Reindeer2 instead of reindeer2::reindeer2::Reindeer2. 
 
-### [1.1.3] - 2025-05-18
+## [1.1.3] - 2026-05-18
 
 ### Added
 
@@ -32,11 +46,11 @@ This project does **not** adheres to Semantic Versioning.
 - Remove intermediate files after index construction
 - Fix normalization count
 
-### [1.1.2] - 2025-04-28
+## [1.1.2] - 2026-04-28
 
 - Renamed option `count_right_after_angle_bracket` to `allow_count_right_after_angle_bracket`. Using this option does not crash if the count is in the descrption of the header.
 
-## [1.1.1] - 2025-03-23
+## [1.1.1] - 2026-03-23
 
 ### Added
 
@@ -46,7 +60,7 @@ This project does **not** adheres to Semantic Versioning.
 
 - Merge of chunks is parallelized
 
-## [1.1.0] - 2025-03-20
+## [1.1.0] - 2026-03-20
 
 ### Added
 

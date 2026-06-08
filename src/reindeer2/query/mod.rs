@@ -1,6 +1,6 @@
 mod approx_abundance;
 mod findere;
-mod format;
+pub mod format;
 
 use std::collections::HashMap;
 use std::fs::File;

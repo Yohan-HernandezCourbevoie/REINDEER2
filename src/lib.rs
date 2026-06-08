@@ -14,11 +14,18 @@ mod reindeer2;
 
 pub use reindeer2::{
     BreakpointsNormalize, MatrixFormat, OutputFormat, Parameters, Reindeer2, ReplaceOutcome,
-    SamplingStrategy, read_fof_file,
+    SamplingStrategy, compute_base, process_fasta_in_batches, read_fof_file,
 };
 
 pub mod query {
-    pub use super::reindeer2::query;
+    pub use super::reindeer2::query::format;
+    pub use super::reindeer2::query::write_kmer_query;
+}
+
+pub mod values {
+    pub use super::reindeer2::{
+        approximate_value, compute_base, compute_log_abundance, query::ApproxAbundance,
+    };
 }
 
 pub mod merge {
