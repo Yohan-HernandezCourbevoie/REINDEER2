@@ -1,14 +1,7 @@
 use itertools::Itertools;
 use rayon::prelude::*;
 use roaring::RoaringBitmap;
-use std::{
-    cmp::min,
-    collections::HashMap,
-    fs::File,
-    io::{BufReader, BufWriter, Read, Write},
-    path::Path,
-    sync::Mutex,
-};
+use std::{cmp::min, collections::HashMap, fs::File, io::BufReader, path::Path, sync::Mutex};
 
 use crate::reindeer2::{NB_FILE_IN_AN_INDEX, create_and_reserve_tar_get_file};
 
@@ -121,30 +114,6 @@ impl Filters {
         */
     }
 
-    // TODO take a Write (or even better, implement a trait (Serialize ?)
-    pub fn write_to_disk_as_multiple_small_files(
-        &self,
-        dir_path: &str,
-        chunks: &[usize], //  number of colors for each chunk
-        chunk_id: usize,
-    ) -> std::io::Result<()> {
-        let chunk_colors = chunks[chunk_id];
-        for (i, bitmap) in self.data.iter().enumerate() {
-            let file_path = Path::new(dir_path)
-                .join(format!("partition_bloom_filters_c{}_p{}.bin", chunk_id, i));
-            let file = File::create(&file_path)?;
-            let mut writer = BufWriter::new(file);
-            // write the number of colors as a u64 to the file first
-            writer.write_all(&chunk_colors.to_le_bytes())?;
-            // serialize the bitmap into the file
-            let mut locked_bitmap = bitmap.lock().expect("fatal error: a thread holding the mutex panicked, so this thread will panic as well");
-            locked_bitmap.serialize_into(&mut writer)?;
-            locked_bitmap.clear();
-        }
-
-        Ok(())
-    }
-
     pub fn write_to_disk_tar_get_files(self, output_dir: &str) -> std::io::Result<()> {
         let nb_partition = self.data.len();
         let nb_partition_in_a_file = nb_partition.div_ceil(NB_FILE_IN_AN_INDEX);
@@ -156,6 +125,41 @@ impl Filters {
                 let range = range_start..range_end;
                 let path = Path::new(output_dir)
                     .join(format!("partition_bloom_filters_group{file_id}.bin"));
+                let len: usize = range
+                    .try_len()
+                    .expect("range object should have a known length");
+                let len = u64::try_from(len)
+                    .expect("should have less than u64::MAX partitions in a single file");
+                let mut file = create_and_reserve_tar_get_file(&path, len);
+                for i in range {
+                    let bitmap = &self.data[i];
+                    let mut bitmap = bitmap.lock().expect("fatal error: a thread holding the mutex panicked, so this thread will panic as well");
+                    tar_get::append_element(&mut file, &bitmap, |writer, bitmap| {
+                        bitmap.serialize_into(writer)
+                    })
+                    .expect("should have been able to add an element to a tar_get file");
+                    bitmap.clear();
+                }
+            });
+        Ok(())
+    }
+
+    // TODO very similar to write_to_disk_tar_get_files
+    pub fn write_to_disk_tar_get_files_single_chunk(
+        self,
+        output_dir: &str,
+        chunk_id: &usize,
+    ) -> std::io::Result<()> {
+        let nb_partition = self.data.len();
+        let nb_partition_in_a_file = nb_partition.div_ceil(NB_FILE_IN_AN_INDEX);
+        (0..NB_FILE_IN_AN_INDEX)
+            .into_par_iter() // TODO
+            .for_each(|file_id| {
+                let range_start = nb_partition_in_a_file * file_id;
+                let range_end = min(nb_partition_in_a_file * (file_id + 1), nb_partition);
+                let range = range_start..range_end;
+                let path = Path::new(output_dir)
+                    .join(format!("partition_bloom_filters_group{file_id}_chunk{chunk_id}.bin"));
                 let len: usize = range
                     .try_len()
                     .expect("range object should have a known length");
@@ -190,28 +194,6 @@ pub fn load_bloom_filter_from_big_file(
     let bitmap = tar_get::deserialize(reader, index, deserializer)
         .unwrap_or_else(|_| panic!("should have been able to load index {index} from {file_path}")); // TODO error handling
     Ok(bitmap)
-}
-
-/// Loads a raw Bloom filter from disk
-pub fn load_raw_bloom_filter(file_path: &str) -> std::io::Result<(RoaringBitmap, usize)> {
-    let file = File::open(file_path)?;
-    let mut reader = BufReader::new(file);
-
-    // read the first 8 bytes as a u64 to get the number of colors
-    let mut color_buffer = [0u8; 8];
-    reader.read_exact(&mut color_buffer)?;
-    let local_color_nb = u64::from_le_bytes(color_buffer) as usize;
-
-    // Rread the rest of the file to deserialize the Bloom filter
-    let mut buffer = Vec::new();
-    reader.read_to_end(&mut buffer)?;
-    let bitmap = RoaringBitmap::deserialize_from(&buffer[..]).map_err(|_| {
-        std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "Failed to deserialize bitmap",
-        )
-    })?;
-    Ok((bitmap, local_color_nb))
 }
 
 #[cfg(any(debug_assertions, test))]
