@@ -235,7 +235,7 @@ pub fn sort_abundance_vec(
     nb_smer_in_query: usize,
     #[cfg(any(debug_assertions, test))] s: usize,
 ) -> Vec<ApproxAbundance> {
-    #[cfg(debug_assertions)]
+    #[cfg(any(debug_assertions, test))]
     {
         use std::collections::HashSet;
 
