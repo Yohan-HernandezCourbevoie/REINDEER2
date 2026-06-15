@@ -7,7 +7,7 @@ mod sort_file_of_file;
 mod storage;
 mod test_utils;
 
-use bio::io::fasta;
+use bio::io::fasta::{self, Record};
 use flate2::read::GzDecoder;
 use itertools::Itertools;
 use rayon::prelude::*;
@@ -34,6 +34,19 @@ use crate::reindeer2::query::{ApproxAbundance, fimpera, load_kmer_counts_vector}
 use crate::reindeer2::storage::filters::Filters;
 
 const NB_FILE_IN_AN_INDEX: usize = 1024;
+
+trait UppercaseAsciiSeq {
+    fn uppercase_seq(&self) -> String;
+}
+
+impl UppercaseAsciiSeq for Record {
+    fn uppercase_seq(&self) -> String {
+        let ascii = self.seq().to_vec();
+        let mut s = String::from_utf8(ascii).expect("the string in the Record is not in UTF-8");
+        s.make_ascii_uppercase();
+        s
+    }
+}
 
 // TODO move to another place ?
 fn create_and_reserve_tar_get_file<P>(path: P, nb_object: u64) -> File
