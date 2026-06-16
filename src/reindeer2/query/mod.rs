@@ -7,7 +7,7 @@ use std::fs::File;
 use std::io::{self, Read};
 use std::path::Path;
 
-use crate::reindeer2::NB_FILE_IN_AN_INDEX;
+use crate::reindeer2::{NB_FILE_IN_AN_INDEX, UppercaseAsciiSeq};
 
 use super::{
     compute_base_position,
@@ -35,7 +35,7 @@ where
 {
     let mut partition_kmers: HashMap<usize, Vec<(usize, u32, u64)>> = HashMap::new();
     for (record_id, record) in batch.iter().enumerate() {
-        let sequence = record.seq();
+        let sequence = record.uppercase_seq();
         // covers the case "usize is more than 64 bits"
         assert!(
             sequence.len() < (u32::MAX as usize),
@@ -46,7 +46,7 @@ where
             (sequence.len() as u32) < u32::MAX,
             "queried sequence length should be smaller than 2^32"
         );
-        let kmer_minimizers = kmer_minimizers_all(sequence, s, m, canonical)
+        let kmer_minimizers = kmer_minimizers_all(sequence.as_bytes(), s, m, canonical)
             .expect("should have been able to iterate over kmers");
 
         for (position, (smer_hash, minimizer)) in kmer_minimizers.enumerate() {
@@ -235,7 +235,7 @@ pub fn sort_abundance_vec(
     nb_smer_in_query: usize,
     #[cfg(any(debug_assertions, test))] s: usize,
 ) -> Vec<ApproxAbundance> {
-    #[cfg(debug_assertions)]
+    #[cfg(any(debug_assertions, test))]
     {
         use std::collections::HashSet;
 

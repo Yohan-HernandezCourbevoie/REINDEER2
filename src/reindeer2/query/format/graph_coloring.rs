@@ -3,7 +3,7 @@ use std::io::Write;
 use bio::io::fasta;
 use itertools::Itertools;
 
-use crate::reindeer2::query::ApproxAbundance;
+use crate::reindeer2::{UppercaseAsciiSeq, query::ApproxAbundance};
 
 use super::{
     KmerCountsAndNormalizeValue, compute_median, count_to_string_witout_star_maybe_normalized,
@@ -24,7 +24,7 @@ pub fn graph_coloring(
     // each inner Vec<u16> = all abundance values for that color
     for (color_vectors, record) in sequence_results.iter().zip(batch) {
         let full_header = get_full_header(record);
-        let seq_str = std::str::from_utf8(record.seq()).expect("Invalid UTF-8 sequence");
+        let seq_str = record.uppercase_seq();
 
         // if no data, just write the original header
         if color_vectors.iter().all(Vec::is_empty) {

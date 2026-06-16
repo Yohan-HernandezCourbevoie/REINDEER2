@@ -7,6 +7,12 @@ This project does **not** adheres to Semantic Versioning.
 
 ## [Unreleased]
 
+## [1.1.6] - 2026-06-16
+
+### Changed
+
+- Indexation and query steps now transform the sequences into uppercase before further processing.
+
 ## [1.1.5] - 2026-06-08
 
 ### Changed

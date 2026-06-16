@@ -1,10 +1,17 @@
 [package]
 name = "reindeer2"
-version = "1.1.5"
+version = "1.1.6"
 edition = "2024"
 authors = ["Camille Marchet", "Yohan Hernandez--Courbevoie", "Lucas Robidou"]
 license-file = "LICENSE"
 description = "REINDEER2: k-mer quantification in large collections of samples"
+
+[workspace.metadata.dylint]
+libraries = [{ path = "lints" }]
+
+[workspace]
+members = []
+exclude = ["lints"]
 
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }

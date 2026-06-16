@@ -6,6 +6,7 @@ use std::num::NonZero;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, atomic};
 
+use crate::reindeer2::UppercaseAsciiSeq;
 use crate::reindeer2::{
     HeaderType, compute_log_abundance, extract_count,
     minimizer_iter::{KmerMinimizerIteratorError, Sampler, kmer_minimizers_sampled},
@@ -182,7 +183,7 @@ pub fn process_fasta_record(
         None
     };
     let log_abundance = abundance.map(|value| compute_log_abundance(value, base, abundance_max));
-    let seq = record.seq().to_vec();
+    let seq = record.uppercase_seq().into_bytes();
     Ok((seq, log_abundance, count_value))
 }
 
