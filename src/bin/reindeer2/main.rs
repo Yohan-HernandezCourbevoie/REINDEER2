@@ -88,6 +88,22 @@ fn validate_sampling_strategy(
         (None, None) => None,
     }
 }
+
+#[cfg(feature = "self-destruct")]
+fn validate_fail(
+    chunk_explode_at_step: Option<usize>,
+    merge_explode_at_step: Option<usize>,
+) -> Option<reindeer2::FailIndexation> {
+    match (chunk_explode_at_step, merge_explode_at_step) {
+        (None, None) => None,
+        (Some(a), None) => Some(reindeer2::FailIndexation::Chunk(a)),
+        (None, Some(b)) => Some(reindeer2::FailIndexation::Merge(b)),
+        (Some(_), Some(_)) => {
+            panic!("cannot error twice");
+        }
+    }
+}
+
 fn main() -> io::Result<()> {
     let args = Cli::parse();
     let env = env_logger::Env::default().default_filter_or("trace");
@@ -113,7 +129,19 @@ fn main() -> io::Result<()> {
             allow_count_right_after_angle_bracket,
             findere,
             no_sort_files_by_size,
+            #[cfg(feature = "self-destruct")]
+            chunk_explode_at_step,
+            #[cfg(feature = "self-destruct")]
+            merge_explode_at_step,
         }) => {
+            #[cfg(feature = "self-destruct")]
+            {
+                log::warn!("You are using the \"self-destruct\" feature. Only use it for testing. Consider recompiling the tool without this feature
+            .");
+                println!("Warning: you are using the \"self-destruct\" feature. Only use it for testing. Consider recompiling the tool without this feature
+            .");
+            }
+
             let sort_files_by_size = !no_sort_files_by_size;
             let dense_option = dense;
             let canonical = !stranded;
@@ -248,6 +276,8 @@ fn main() -> io::Result<()> {
                 sampling_strategy: validate_sampling_strategy(kmer_sampling, minimizer_sampling),
                 findere_z,
                 capacity: nb_files,
+                #[cfg(feature = "self-destruct")]
+                fail: validate_fail(chunk_explode_at_step, merge_explode_at_step),
             };
             let mut index = Reindeer2::new(parameters, output_dir);
             let input_path = Path::new(&input);
