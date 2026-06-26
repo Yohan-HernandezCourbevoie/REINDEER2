@@ -38,6 +38,9 @@ use crate::reindeer2::save_atomics::debug_atomics::load_debug_atomics_from_disk;
 use zstd::stream::decode_all;
 
 use crate::reindeer2::dense_index::DenseIndex;
+use crate::reindeer2::kmer_counts::{
+    load_kmer_counts_vector, load_kmer_counts_vector_written_after_chunk,
+};
 use crate::reindeer2::minimizer_iter::{KmerSampler, MinimizerSampler, NoSampler, Sampler};
 use crate::reindeer2::query::{ApproxAbundance, fimpera};
 use crate::reindeer2::saves::{CrashState, CrashedChunk, CrashedMerge};
