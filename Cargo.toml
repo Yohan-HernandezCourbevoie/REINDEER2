@@ -66,3 +66,4 @@ overflow-checks = false
 default = []
 nightly = []
 scalar = ["simd-minimizers/scalar"]
+self-destruct = []
