@@ -48,6 +48,20 @@ impl UppercaseAsciiSeq for Record {
     }
 }
 
+// TODO rename
+struct DebugInfos {
+    #[cfg(any(debug_assertions, test))]
+    atomic_dense_kmers_count: AtomicU64,
+    #[cfg(any(debug_assertions, test))]
+    atomic_sparse_kmers_count: AtomicU64,
+    #[cfg(any(debug_assertions, test))]
+    total_kmers: AtomicU64,
+    #[cfg(any(debug_assertions, test))]
+    atomic_sparse_one_seen: AtomicU64,
+    #[cfg(any(debug_assertions, test))]
+    atomic_sparse_fp_seen: AtomicU64,
+}
+
 // TODO move to another place ?
 fn create_and_reserve_tar_get_file<P>(path: P, nb_object: u64) -> File
 where
@@ -125,9 +139,16 @@ pub enum OutputFormat {
     },
 }
 
-/// REINDEER 2's  parameters
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[cfg(feature = "self-destruct")]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[cfg_attr(any(test, debug_assertions), derive(PartialEq))]
+pub enum FailIndexation {
+    Chunk(usize),
+    Merge(usize),
+}
+
+/// REINDEER 2's  parameters
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Parameters {
     /// Size of the Bloom filter in bits
     pub bf_size: u64,
@@ -158,6 +179,9 @@ pub struct Parameters {
     /// This allows to decrease the false positive rate of queries.
     pub findere_z: usize,
     pub capacity: usize,
+    #[cfg(feature = "self-destruct")]
+    /// Test parameter: make the indexation fail.
+    pub fail: Option<FailIndexation>,
 }
 
 /// The strategy to sample k-mers or minimizers.
@@ -193,6 +217,7 @@ impl Parameters {
         sampling_strategy: Option<SamplingStrategy>,
         findere_z: usize,
         capacity: usize,
+        #[cfg(feature = "self-destruct")] fail: Option<FailIndexation>,
     ) -> Self {
         Self {
             bf_size,
@@ -208,6 +233,8 @@ impl Parameters {
             sampling_strategy,
             findere_z,
             capacity,
+            #[cfg(feature = "self-destruct")]
+            fail,
         }
     }
 
@@ -1100,64 +1127,84 @@ const fn compute_base_position(
     position * (color_number as u64) * (abundance_number as u64)
 }
 
-// fn _get_current_chunk_index(i: usize, chunk_sizes: &Vec<usize>, partition_nb: usize) -> usize {
-//     let mut cumulative_size = 0;
+enum StartRestartOrError {
+    Start,
+    IndexAlreadyExists,
+    PartialIndexAlreadyExistsWithDifferentParameters { parameters_on_disk: Parameters },
+    Restart(CrashState),
+}
 
-//     for (chunk_idx, &_chunk_size) in chunk_sizes.iter().enumerate() {
-//         cumulative_size += partition_nb;
-//         if i < cumulative_size {
-//             return chunk_idx;
-//         }
-//     }
-//     panic!(
-//         "Index {} out of bounds for chunk sizes {:?}",
-//         i, chunk_sizes
-//     );
-// }
+/// detects if the tool was already ran before
+fn did_we_crash(
+    output_dir: &str,
+    parameters: &Parameters,
+    nb_chunk: usize,
+) -> io::Result<StartRestartOrError> {
+    let output_path = Path::new(output_dir);
+    let index_dir = match output_path.is_relative() {
+        true => std::env::current_dir()?.join(output_path),
+        false => output_path.to_path_buf(),
+    };
 
-// // this part fills the BFs per partition
-// fn flush_map_into_bfs(
-//     partition_kmers: &mut HashMap<usize, Vec<(u64, u16, usize, usize)>>,
-//     bloom_filters: &Arc<Filters>,
-// ) {
-//     // iterates and empties the hash map when needed
-//     for (partition_index, kmers) in partition_kmers.drain() {
-//         bloom_filters.extend_partition(partition_index, &kmers);
-//     }
-// }
+    if !(index_dir.try_exists()?) {
+        return Ok(StartRestartOrError::Start);
+    }
 
-// fn flush_map_into_bfs(
-//     partition_kmers: &mut HashMap<usize, Vec<(u64, u16, usize, usize)>>,
-//     bloom_filters: &Arc<Vec<Mutex<RoaringBitmap>>>,
-//     partitioned_bf_size: usize,
-//     color_number: usize,
-//     abundance_number: usize,
-// ) -> io::Result<()> {
-//     // this part fills the BFs per paritition
-//     for (partition_index, kmers) in partition_kmers.drain() {
-//         // iterates and empties the hash map when needed
-//         let mut kmer_hashes_to_update = Vec::new();
-//         for (kmer_hash, log_abundance, path_num, _chunk_index) in kmers {
-//             // select the bit in the BF
-//             let position = compute_location_filter(
-//                 kmer_hash,
-//                 partitioned_bf_size,
-//                 color_number,
-//                 path_num,
-//                 abundance_number,
-//                 log_abundance,
-//             );
-//             kmer_hashes_to_update.push(position as u32); // accumulate bits to be modified for this bf
-//         }
-//         let mut bloom_filter = bloom_filters[partition_index] // select the correct BF for the given partition
-//             .lock()
-//             .expect("Failed to lock bloom filter");
-//         bloom_filter.extend(kmer_hashes_to_update);
-//     }
-//     Ok(())
-// }
+    // creates a folder for the saves
+    let saves_path = output_path.join("saves");
+    if !(saves_path.try_exists()?) {
+        return Ok(StartRestartOrError::IndexAlreadyExists);
+    }
+    let nb_chunk_in_index = {
+        let path = saves_path.join("nb_chunk");
+        let data = fs::read_to_string(path).expect("Should be able to read the nb_chunk file");
+        let nb_chunk: usize = data
+            .parse()
+            .expect("the nb_chunk file should contain a usize");
+        nb_chunk
+    };
 
-// --- WRITE INDEX ON DISK ---
+    let input_path = Reindeer2::index_infos_file(output_dir);
+    let file = File::open(input_path)?;
+    let reader = BufReader::new(file);
+    let rd2: Reindeer2 = serde_json::from_reader(reader)?;
+
+    if (&rd2.parameters != parameters) || (nb_chunk != nb_chunk_in_index) {
+        return Ok(
+            StartRestartOrError::PartialIndexAlreadyExistsWithDifferentParameters {
+                parameters_on_disk: rd2.parameters,
+            },
+        );
+    }
+
+    let crash_state = Saves::<Chunks>::detect_crash(&saves_path, nb_chunk);
+
+    Ok(StartRestartOrError::Restart(crash_state))
+}
+
+// TODO error handling
+fn get_dir_and_files(
+    num_partition: usize,
+    output_dir: &str,
+    files: &mut Vec<String>,
+    sort_files_by_size: bool,
+) -> io::Result<(Vec<String>, String, PathBuf)> {
+    let output_path = Path::new(output_dir);
+    let partition_dir = match output_path.is_relative() {
+        true => std::env::current_dir()?.join(output_path),
+        false => output_path.to_path_buf(),
+    };
+
+    if sort_files_by_size {
+        sort_paths_by_file_size(files);
+    }
+
+    let saves_path = output_path.join("saves");
+    let file_paths = Vec::with_capacity(num_partition);
+
+    let partition_dir_string = partition_dir.to_string_lossy().into_owned();
+    Ok((file_paths, partition_dir_string, saves_path))
+}
 
 // TODO error handling
 fn create_dir_and_files(
