@@ -43,6 +43,8 @@ fn no_effect_chunk() {
         sampling_strategy: None,
         findere_z: 4,
         capacity: wrong_capacity(),
+        #[cfg(feature = "self-destruct")]
+        fail: None,
     };
     assert_eq!(parameters.nb_color, 4);
 

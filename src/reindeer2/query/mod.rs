@@ -204,21 +204,6 @@ pub fn update_color_abundances(
     }
 }
 
-pub fn load_kmer_counts_vector(dir_path: &str) -> io::Result<Vec<usize>> {
-    let mut file = File::open(Path::new(dir_path).join("kmer_counts_per_color.bin"))?;
-
-    // Read the rest of the file to deserialize the hashmap
-    let mut buffer = Vec::new();
-    file.read_to_end(&mut buffer)?;
-    let counts_vector = bincode::deserialize_from(&buffer[..]).map_err(|_| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            "Failed to deserialize the counts vector",
-        )
-    })?;
-    Ok(counts_vector)
-}
-
 // /// Formats a fasta header by removing the first `>` and taking up to the first space (excluded).
 // /// E.g.: `>seq1 ka:f:30` -> `seq1`
 // fn strip_header(s: &str) -> &str {

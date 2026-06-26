@@ -1,5 +1,6 @@
-use super::super::load_kmer_counts_vector;
-use crate::reindeer2::{BreakpointsNormalize, MatrixFormat, OutputFormat};
+use crate::reindeer2::{
+    BreakpointsNormalize, MatrixFormat, OutputFormat, kmer_counts::load_kmer_counts_vector,
+};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct KmerCountsAndNormalizeValue {

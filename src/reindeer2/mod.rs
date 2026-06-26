@@ -10,6 +10,10 @@ mod sort_file_of_file;
 mod storage;
 mod test_utils;
 
+use crate::reindeer2::kmer_counts::{
+    write_kmer_counts_to_disk, write_kmer_counts_to_disk_after_chunk_done,
+};
+use crate::reindeer2::save_atomics::atomics::load_atomics_from_disk;
 use bio::io::fasta::{self, Record};
 use flate2::read::GzDecoder;
 use itertools::Itertools;
@@ -63,6 +67,7 @@ impl UppercaseAsciiSeq for Record {
 
 // TODO rename
 struct DebugInfos {
+    kmer_counts_vector: Arc<Mutex<Vec<usize>>>,
     #[cfg(any(debug_assertions, test))]
     atomic_dense_kmers_count: AtomicU64,
     #[cfg(any(debug_assertions, test))]
@@ -75,11 +80,22 @@ struct DebugInfos {
     atomic_sparse_fp_seen: AtomicU64,
 }
 
+use std::io::ErrorKind;
+
+fn remove_if_exists(path: impl AsRef<std::path::Path>) -> std::io::Result<()> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e),
+    }
+}
+
 // TODO move to another place ?
 fn create_and_reserve_tar_get_file<P>(path: P, nb_object: u64) -> File
 where
     P: AsRef<Path>,
 {
+    remove_if_exists(&path).expect("should have been able to remove the tar_fet file if it exists");
     let file = OpenOptions::new()
         .read(true)
         .write(true)
@@ -277,16 +293,16 @@ pub struct Reindeer2 {
     index_dir: String, // TODO use a path ?
 }
 
-/// Declares a variable. The variable is declared as mut iif `#[cfg(any(debug_assertions, test))]`.
-macro_rules! mut_if_debug {
-    ($name:ident = $val:expr_2021) => {
-        #[cfg(any(debug_assertions, test))]
-        let mut $name = $val;
+// /// Declares a variable. The variable is declared as mut iif `#[cfg(any(debug_assertions, test))]`.
+// macro_rules! mut_if_debug {
+//     ($name:ident = $val:expr_2021) => {
+//         #[cfg(any(debug_assertions, test))]
+//         let mut $name = $val;
 
-        #[cfg(not(any(debug_assertions, test)))]
-        let $name = $val;
-    };
-}
+//         #[cfg(not(any(debug_assertions, test)))]
+//         let $name = $val;
+//     };
+// }
 
 /// Infos about a REINDEER 2 index.
 ///
@@ -314,6 +330,17 @@ impl fmt::Display for Infos {
         writeln!(f, "]")
     }
 }
+
+// /// Local variables used for the chunk indexation
+// /// Since the chunk indexation is allowed to crash, we must be able to restore them
+// /// This is easier if all the lacal variables are in this struct
+// pub struct IndexationLocalVariables {
+//     kmer_counts_vector: Arc<Mutex<Vec<usize>>>,
+//     #[cfg(any(debug_assertions, test))]
+//     atomic_sparse_one_seen: AtomicU64,
+//     #[cfg(any(debug_assertions, test))]
+//     atomic_sparse_fp_seen: AtomicU64,
+// }
 
 impl Reindeer2 {
     /// Constructs a new index handle.
@@ -394,45 +421,57 @@ impl Reindeer2 {
         threshold: usize,
         allow_count_right_after_angle_bracket: bool,
     ) -> io::Result<(Vec<String>, String)> {
-        mut_if_debug!(total_kmers = atomic::AtomicU64::new(0));
-        mut_if_debug!(atomic_dense_kmers_count = atomic::AtomicU64::new(0));
-        mut_if_debug!(atomic_sparse_kmers_count = atomic::AtomicU64::new(0));
-
         let parameters = &self.parameters;
 
-        #[cfg(any(debug_assertions, test))]
-        let mut atomic_sparse_one_seen = atomic::AtomicU64::new(0);
+        let chunks = split_fof(&file_paths, chunks_size)?;
 
-        #[cfg(any(debug_assertions, test))]
-        let mut atomic_sparse_fp_seen = atomic::AtomicU64::new(0);
+        let previous_run_infos = did_we_crash(&self.index_dir, parameters, chunks.len())
+            .expect("should have been able to read the output folder");
 
-        // TODO better error handling
-        let (_, dir_path) = create_dir_and_files(
-            parameters.partition_number,
-            &self.index_dir,
-            file_of_file_name,
-            &mut file_paths,
-            sort_files_by_size,
-        )
-        .map_err(|e| {
-            log::error!("Failed to create the index directory: {e}");
-            e
-        })?;
+        let crash_state = match previous_run_infos {
+            StartRestartOrError::Start => None,
+            StartRestartOrError::IndexAlreadyExists => {
+                log::error!("The output folder already exists. Remove it.");
+                panic!("The output folder already exists. Remove it.");
+            }
+            StartRestartOrError::PartialIndexAlreadyExistsWithDifferentParameters {
+                parameters_on_disk,
+            } => {
+                log::error!(
+                    "The output folder contains an index partially done. Continuing the indexation is possible, but the provided parameters are incompatblie with the index one's (parameters of the index on disk: {:?}). Consider giving the same parameters as the index partially built.",
+                    parameters_on_disk
+                );
+                panic!("The partial index's parameters does not match.");
+            }
+            StartRestartOrError::Restart(crash_state) => Some(crash_state),
+        };
+        dbg!(&crash_state);
+        let (dir_path, saves_path) = match crash_state {
+            None => Self::build_setup(
+                parameters,
+                &self.index_dir,
+                file_of_file_name,
+                &mut file_paths,
+                sort_files_by_size,
+            )?,
+            Some(_) => Self::build_restore(
+                parameters,
+                &self.index_dir,
+                &mut file_paths,
+                sort_files_by_size,
+            )?,
+        };
 
-        let kmer_counts_vector: Arc<Mutex<Vec<usize>>> =
-            Arc::new(Mutex::new(vec![0; parameters.nb_color]));
         let chunks = split_fof(&file_paths, chunks_size)?;
         // the number of color in each chunck
         let color_chunks = chunks.iter().map(Vec::len).collect_vec();
         let base = compute_base(parameters.abundance_number, parameters.abundance_max);
-
-        #[cfg(any(debug_assertions, test))]
-        log::debug!("Using log base {}", base);
-
         let partitioned_bf_size = (parameters.bf_size as usize) / parameters.partition_number;
 
+        log::debug!("Using log base {}", base);
+
         #[cfg(any(debug_assertions, test))]
-        log::debug!("In debug mode... the tool may take (much) longer than usual.");
+        log::info!("In debug mode... the tool may take (much) longer than usual.");
 
         log::info!("Initializing Bloom filter slices...");
 
@@ -445,7 +484,152 @@ impl Reindeer2 {
             None
         };
 
-        for (chunk_i, chunk) in chunks.iter().enumerate() {
+        let saves = Saves::new(saves_path.clone());
+
+        let chunk_crash = match crash_state {
+            Some(CrashState::Chunk { last_done }) => Some(Some(CrashedChunk { last_done })),
+            Some(CrashState::Merge {
+                still_to_be_done: _,
+            }) => None,
+            None => Some(None),
+        };
+
+        match chunk_crash {
+            None => {}
+            Some(maybe_crash) => {
+                dbg!("indexing chunks");
+                let mut index_chunk_data = self
+                    .index_chunks(
+                        &dir_path,
+                        &chunks,
+                        &maybe_dense_indexes,
+                        threshold,
+                        &color_chunks,
+                        base,
+                        allow_count_right_after_angle_bracket,
+                        maybe_crash,
+                        &saves_path,
+                    )
+                    .expect("error while indexing the chunks");
+
+                // After processing all chunks, write the dense indexes to disk
+                if let Some(dense_indexes) = maybe_dense_indexes {
+                    dense_indexes.write_to_disk(&dir_path).map_err(|e| {
+                        log::error!("Failed to write the dense index: {e}");
+                        e
+                    })?;
+                }
+
+                #[cfg(any(debug_assertions, test))]
+                {
+                    let DebugInfos {
+                        kmer_counts_vector: _,
+                        atomic_dense_kmers_count,
+                        atomic_sparse_kmers_count,
+                        total_kmers,
+                        atomic_sparse_one_seen,
+                        atomic_sparse_fp_seen,
+                    } = &mut index_chunk_data;
+
+                    // k-mers repartition between dense and sparse index
+                    log::info!(
+                        "The index contains {:?} 'dense' k-mers and {:?} 'sparse' k-mers (total k-mers: {:?})",
+                        atomic_dense_kmers_count.get_mut().separate_with_commas(),
+                        atomic_sparse_kmers_count.get_mut().separate_with_commas(),
+                        total_kmers.get_mut().separate_with_commas()
+                    );
+
+                    let ones = atomic_sparse_one_seen.get_mut();
+                    let silent = *atomic_sparse_kmers_count.get_mut() - *ones;
+                    let fp = atomic_sparse_fp_seen.get_mut();
+                    // k-mers indexed in the sparse index, FP silent and FP seen
+                    log::info!(
+                        "Among the {:?} k-mers added in the 'sparse' index, {:?} encountered hash collisions ({:?} silent and {:?} misleading).",
+                        atomic_sparse_kmers_count.get_mut().separate_with_commas(),
+                        (silent + *fp).separate_with_commas(),
+                        silent.separate_with_commas(),
+                        fp.separate_with_commas()
+                    );
+                }
+                write_kmer_counts_to_disk(&self.index_dir, &index_chunk_data.kmer_counts_vector)
+                    .expect("should have been able to write the kmer counts to disk");
+                saves.chunks_all_done();
+            }
+        }
+
+        // Merge the chunk-based bloom filters, if needed
+        if chunks.len() > 1 {
+            merge::merge_all_partitions_of_chunks(
+                &dir_path,
+                &dir_path, // output
+                partitioned_bf_size,
+                parameters.abundance_number.get(),
+                &color_chunks,
+                parameters.partition_number,
+            )
+            .map_err(|e| {
+                log::error!("Merge of intermediate files failed: {e}");
+                e
+            })?;
+            merge::remove_merged_partitions(&dir_path, color_chunks.len()).map_err(|e| {
+                log::error!("Cleanup of intermediate files failed: {e}");
+                e
+            })?;
+        }
+
+        // write metadata info to disk
+        self.indexed_file_names = get_file_names(&file_paths);
+        self.save_to_disk()?;
+
+        std::fs::remove_dir_all(saves_path)
+            .expect("should have been able to remove the saves path at the end of the indexation");
+
+        Ok((file_paths, dir_path))
+    }
+
+    fn index_chunks(
+        &self,
+        dir_path: &str,
+        chunks: &[Vec<String>],
+        maybe_dense_indexes: &Option<Arc<DenseIndex>>,
+        threshold: usize,
+        color_chunks: &[usize],
+        base: f64,
+        allow_count_right_after_angle_bracket: bool,
+        crash_state: Option<CrashedChunk>,
+        saves_path: &Path,
+    ) -> io::Result<DebugInfos> {
+        let parameters = &self.parameters;
+
+        let last_chunk_done = match crash_state {
+            Some(CrashedChunk { last_done }) => last_done,
+            None => None,
+        };
+
+        let (total_kmers, atomic_dense_kmers_count, atomic_sparse_kmers_count) =
+            load_atomics_from_disk(saves_path, last_chunk_done);
+        let kmer_counts_vector = load_kmer_counts_vector_written_after_chunk(
+            saves_path,
+            last_chunk_done,
+            parameters.nb_color,
+        )
+        .expect("should have been able to laod the kmer count vector from disk");
+        let kmer_counts_vector = Arc::new(Mutex::new(kmer_counts_vector));
+        let mut saves = Saves::from_crashed_chunk(saves_path.to_owned(), crash_state);
+
+        #[cfg(any(debug_assertions, test))]
+        let (atomic_sparse_one_seen, atomic_sparse_fp_seen) = match crash_state {
+            Some(CrashedChunk { last_done }) => load_debug_atomics_from_disk(saves_path, last_done),
+            None => (atomic::AtomicU64::new(0), atomic::AtomicU64::new(0)),
+        };
+
+        dbg!(saves.get_nb_chunk_that_can_be_skipped());
+
+        for (chunk_i, chunk) in chunks
+            .iter()
+            .enumerate()
+            .skip(saves.get_nb_chunk_that_can_be_skipped())
+        {
             // OPTIMIZE we are losing the underlying allocation of the Filters here
             // but currently each chunk could have a different size, so we have to recreate them
             // if this is a bottleneck, we should find a way to reuse the Filters
@@ -457,6 +641,8 @@ impl Reindeer2 {
                 parameters.bf_size as usize,
                 parameters.abundance_number.get(),
             );
+
+            dbg!(&kmer_counts_vector);
 
             // For each file in this chunk, process in *parallel* (soon)
             // TODO build the appropriate iterator to parallelize (or not) if dense is set
@@ -490,7 +676,7 @@ impl Reindeer2 {
                                         let sampler = NoSampler::new();
                                         index::process_fasta_file::<NoSampler>(
                                             path,
-                                            &maybe_dense_indexes,
+                                            maybe_dense_indexes,
                                             &bloom_filters,
                                             parameters.k,
                                             parameters.findere_z,
@@ -521,7 +707,7 @@ impl Reindeer2 {
                                         let sampler = MinimizerSampler::new(*last_bits_to_zero);
                                         index::process_fasta_file::<MinimizerSampler>(
                                             path,
-                                            &maybe_dense_indexes,
+                                            maybe_dense_indexes,
                                             &bloom_filters,
                                             parameters.k,
                                             parameters.findere_z,
@@ -550,7 +736,7 @@ impl Reindeer2 {
                                         let sampler = KmerSampler::new(*last_bits_to_zero);
                                         index::process_fasta_file::<KmerSampler>(
                                             path,
-                                            &maybe_dense_indexes,
+                                            maybe_dense_indexes,
                                             &bloom_filters,
                                             parameters.k,
                                             parameters.findere_z,
@@ -599,78 +785,154 @@ impl Reindeer2 {
 
             if chunks.len() > 1 {
                 if let Err(e) =
-                    bloom_filters.write_to_disk_tar_get_files_single_chunk(&dir_path, &chunk_i)
+                    bloom_filters.write_to_disk_tar_get_files_single_chunk(dir_path, &chunk_i)
                 {
                     eprintln!("Error writing Bloom filters for chunk {}: {}", chunk_i, e);
                 }
             } else {
                 // If there is only one chunk, write the final file directly
-                if let Err(e) = bloom_filters.write_to_disk_tar_get_files(&dir_path) {
+                if let Err(e) = bloom_filters.write_to_disk_tar_get_files(dir_path) {
                     eprintln!("Error writing Bloom filters for chunk {}: {}", chunk_i, e);
                 }
             }
+
+            write_kmer_counts_to_disk_after_chunk_done(saves_path, &kmer_counts_vector, chunk_i)?;
+            save_atomics::atomics::store_atomics_to_disk(
+                saves_path,
+                chunk_i,
+                &total_kmers,
+                &atomic_dense_kmers_count,
+                &atomic_sparse_kmers_count,
+            );
+            saves.one_chunk_done(chunk_i);
             log::trace!("Chunk {} done", chunk_i);
         }
 
-        // After processing all chunks, write the dense indexes to disk
-        if let Some(dense_indexes) = maybe_dense_indexes {
-            dense_indexes.write_to_disk(&dir_path).map_err(|e| {
-                log::error!("Failed to write the dense index: {e}");
-                e
-            })?;
-        }
-
-        write_kmer_counts_to_disk(&dir_path, &kmer_counts_vector)?;
+        #[cfg(not(any(debug_assertions, test)))]
+        return Ok(DebugInfos {});
 
         #[cfg(any(debug_assertions, test))]
-        {
-            // k-mers repartition between dense and sparse index
-            log::info!(
-                "The index contains {:?} 'dense' k-mers and {:?} 'sparse' k-mers (total k-mers: {:?})",
-                atomic_dense_kmers_count.get_mut().separate_with_commas(),
-                atomic_sparse_kmers_count.get_mut().separate_with_commas(),
-                total_kmers.get_mut().separate_with_commas()
-            );
-
-            let ones = atomic_sparse_one_seen.get_mut();
-            let silent = *atomic_sparse_kmers_count.get_mut() - *ones;
-            let fp = atomic_sparse_fp_seen.get_mut();
-            // k-mers indexed in the sparse index, FP silent and FP seen
-            log::info!(
-                "Among the {:?} k-mers added in the 'sparse' index, {:?} encountered hash collisions ({:?} silent and {:?} misleading).",
-                atomic_sparse_kmers_count.get_mut().separate_with_commas(),
-                (silent + *fp).separate_with_commas(),
-                silent.separate_with_commas(),
-                fp.separate_with_commas()
-            );
-        }
-
-        // Merge the chunk-based bloom filters, if needed
-        if chunks.len() > 1 {
-            merge::merge_all_partitions_of_chunks(
-                &dir_path,
-                &dir_path, // output
-                partitioned_bf_size,
-                parameters.abundance_number.get(),
-                &color_chunks,
-                parameters.partition_number,
-            )
-            .map_err(|e| {
-                log::error!("Merge of intermediate files failed: {e}");
-                e
-            })?;
-            merge::remove_merged_partitions(&dir_path, color_chunks.len()).map_err(|e| {
-                log::error!("Cleanup of intermediate files failed: {e}");
-                e
-            })?;
-        }
-
-        // write metadata info to disk
-        self.indexed_file_names = get_file_names(&file_paths);
-        self.save_to_disk()?;
-
-        Ok((file_paths, dir_path))
+        return Ok(DebugInfos {
+            kmer_counts_vector,
+            atomic_dense_kmers_count,
+            atomic_sparse_kmers_count,
+            total_kmers,
+            atomic_sparse_one_seen,
+            atomic_sparse_fp_seen,
+        });
     }
+
+    fn build_setup(
+        parameters: &Parameters,
+        index_dir: &str,
+        file_of_file_name: &str,
+        file_paths: &mut Vec<String>,
+        sort_files_by_size: bool,
+    ) -> io::Result<(/*IndexationLocalVariables,*/ String, PathBuf)> {
+        // TODO better error handling
+        let (_, dir_path, saves_path) = create_dir_and_files(
+            parameters.partition_number,
+            index_dir,
+            file_of_file_name,
+            file_paths,
+            sort_files_by_size,
+        )
+        .map_err(|e| {
+            log::error!("Failed to create the index directory: {e}");
+            e
+        })?;
+
+        // let kmer_counts_vector: Arc<Mutex<Vec<usize>>> =
+        //     Arc::new(Mutex::new(vec![0; parameters.nb_color]));
+
+        // #[cfg(any(debug_assertions, test))]
+        // let atomic_sparse_one_seen: atomic::AtomicU64 = atomic::AtomicU64::new(0);
+
+        // #[cfg(any(debug_assertions, test))]
+        // let atomic_sparse_fp_seen: atomic::AtomicU64 = atomic::AtomicU64::new(0);
+
+        Ok((
+            // IndexationLocalVariables {
+            //     kmer_counts_vector,
+            //     #[cfg(any(debug_assertions, test))]
+            //     atomic_sparse_one_seen,
+            //     #[cfg(any(debug_assertions, test))]
+            //     atomic_sparse_fp_seen,
+            // },
+            dir_path, saves_path,
+        ))
+    }
+
+    fn build_restore(
+        parameters: &Parameters,
+        index_dir: &str,
+        file_paths: &mut Vec<String>,
+        sort_files_by_size: bool,
+        // crash_state: CrashState,
+    ) -> io::Result<(/*IndexationLocalVariables,*/ String, PathBuf)> {
+        // TODO better error handling
+        let (_, dir_path, saves_path) = get_dir_and_files(
+            parameters.partition_number,
+            index_dir,
+            file_paths,
+            sort_files_by_size,
+        )
+        .map_err(|e| {
+            log::error!("Failed to fetch the index directory: {e}");
+            e
+        })?;
+
+        // let kmer_counts_vector = match crash_state {
+        //     CrashState::Chunk { last_done } => {
+        //         let kmer_counts_vector = load_kmer_counts_vector_written_after_chunk(
+        //             index_dir,
+        //             last_done,
+        //             parameters.nb_color,
+        //         )?;
+
+        //         #[cfg(any(debug_assertions, test))]
+        //         let (atomic_sparse_one_seen, atomic_sparse_fp_seen) = load_atomics_from_disk(&saves_path, last_done);
+
+        //         kmer_counts_vector
+        //     }
+        //     CrashState::Merge { still_to_be_done } => {
+        //         let kmer_counts_vector = load_kmer_counts_vector(index_dir)?;
+
+        //         #[cfg(any(debug_assertions, test))]
+        //         let (atomic_sparse_one_seen, atomic_sparse_fp_seen) = load_atomics_from_disk(&saves_path, last_done);
+
+        //         kmer_counts_vector
+        //     }
+        // };
+
+        // #[cfg(any(debug_assertions, test))]
+
+        // #[cfg(any(debug_assertions, test))]
+        // let atomic_sparse_fp_seen: atomic::AtomicU64 = atomic::AtomicU64::new(0);
+        // let kmer_counts_vector: Arc<Mutex<Vec<usize>>> = Arc::new(Mutex::new(kmer_counts_vector))
+
+        Ok((
+            // IndexationLocalVariables {
+            //     kmer_counts_vector,
+            //     #[cfg(any(debug_assertions, test))]
+            //     atomic_sparse_one_seen,
+            //     #[cfg(any(debug_assertions, test))]
+            //     atomic_sparse_fp_seen,
+            // },
+            dir_path, saves_path,
+        ))
+    }
+
+    //     #[cfg(any(debug_assertions, test))]
+    //     fn get_kmer_counts_vector_and_atomics(crash_state: Option<CrashState>) -> Arc<Mutex<Vec<usize>>> {
+    // match crash_state {
+    //     None =>
+    //     Some(CrashState::Chunk { last_done }) => {
+    //         load_atomics_from_disk(&saves_path, last_done);
+    //     }
+
+    // }
+    // }
 
     // TODO store bf_dir in Reindeer2 ?
     /// Performs a query on the index and writes the results on the disk.
@@ -900,235 +1162,6 @@ pub fn process_fasta_in_batches<R: io::BufRead>(
     Ok(())
 }
 
-// pub fn build_index_muset(
-//     unitigs_file: String,
-//     matrix_file: String,
-//     kmer_size: usize,
-//     minimizer_size: usize,
-//     bf_size: u64,
-//     partition_number: usize,
-//     color_nb: usize,
-//     abundance_number: usize,
-//     abundance_max: u16,
-//     output_dir: &str,
-//     dense_option: bool,
-//     threshold: usize,
-//     canonical: bool,
-//     debug: bool,
-// ) -> io::Result<(Vec<String>, String)> {
-//     let mut total_kmers = atomic::AtomicU64::new(0);
-//     let mut atomic_dense_kmers_count = atomic::AtomicU64::new(0);
-//     let mut atomic_sparse_kmers_count = atomic::AtomicU64::new(0);
-//     let mut atomic_sparse_one_seen = atomic::AtomicU64::new(0);
-//     let mut atomic_sparse_fp_seen = atomic::AtomicU64::new(0);
-//     let kmer_counts_vector: Arc<Mutex<Vec<usize>>> = Arc::new(Mutex::new(vec![color_nb, 0]));
-//     let base = compute_base(abundance_number, abundance_max);
-//     let max_map_size = 1_000_000;
-//     if debug {
-//         println!("In debug mode... the tool may take (much) longer than usual.");
-//         println!("Using log base {}", base);
-//     }
-//     println!("Initializing Bloom filter slices...");
-
-//     let (_, dir_path) = create_dir_and_files(partition_number, output_dir)?;
-
-//     // Shared data structures protected by Mutex for safe parallel access
-//     let maybe_dense_indexes: Option<Arc<DenseIndex>> = if dense_option {
-//         Some(Arc::new(DenseIndex::with_partition_number(
-//             partition_number,
-//         )))
-//     } else {
-//         None
-//     };
-
-//     let bloom_filters = Arc::new(Filters::with_number_partition(
-//         partition_number,
-//         color_nb,
-//         bf_size as usize, // TODO check unit
-//         abundance_number,
-//     ));
-
-//     let unitigs_reader = match read_file(&unitigs_file) {
-//         Ok(r) => r,
-//         Err(e) => {
-//             panic!("Failed to open file {}: {}", unitigs_file, e);
-//         }
-//     };
-//     let matrix_reader = match read_file(&matrix_file) {
-//         Ok(r) => r,
-//         Err(e) => {
-//             panic!("Failed to open file {}: {}", matrix_file, e);
-//         }
-//     };
-//     let len_matrix = matrix_reader.lines().count();
-//     let len_unitigs = unitigs_reader.lines().count();
-//     if len_matrix * 2 != len_unitigs {
-//         panic!("The number of unitigs doesn't match the matrix size.");
-//     }
-
-//     let mut matrix_lines = read_file(&matrix_file)?.lines();
-//     let mut unitigs_lines = read_file(&unitigs_file)?.lines();
-
-//     let mut partition_kmers: HashMap<usize, Vec<(u64, u16, usize, usize)>> = HashMap::new(); // keep kmer info to fill BFs
-
-//     let mut kmer_counts_vector_locked = kmer_counts_vector
-//         .lock()
-//         .expect("Failed to lock the kmer counter hashmap");
-//     for _ in 0..len_matrix {
-//         let abundance_line = matrix_lines.next().unwrap().unwrap();
-//         let mut abundance_iter = abundance_line.trim().split(" ");
-//         let unitig_id: &str = abundance_iter.next().unwrap();
-
-//         let abundances = abundance_iter
-//             .enumerate()
-//             .map(|(i, ab_value_str)| {
-//                 let ab_value = ab_value_str
-//                     .parse::<f64>()
-//                     .expect("Failed to parse the abundance values in the matrix")
-//                     as u16;
-//                 if ab_value == 0 {
-//                     0
-//                 } else {
-//                     kmer_counts_vector_locked[i] += 1; // select the count corresponding to the right color
-//                     (compute_log_abundance(ab_value, base, abundance_max) + 1) as u8
-//                 }
-//             })
-//             .collect::<Vec<u8>>();
-
-//         let tmp_abundance_vector = abundances.clone();
-//         let number_of_zeros: usize = tmp_abundance_vector.into_iter().filter(|x| *x == 0).count();
-
-//         let unitig_line = unitigs_lines.next().unwrap().unwrap();
-//         if &unitig_line.split(" ").next().unwrap()[1..] != unitig_id {
-//             println!(
-//                 "{} vs {}",
-//                 &unitig_line.split(" ").next().unwrap()[1..],
-//                 unitig_id
-//             );
-//             panic!("The unitig id dooesn't match between the unitigs file and the matrix file.")
-//         }
-
-//         let unitig_line = unitigs_lines.next().unwrap().unwrap();
-//         let seq_str = unitig_line.trim();
-//         for (kmer_hash, minimizer) in
-//             kmer_minimizers_seq_level(seq_str.as_bytes(), kmer_size, minimizer_size, canonical)
-//         {
-//             let partition = (minimizer % (partition_number as u64)) as usize;
-//             let new_kmers_added = (abundances.len() - number_of_zeros) as u64;
-//             total_kmers.fetch_add(new_kmers_added, atomic::Ordering::Relaxed);
-
-//             if dense_option && number_of_zeros <= threshold {
-//                 match &maybe_dense_indexes {
-//                     Some(dense_indexes) => {
-//                         dense_indexes.insert_abundance_to_partition(
-//                             partition,
-//                             kmer_hash,
-//                             abundances.clone(),
-//                         );
-//                         atomic_dense_kmers_count
-//                             .fetch_add(new_kmers_added, atomic::Ordering::Relaxed);
-//                     }
-//                     None => panic!("Failed to build the dense index."),
-//                 }
-//             } else {
-//                 atomic_sparse_kmers_count.fetch_add(new_kmers_added, atomic::Ordering::Relaxed);
-//                 let kmers_entry = partition_kmers // separate the kmers per partition
-//                     .entry(partition)
-//                     .or_default();
-
-//                 for (path_num, log_plusone) in abundances.iter().enumerate() {
-//                     let real_log_abundance = (log_plusone - 1) as u16;
-//                     if real_log_abundance > 0 {
-//                         kmers_entry.push((
-//                             kmer_hash,
-//                             real_log_abundance,
-//                             path_num,
-//                             0, // chunk index
-//                         ))
-//                     }
-//                 }
-//             }
-//             if partition_kmers.len() >= max_map_size {
-//                 bloom_filters.extend_by_draining_partitions_map(&mut partition_kmers);
-//             }
-//         }
-//     }
-//     // Index remaining kmers
-//     bloom_filters.extend_by_draining_partitions_map(&mut partition_kmers);
-
-//     #[cfg(any(debug_assertions, test))]
-//     bloom_filters.update_sparse_counts(
-//         &atomic_sparse_one_seen,
-//         &atomic_sparse_fp_seen,
-//         abundance_number,
-//     )?;
-
-//     if let Err(e) = bloom_filters.write_to_disk(&dir_path, &vec![color_nb], partition_number, 0) {
-//         eprintln!("Error writing Bloom filters on disk: {}", e);
-//     }
-
-//     // After processing all chunks, write the dense indexes to disk
-//     if let Some(dense_indexes) = maybe_dense_indexes {
-//         dense_indexes.write_to_disk(&dir_path)?;
-//     }
-
-//     write_kmer_counts_to_disk(&dir_path, &kmer_counts_vector)?;
-
-//     if debug {
-//         // k-mers repartition between dense and sparse index
-//         println!(
-//             "The index contains {:?} 'dense' k-mers and {:?} 'sparse' k-mers (total k-mers: {:?})",
-//             atomic_dense_kmers_count.get_mut().separate_with_commas(),
-//             atomic_sparse_kmers_count.get_mut().separate_with_commas(),
-//             total_kmers.get_mut().separate_with_commas()
-//         );
-
-//         let ones = atomic_sparse_one_seen.get_mut();
-//         let silent = *atomic_sparse_kmers_count.get_mut() - *ones;
-//         let fp = atomic_sparse_fp_seen.get_mut();
-//         // k-mers indexed in the sparse index, FP silent and FP seen
-//         println!("Among the {:?} k-mers added in the 'sparse' index, {:?} encountered hash collisions ({:?} silent and {:?} misleading).",
-//             atomic_sparse_kmers_count.get_mut().separate_with_commas(),
-//             (silent+*fp).separate_with_commas(),
-//             silent.separate_with_commas(),
-//             fp.separate_with_commas());
-//     }
-
-//     // Merge the chunk-based bloom filters, if needed
-//     // If there was only one chunk, rename files directly
-//     for partition_idx in 0..partition_number {
-//         let input_path = format!(
-//             "{}/partition_bloom_filters_c0_p{}.bin",
-//             dir_path, partition_idx
-//         );
-//         let output_path = format!(
-//             "{}/partition_bloom_filters_p{}.bin",
-//             dir_path, partition_idx
-//         );
-//         std::fs::rename(&input_path, &output_path)?;
-//     }
-
-//     // write partition info to a CSV or your desired format
-//     let _ = write_partition_to_csv(
-//         &dir_path,
-//         kmer_size,
-//         minimizer_size,
-//         bf_size,
-//         partition_number,
-//         color_nb,
-//         abundance_number,
-//         abundance_max,
-//         dense_option,
-//         canonical,
-//     );
-
-//     Ok((vec!["".to_string()], dir_path))
-// }
-
-// === GENERAL ===
-
-// --- BF MANAGEMENT ---
-
 const fn compute_base_position(
     smer_hash: u64,
     partitioned_bf_size: usize,
@@ -1226,8 +1259,7 @@ fn create_dir_and_files(
     file_of_file_name: &str,
     files: &mut Vec<String>,
     sort_files_by_size: bool,
-) -> io::Result<(Vec<String>, String)> {
-    log::info!("Writing partitioned files in directory: {}", output_dir);
+) -> io::Result<(Vec<String>, String, PathBuf)> {
     let output_path = Path::new(output_dir);
     let partition_dir = match output_path.is_relative() {
         true => std::env::current_dir()?.join(output_path),
@@ -1252,9 +1284,13 @@ fn create_dir_and_files(
     }
     writer.flush()?;
 
+    // creates a folder for the saves
+    let saves_path = output_path.join("saves");
+    fs::create_dir_all(&saves_path)?;
+
     let file_paths = Vec::with_capacity(num_partition);
     let partition_dir_string = partition_dir.to_string_lossy().into_owned();
-    Ok((file_paths, partition_dir_string))
+    Ok((file_paths, partition_dir_string, saves_path))
     /* For instance, if this is the complete structure,
                             c0  c1  c2  c3
             color 0   abund 0   0   1   1
@@ -1271,26 +1307,6 @@ fn create_dir_and_files(
     so here the fn will write
     000000000000  as a partitioned_bloom_filters
     */
-}
-
-fn write_kmer_counts_to_disk(
-    dir_path: &str,
-    kmer_counts_vector: &Arc<Mutex<Vec<usize>>>,
-) -> io::Result<()> {
-    // OPTIMIZE we may be able to drop the lock before writing to disk
-    let file_path = Path::new(dir_path).join("kmer_counts_per_color.bin");
-    let file = File::create(&file_path)?;
-    let mut writer = BufWriter::new(file);
-    let mut locked_vector = kmer_counts_vector.lock().expect(
-        "fatal error: a thread holding the mutex panicked, so this thread will panic as well",
-    );
-    let locked_vector_ref: &Vec<usize> = &locked_vector;
-    let binary_encoded = bincode::serialize(locked_vector_ref)
-        .expect("should have been able to serialize the count of k-mers");
-    locked_vector.clear();
-    drop(locked_vector);
-    writer.write_all(&binary_encoded)?;
-    Ok(())
 }
 
 // --- LOAD FROM DISK ---
@@ -1369,7 +1385,6 @@ fn split_fof(lines: &[String], number_of_chunks: usize) -> io::Result<Vec<Vec<St
 // pub fn explore_muset_dir(dir_str: &str) -> (String, String, usize) {
 //     let dir_path = Path::new(dir_str);
 //     if !dir_path.is_dir() {
-//         panic!("{} is not a directory", dir_str);
 //     }
 //     let unitigs_path = dir_path.join("unitigs.fa");
 //     if !unitigs_path.exists() {
@@ -1377,8 +1392,7 @@ fn split_fof(lines: &[String], number_of_chunks: usize) -> io::Result<Vec<Vec<St
 //     }
 //     let abundance_path = dir_path.join("unitigs.abundance.mat");
 //     if !abundance_path.exists() {
-//         panic!("File not found : {:#?}", abundance_path);
-//     }
+//         panic!("File not found : {:#?}", return StartRe
 
 //     let reader = BufReader::new(
 //         File::open(&abundance_path).expect(&format!("Failed to open {:#?}", abundance_path)),
@@ -1915,6 +1929,8 @@ mod tests {
             sampling_strategy: None,
             findere_z: z,
             capacity: wrong_capacity(),
+            #[cfg(feature = "self-destruct")]
+            fail: None,
         };
         let indexed_file_names = vec![String::from("a"), String::from("b")];
 
@@ -1938,7 +1954,12 @@ mod tests {
         query_file_id: usize,
         test_dir: impl Into<String>,
     ) -> String {
-        let mut index = Reindeer2::new(parameters, test_dir.into());
+        let test_dir: String = test_dir.into();
+        let index_path = Path::new(&test_dir)
+            .join("index")
+            .to_string_lossy()
+            .to_string();
+        let mut index = Reindeer2::new(parameters, index_path);
         let (_file_paths, index_dir) = index
             .build(
                 "fof",
@@ -1950,7 +1971,7 @@ mod tests {
             )
             .expect("Failed to build index");
 
-        let query_results_path = format!("{}/query_results.csv", index_dir);
+        let query_results_path = format!("{}/query_results.csv", test_dir);
 
         let index_from_disk =
             Reindeer2::load_from_disk(&index_dir).expect("Failed to load index infos from disk");
@@ -1989,6 +2010,10 @@ mod tests {
     ) {
         let test_dir = random_directory.filename().to_str().unwrap();
         fs::create_dir_all(test_dir).expect("Failed to create test directory");
+        let index_dir = Path::new(test_dir)
+            .join("index_dir")
+            .to_string_lossy()
+            .to_string();
 
         let fof_path = format!("{}/fof.txt", test_dir);
         let file1_path = format!("{}/file1Q.fa", test_dir);
@@ -2022,11 +2047,13 @@ mod tests {
             sampling_strategy: None,
             findere_z: z,
             capacity: wrong_capacity(),
+            #[cfg(feature = "self-destruct")]
+            fail: None,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
 
-        let mut index = Reindeer2::new(parameters, String::from(test_dir));
+        let mut index = Reindeer2::new(parameters, String::from(&index_dir));
         let (_file_paths, index_dir) = index
             .build(
                 "fof",
@@ -2106,6 +2133,8 @@ mod tests {
             sampling_strategy: None,
             findere_z: z,
             capacity: wrong_capacity(),
+            #[cfg(feature = "self-destruct")]
+            fail: None,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -2184,6 +2213,8 @@ mod tests {
             sampling_strategy: None,
             findere_z: z,
             capacity: wrong_capacity(),
+            #[cfg(feature = "self-destruct")]
+            fail: None,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -2261,6 +2292,8 @@ mod tests {
             sampling_strategy: None,
             findere_z: z,
             capacity: wrong_capacity(),
+            #[cfg(feature = "self-destruct")]
+            fail: None,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -2337,6 +2370,8 @@ mod tests {
             sampling_strategy: None,
             findere_z: z,
             capacity: wrong_capacity(),
+            #[cfg(feature = "self-destruct")]
+            fail: None,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -2409,6 +2444,8 @@ mod tests {
             sampling_strategy: None,
             findere_z: z,
             capacity: wrong_capacity(),
+            #[cfg(feature = "self-destruct")]
+            fail: None,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -2486,6 +2523,8 @@ mod tests {
             sampling_strategy: None,
             findere_z: z,
             capacity: wrong_capacity(),
+            #[cfg(feature = "self-destruct")]
+            fail: None,
         };
         let chunks_size = 128;
         let threshold = 1;
@@ -2565,6 +2604,8 @@ mod tests {
             sampling_strategy: None,
             findere_z: z,
             capacity: wrong_capacity(),
+            #[cfg(feature = "self-destruct")]
+            fail: None,
         };
         let chunks_size = 128;
         let threshold = 1;
@@ -2643,6 +2684,8 @@ mod tests {
             sampling_strategy: None,
             findere_z: z,
             capacity: wrong_capacity(),
+            #[cfg(feature = "self-destruct")]
+            fail: None,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -2723,6 +2766,8 @@ mod tests {
             sampling_strategy: None,
             findere_z: z,
             capacity: wrong_capacity(),
+            #[cfg(feature = "self-destruct")]
+            fail: None,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -2803,6 +2848,8 @@ mod tests {
             sampling_strategy: None,
             findere_z: z,
             capacity: wrong_capacity(),
+            #[cfg(feature = "self-destruct")]
+            fail: None,
         };
         let chunks_size = 1;
         let threshold = parameters.nb_color;
@@ -2883,6 +2930,8 @@ mod tests {
             sampling_strategy: None,
             findere_z: z,
             capacity: wrong_capacity(),
+            #[cfg(feature = "self-destruct")]
+            fail: None,
         };
         let chunks_size = 1;
         let threshold = parameters.nb_color;
@@ -2959,6 +3008,8 @@ mod tests {
             sampling_strategy: None,
             findere_z: z,
             capacity: wrong_capacity(),
+            #[cfg(feature = "self-destruct")]
+            fail: None,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -3033,6 +3084,8 @@ mod tests {
             sampling_strategy: None,
             findere_z: z,
             capacity: wrong_capacity(),
+            #[cfg(feature = "self-destruct")]
+            fail: None,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -3333,6 +3386,8 @@ mod tests {
             sampling_strategy: None,
             findere_z: z,
             capacity: wrong_capacity(),
+            #[cfg(feature = "self-destruct")]
+            fail: None,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -3474,6 +3529,8 @@ mod tests {
             sampling_strategy: None,
             findere_z: z,
             capacity: wrong_capacity(),
+            #[cfg(feature = "self-destruct")]
+            fail: None,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -3587,6 +3644,8 @@ mod tests {
             sampling_strategy: None,
             findere_z: z,
             capacity: wrong_capacity(),
+            #[cfg(feature = "self-destruct")]
+            fail: None,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -3697,6 +3756,8 @@ mod tests {
             sampling_strategy: None,
             findere_z: z,
             capacity: wrong_capacity(),
+            #[cfg(feature = "self-destruct")]
+            fail: None,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -3818,6 +3879,8 @@ mod tests {
             sampling_strategy: None,
             findere_z: z,
             capacity: wrong_capacity(),
+            #[cfg(feature = "self-destruct")]
+            fail: None,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -3849,19 +3912,31 @@ mod tests {
             (">seq2 ka:f:12".to_string(), String::from("file2Q"), 12),
         ];
 
-        let nb_files = fs::read_dir(test_dir)
+        let index_path = Path::new(&test_dir)
+            .join("index")
+            .to_string_lossy()
+            .to_string();
+        let nb_files = fs::read_dir(&index_path)
             .expect("Failed to read directory")
             .filter_map(|entry| entry.ok())
             .filter(|entry| entry.path().is_file())
             .count();
+        fs::read_dir(index_path)
+            .expect("Failed to read directory")
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| {
+                !entry
+                    .path()
+                    .to_string_lossy()
+                    .contains("partition_bloom_filters")
+            })
+            .for_each(|entry| println!("{entry:?}"));
+
         // NB_FILE_IN_AN_INDEX partitions
-        // 9 fa files
         // index_info
         // kmer_counts_per_color
-        // fof.txt
-        // query_results
         // fof
-        assert_eq!(nb_files, NB_FILE_IN_AN_INDEX + 9 + 1 + 1 + 1 + 1 + 1);
+        assert_eq!(nb_files, NB_FILE_IN_AN_INDEX + 1 + 1 + 1);
 
         for (expected, actual) in expected_results.iter().zip(results.iter()) {
             assert_eq!(
@@ -3907,13 +3982,19 @@ mod tests {
             sampling_strategy: None,
             findere_z: z,
             capacity: wrong_capacity(),
+            #[cfg(feature = "self-destruct")]
+            fail: None,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
-
         let _batch_size = 2;
 
-        let mut index = Reindeer2::new(parameters, String::from(test_dir));
+        let index_path = Path::new(&test_dir)
+            .join("index")
+            .to_string_lossy()
+            .to_string();
+
+        let mut index = Reindeer2::new(parameters, index_path.clone());
 
         let (_file_paths, index_dir) = index
             .build(
@@ -3931,7 +4012,7 @@ mod tests {
         index_from_disk
             .query(
                 &fasta_path,
-                test_dir,
+                &index_path,
                 &output_path,
                 OutputFormat::Colored { normalized: None },
                 0.5,
@@ -3981,7 +4062,7 @@ mod tests {
         random_directory: AutoRemoveDirectory,
     ) {
         let test_dir = random_directory.filename().to_str().unwrap();
-        fs::create_dir_all(test_dir).expect("Failed to create test directory");
+        // fs::create_dir_all(test_dir).expect("Failed to create test directory");
 
         let file1_path = String::from("tests/unit_tests_data/random_seq_with_revcomp.fa");
         let file2_path = String::from("tests/unit_tests_data/random_seq.fa");
@@ -4001,6 +4082,8 @@ mod tests {
             sampling_strategy: None,
             findere_z: z,
             capacity: wrong_capacity(),
+            #[cfg(feature = "self-destruct")]
+            fail: None,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -4057,6 +4140,10 @@ shared_revcomp_with_other_test_file\t0-19:3\t0-19:10",
     ) {
         let test_dir = random_directory.filename().to_str().unwrap();
         fs::create_dir_all(test_dir).expect("Failed to create test directory");
+        let index_path = Path::new(&test_dir)
+            .join("index")
+            .to_string_lossy()
+            .to_string();
 
         let file1_path = String::from("tests/unit_tests_data/random_seq_with_revcomp.fa");
         let file2_path = String::from("tests/unit_tests_data/random_seq.fa");
@@ -4076,11 +4163,13 @@ shared_revcomp_with_other_test_file\t0-19:3\t0-19:10",
             sampling_strategy: None,
             findere_z: z,
             capacity: wrong_capacity(),
+            #[cfg(feature = "self-destruct")]
+            fail: None,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
 
-        let mut index = Reindeer2::new(parameters, String::from(test_dir));
+        let mut index = Reindeer2::new(parameters, index_path);
         let (_, index_dir) = index
             .build(
                 "fof",
@@ -4144,6 +4233,10 @@ shared_revcomp_with_other_test_file\t0-19:10\t0-19:3",
     ) {
         let test_dir = random_directory.filename().to_str().unwrap();
         fs::create_dir_all(test_dir).expect("Failed to create test directory");
+        let index_path = Path::new(&test_dir)
+            .join("index")
+            .to_string_lossy()
+            .to_string();
 
         let file1_path = String::from("tests/unit_tests_data/random_seq_with_revcomp.fa");
         let file2_path = String::from("tests/unit_tests_data/duplication.fa");
@@ -4163,11 +4256,13 @@ shared_revcomp_with_other_test_file\t0-19:10\t0-19:3",
             sampling_strategy: None,
             findere_z: z,
             capacity: wrong_capacity(),
+            #[cfg(feature = "self-destruct")]
+            fail: None,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
 
-        let mut index = Reindeer2::new(parameters, String::from(test_dir));
+        let mut index = Reindeer2::new(parameters, index_path.clone());
         let (_, index_dir) = index
             .build(
                 "fof",
@@ -4181,11 +4276,11 @@ shared_revcomp_with_other_test_file\t0-19:10\t0-19:3",
 
         let query_results_path = format!("{}/query_results.csv", index_dir);
 
-        let index_from_disk = Reindeer2::load_from_disk(&index_dir).unwrap();
+        let index_from_disk = Reindeer2::load_from_disk(&index_path).unwrap();
         index_from_disk
             .query(
                 &file_paths[1],
-                &index_dir,
+                &index_path,
                 &query_results_path,
                 OutputFormat::AbundanceMatrix {
                     format: MatrixFormat::Raw(None),
@@ -4215,7 +4310,6 @@ header_0\t0-69:*\t0-69:1",
         random_directory: AutoRemoveDirectory,
     ) {
         let test_dir = random_directory.filename().to_str().unwrap();
-        fs::create_dir_all(test_dir).expect("Failed to create test directory");
 
         let file1_path = String::from("tests/unit_tests_data/random_seq_with_revcomp.fa");
         let file2_path = String::from("tests/unit_tests_data/random_seq.fa");
@@ -4235,6 +4329,8 @@ header_0\t0-69:*\t0-69:1",
             sampling_strategy: None,
             findere_z: z,
             capacity: wrong_capacity(),
+            #[cfg(feature = "self-destruct")]
+            fail: None,
         };
         let chunks_size = 128;
         let threshold = parameters.nb_color;
@@ -4313,8 +4409,6 @@ shared_revcomp_with_other_test_file\t0-19:*\t0-19:10",
 
         fs::create_dir_all(&index1_files_dir)?;
         fs::create_dir_all(&index2_files_dir)?;
-        fs::create_dir_all(&index1_index_dir)?;
-        fs::create_dir_all(&index2_index_dir)?;
 
         let file1_path = format!("{}/file1.fa", index1_files_dir);
         {
@@ -4355,6 +4449,8 @@ shared_revcomp_with_other_test_file\t0-19:*\t0-19:10",
             sampling_strategy: None,
             findere_z: z,
             capacity,
+            #[cfg(feature = "self-destruct")]
+            fail: None,
         };
 
         let chunks_size = 128;
@@ -4471,5 +4567,55 @@ shared_revcomp_with_other_test_file\t0-19:*\t0-19:10",
         let outcome = replace_first_if_not_already_in(&mut input, "b", String::from("e"));
         assert_eq!(outcome, ReplaceOutcome::Replaced);
         assert_eq!(expected, input);
+    }
+
+    use super::remove_if_exists;
+
+    use std::fs::{self, File};
+    use std::io::ErrorKind;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_path() -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+
+        std::env::temp_dir().join(format!("remove_if_exists_test_{unique}"))
+    }
+
+    #[test]
+    fn removes_existing_file() {
+        let path = temp_path();
+        File::create(&path).unwrap();
+
+        assert!(path.exists());
+
+        remove_if_exists(&path).unwrap();
+
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn succeeds_when_file_does_not_exist() {
+        let path = temp_path();
+
+        assert!(!path.exists());
+
+        remove_if_exists(&path).unwrap();
+
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn returns_error_for_directory() {
+        let path = temp_path();
+        fs::create_dir(&path).unwrap();
+
+        let err = remove_if_exists(&path).unwrap_err();
+        assert_ne!(err.kind(), ErrorKind::NotFound);
+
+        fs::remove_dir(&path).unwrap();
     }
 }

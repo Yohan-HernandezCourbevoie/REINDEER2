@@ -15,9 +15,10 @@ pub fn load_atomics_from_disk(
         Some(x) => x,
     };
 
-    let total_kmers =
-        std::fs::read_to_string(save_path.join(format!("total_kmers_chunk{last_chunk_done}")))
-            .expect("could not read debug atomics from the save file");
+    let total_kmers = std::fs::read_to_string(
+        save_path.join(format!("atomic_total_kmers_chunk{last_chunk_done}")),
+    )
+    .expect("could not read debug atomics from the save file");
     let atomic_dense_kmers_count = std::fs::read_to_string(
         save_path.join(format!("atomic_dense_kmers_count_chunk{last_chunk_done}")),
     )
