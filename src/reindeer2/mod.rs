@@ -1,8 +1,11 @@
 mod dense_index;
 mod index;
+mod kmer_counts;
 mod merge;
 mod minimizer_iter;
 pub mod query;
+mod save_atomics;
+mod saves;
 mod sort_file_of_file;
 mod storage;
 mod test_utils;
@@ -17,7 +20,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
 use std::num::NonZero;
 use std::panic;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, atomic};
 
 pub use merge::merge_multiple_indexes;
