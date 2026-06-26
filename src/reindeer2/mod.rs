@@ -39,7 +39,7 @@ use zstd::stream::decode_all;
 
 use crate::reindeer2::dense_index::DenseIndex;
 use crate::reindeer2::minimizer_iter::{KmerSampler, MinimizerSampler, NoSampler, Sampler};
-use crate::reindeer2::query::{ApproxAbundance, fimpera, load_kmer_counts_vector};
+use crate::reindeer2::saves::{CrashState, CrashedChunk, CrashedMerge};
 use crate::reindeer2::storage::filters::Filters;
 
 const NB_FILE_IN_AN_INDEX: usize = 1024;

@@ -116,6 +116,16 @@ pub struct IndexArgs {
     /// This speeds up multithreaded indexation, because the files in each chunk of work are less imbalanced.
     #[arg(long, default_value_t = false)]
     pub no_sort_files_by_size: bool,
+
+    #[cfg(feature = "self-destruct")]
+    /// Test parameter: make the indexation fail after indexing a certain number of chunk.
+    #[arg(long, value_name = "kaboom_chunk")]
+    pub chunk_explode_at_step: Option<usize>,
+
+    #[cfg(feature = "self-destruct")]
+    /// Test parameter: make the indexation fail when merging a certain group of files.
+    #[arg(long, value_name = "kaboom_merge")]
+    pub merge_explode_at_step: Option<usize>,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, ValueEnum)]
