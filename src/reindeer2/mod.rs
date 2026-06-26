@@ -21,13 +21,19 @@ use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
 use std::num::NonZero;
 use std::panic;
 use std::path::{Path, PathBuf};
+#[cfg(any(debug_assertions, test))]
+use std::sync::atomic::{AtomicU16, AtomicU64};
 use std::sync::{Arc, Mutex, atomic};
 
 pub use merge::merge_multiple_indexes;
+use saves::{Chunks, Merge, Saves};
 pub use sort_file_of_file::sort_paths_by_file_size;
 
 #[cfg(any(debug_assertions, test))]
 use thousands::Separable;
+
+#[cfg(any(debug_assertions, test))]
+use crate::reindeer2::save_atomics::debug_atomics::load_debug_atomics_from_disk;
 
 use zstd::stream::decode_all;
 
