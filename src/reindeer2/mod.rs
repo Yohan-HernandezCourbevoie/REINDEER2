@@ -39,6 +39,7 @@ use zstd::stream::decode_all;
 
 use crate::reindeer2::dense_index::DenseIndex;
 use crate::reindeer2::minimizer_iter::{KmerSampler, MinimizerSampler, NoSampler, Sampler};
+use crate::reindeer2::query::{ApproxAbundance, fimpera};
 use crate::reindeer2::saves::{CrashState, CrashedChunk, CrashedMerge};
 use crate::reindeer2::storage::filters::Filters;
 
