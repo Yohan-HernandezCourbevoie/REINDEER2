@@ -27,7 +27,7 @@ use std::num::NonZero;
 use std::panic;
 use std::path::{Path, PathBuf};
 #[cfg(any(debug_assertions, test))]
-use std::sync::atomic::{AtomicU16, AtomicU64};
+use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex, atomic};
 
 pub use merge::merge_multiple_indexes;
@@ -38,7 +38,9 @@ pub use sort_file_of_file::sort_paths_by_file_size;
 use thousands::Separable;
 
 #[cfg(any(debug_assertions, test))]
-use crate::reindeer2::save_atomics::debug_atomics::load_debug_atomics_from_disk;
+use crate::reindeer2::save_atomics::debug_atomics::{
+    load_debug_atomics_from_disk, store_debug_atomics_to_disk,
+};
 
 use zstd::stream::decode_all;
 
@@ -405,13 +407,13 @@ impl Reindeer2 {
     }
 
     /// Save an index metadata into a JSON file in the directory of the index
-    fn save_to_disk(&self) -> io::Result<()> {
-        log::info!("Saving index information to {}", self.index_dir);
+    fn save_infos_to_disk(&self) -> io::Result<()> {
+        // log::info!("Saving index information to {}", self.index_dir);
         let output_path = Self::index_infos_file(&self.index_dir);
         let file = File::create(&output_path)?;
         let writer = BufWriter::new(file);
         serde_json::to_writer(writer, self)?;
-        log::info!("Index information written to {}", output_path);
+        // log::info!("Index information written to {}", output_path);
         Ok(())
     }
 
@@ -501,7 +503,6 @@ impl Reindeer2 {
         match chunk_crash {
             None => {}
             Some(maybe_crash) => {
-                dbg!("indexing chunks");
                 let mut index_chunk_data = self
                     .index_chunks(
                         &dir_path,
@@ -581,9 +582,8 @@ impl Reindeer2 {
             })?;
         }
 
-        // write metadata info to disk
         self.indexed_file_names = get_file_names(&file_paths);
-        self.save_to_disk()?;
+        self.save_infos_to_disk()?;
 
         std::fs::remove_dir_all(saves_path)
             .expect("should have been able to remove the saves path at the end of the indexation");
@@ -627,8 +627,6 @@ impl Reindeer2 {
             None => (atomic::AtomicU64::new(0), atomic::AtomicU64::new(0)),
         };
 
-        dbg!(saves.get_nb_chunk_that_can_be_skipped());
-
         for (chunk_i, chunk) in chunks
             .iter()
             .enumerate()
@@ -645,8 +643,6 @@ impl Reindeer2 {
                 parameters.bf_size as usize,
                 parameters.abundance_number.get(),
             );
-
-            dbg!(&kmer_counts_vector);
 
             // For each file in this chunk, process in *parallel* (soon)
             // TODO build the appropriate iterator to parallelize (or not) if dense is set
@@ -1082,7 +1078,7 @@ impl Reindeer2 {
     pub fn rename(&mut self, old_name: &str, new_name: String) -> io::Result<ReplaceOutcome> {
         let outcome =
             replace_first_if_not_already_in(&mut self.indexed_file_names, old_name, new_name);
-        self.save_to_disk()?;
+        self.save_infos_to_disk()?;
         Ok(outcome)
     }
 }
@@ -1941,7 +1937,7 @@ mod tests {
         let mut expected = Reindeer2::new(parameters, String::from(bf_dir));
         expected.set_indexed_file_names(indexed_file_names);
         fs::create_dir_all(bf_dir).expect("Failed to create test directory");
-        expected.save_to_disk().unwrap();
+        expected.save_infos_to_disk().unwrap();
 
         let actual = Reindeer2::load_from_disk(bf_dir).unwrap();
         assert_eq!(actual, expected);

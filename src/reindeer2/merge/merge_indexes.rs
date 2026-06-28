@@ -229,7 +229,7 @@ pub fn merge_multiple_indexes(indexes_fof: &str, output_dir: &str) -> io::Result
         indexed_file_names,
         index_dir: String::from(output_dir),
     };
-    index_merged.save_to_disk()?;
+    index_merged.save_infos_to_disk()?;
 
     log::info!(
         "Successfully merged {} indexes into directory: {}",
