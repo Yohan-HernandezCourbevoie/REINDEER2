@@ -13,7 +13,7 @@ mod test_utils;
 use crate::reindeer2::kmer_counts::{
     write_kmer_counts_to_disk, write_kmer_counts_to_disk_after_chunk_done,
 };
-use crate::reindeer2::save_atomics::atomics::load_atomics_from_disk;
+use crate::reindeer2::save_atomics::atomics::{load_atomics_from_disk, store_atomics_to_disk};
 use bio::io::fasta::{self, Record};
 use derivative::Derivative;
 use flate2::read::GzDecoder;
@@ -801,7 +801,7 @@ impl Reindeer2 {
             }
 
             write_kmer_counts_to_disk_after_chunk_done(saves_path, &kmer_counts_vector, chunk_i)?;
-            save_atomics::atomics::store_atomics_to_disk(
+            store_atomics_to_disk(
                 saves_path,
                 chunk_i,
                 &total_kmers,
@@ -1941,7 +1941,7 @@ mod tests {
         let mut expected = Reindeer2::new(parameters, String::from(bf_dir));
         expected.set_indexed_file_names(indexed_file_names);
         fs::create_dir_all(bf_dir).expect("Failed to create test directory");
-        expected.save_to_disk().unwrap();
+        expected.save_infos_to_disk().unwrap();
 
         let actual = Reindeer2::load_from_disk(bf_dir).unwrap();
         assert_eq!(actual, expected);
