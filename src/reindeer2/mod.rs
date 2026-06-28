@@ -1941,7 +1941,7 @@ mod tests {
         let mut expected = Reindeer2::new(parameters, String::from(bf_dir));
         expected.set_indexed_file_names(indexed_file_names);
         fs::create_dir_all(bf_dir).expect("Failed to create test directory");
-        expected.save_infos_to_disk().unwrap();
+        expected.save_to_disk().unwrap();
 
         let actual = Reindeer2::load_from_disk(bf_dir).unwrap();
         assert_eq!(actual, expected);
