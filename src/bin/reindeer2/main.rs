@@ -136,10 +136,12 @@ fn main() -> io::Result<()> {
         }) => {
             #[cfg(feature = "self-destruct")]
             {
-                log::warn!("You are using the \"self-destruct\" feature. Only use it for testing. Consider recompiling the tool without this feature
-            .");
-                println!("Warning: you are using the \"self-destruct\" feature. Only use it for testing. Consider recompiling the tool without this feature
-            .");
+                log::warn!(
+                    "You are using the \"self-destruct\" feature. Only use it for testing. Consider recompiling the tool without this feature."
+                );
+                println!(
+                    "Warning: you are using the \"self-destruct\" feature. Only use it for testing. Consider recompiling the tool without this feature."
+                );
             }
 
             let sort_files_by_size = !no_sort_files_by_size;

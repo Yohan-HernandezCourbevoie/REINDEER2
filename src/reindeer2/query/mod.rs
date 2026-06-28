@@ -3,9 +3,6 @@ mod findere;
 pub mod format;
 
 use std::collections::HashMap;
-use std::fs::File;
-use std::io::{self, Read};
-use std::path::Path;
 
 use crate::reindeer2::{NB_FILE_IN_AN_INDEX, UppercaseAsciiSeq};
 

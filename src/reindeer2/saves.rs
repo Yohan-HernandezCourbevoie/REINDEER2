@@ -45,7 +45,7 @@ impl<T> Saves<T> {
         format!("chunk_{chunk}_done")
     }
 
-    pub fn get_filename_for_all_chunk_done() -> &'static str {
+    pub const fn get_filename_for_all_chunk_done() -> &'static str {
         "chunks_all_done"
     }
 
