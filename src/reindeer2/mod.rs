@@ -15,6 +15,7 @@ use crate::reindeer2::kmer_counts::{
 };
 use crate::reindeer2::save_atomics::atomics::load_atomics_from_disk;
 use bio::io::fasta::{self, Record};
+use derivative::Derivative;
 use flate2::read::GzDecoder;
 use itertools::Itertools;
 use rayon::prelude::*;
@@ -177,7 +178,9 @@ pub enum FailIndexation {
 }
 
 /// REINDEER 2's  parameters
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[derive(Derivative)]
+#[derivative(PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Parameters {
     /// Size of the Bloom filter in bits
     pub bf_size: u64,
@@ -209,6 +212,7 @@ pub struct Parameters {
     pub findere_z: usize,
     pub capacity: usize,
     #[cfg(feature = "self-destruct")]
+    #[derivative(PartialEq = "ignore")]
     /// Test parameter: make the indexation fail.
     pub fail: Option<FailIndexation>,
 }
