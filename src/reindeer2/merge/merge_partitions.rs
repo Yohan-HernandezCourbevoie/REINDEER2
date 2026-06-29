@@ -6,14 +6,16 @@ use std::{
     fs::File,
     io::{self, BufWriter, Write},
     path::Path,
+    sync::{Arc, Mutex},
     time::Instant,
 };
 
 use crate::reindeer2::{
     NB_FILE_IN_AN_INDEX, create_and_reserve_tar_get_file,
-    merge::merge_partition_slices_interleaved, storage::filters::load_bloom_filter_from_big_file,
+    merge::merge_partition_slices_interleaved,
+    saves::{Merge, Saves},
+    storage::filters::load_bloom_filter_from_big_file,
 };
-
 /// Removes partitions (they are unecessary after a merge).
 pub fn remove_merged_partitions(
     chunk_files_dir: &str,
@@ -41,46 +43,69 @@ pub fn merge_all_partitions_of_chunks(
     abundance_number: usize,
     color_counts_per_chunk: &[usize], // number of colors in each chunk
     num_partitions: usize,
+    mut saves: Saves<Merge>,
 ) -> io::Result<()> {
     let start_time = Instant::now();
 
     let nb_chunk = color_counts_per_chunk.len();
     let nb_partition_in_a_file = num_partitions.div_ceil(NB_FILE_IN_AN_INDEX);
+    let still_to_be_merge = saves.get_still_to_be_merged();
+    let saves_arc = Arc::new(Mutex::new(&mut saves));
 
-    (0..NB_FILE_IN_AN_INDEX)
-        .into_par_iter()
-        .try_for_each(|file_id| {
-            let range_start = nb_partition_in_a_file * file_id;
-            let range_end = min(nb_partition_in_a_file * (file_id + 1), num_partitions);
-            let mut range = range_start..range_end;
+    still_to_be_merge.into_par_iter().try_for_each(|file_id| {
+        let range_start = nb_partition_in_a_file * file_id;
+        let range_end = min(nb_partition_in_a_file * (file_id + 1), num_partitions);
+        let mut range = range_start..range_end;
 
-            let path =
-                Path::new(output_dir).join(format!("partition_bloom_filters_group{file_id}.bin"));
-            let len: usize = range
-                .try_len()
-                .expect("range object should have a known length");
-            let len = u64::try_from(len)
-                .expect("should have less than u64::MAX partitions in a single file");
-            let mut file = create_and_reserve_tar_get_file(&path, len);
+        let path =
+            Path::new(output_dir).join(format!("partition_bloom_filters_group{file_id}.bin"));
+        let len: usize = range
+            .try_len()
+            .expect("range object should have a known length");
+        let len =
+            u64::try_from(len).expect("should have less than u64::MAX partitions in a single file");
+        let mut file = create_and_reserve_tar_get_file(&path, len);
 
-            let inpaths: Vec<String> = (0..nb_chunk)
-                .map(|chunk_id|
-                    format!("{chunk_files_dir}/partition_bloom_filters_group{file_id}_chunk{chunk_id}.bin")
+        let inpaths: Vec<String> = (0..nb_chunk)
+            .map(|chunk_id| {
+                format!(
+                    "{chunk_files_dir}/partition_bloom_filters_group{file_id}_chunk{chunk_id}.bin"
                 )
-                .collect();
-
-            range.try_for_each(|partition_idx| {
-                let index = (partition_idx % nb_partition_in_a_file) as u64;
-                merge_into_single_tar_get_file(&inpaths, partitioned_bf_size, abundance_number, color_counts_per_chunk,index,  &mut file)?;
-                Ok::<(), io::Error>(())
             })
-        })?;
+            .collect();
+
+        let merge_result = range.try_for_each(|partition_idx| {
+            let index = (partition_idx % nb_partition_in_a_file) as u64;
+            merge_into_single_tar_get_file(
+                &inpaths,
+                partitioned_bf_size,
+                abundance_number,
+                color_counts_per_chunk,
+                index,
+                &mut file,
+            )?;
+            Ok::<(), io::Error>(())
+        });
+
+        let mut saves = saves_arc.lock().expect(
+            "fatal error: a thread holding the mutex panicked, so this thread will panic as well",
+        );
+        saves.one_merge_done(file_id);
+
+        // remove the intermedite partitions after the merge
+        for path in inpaths {
+            std::fs::remove_file(path)?;
+        }
+
+        merge_result
+    })?;
 
     let elapsed_time = start_time.elapsed();
     log::info!(
         "All partitions merged and written to disk in {:.2?}",
         elapsed_time
     );
+    saves.merge_all_done();
 
     Ok(())
 }

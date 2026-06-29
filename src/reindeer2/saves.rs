@@ -188,6 +188,40 @@ impl Saves<Merge> {
             assert!(chunk_done);
         }
     }
+
+    pub fn get_still_to_be_merged(&self) -> std::collections::HashSet<usize> {
+        let mut still_to_be_merged = HashSet::new();
+        for i in 0..NB_FILE_IN_AN_INDEX {
+            if !self.inner.inner.contains(&i) {
+                still_to_be_merged.insert(i);
+            }
+        }
+        still_to_be_merged
+    }
+
+    pub fn from_disk_state(path: PathBuf) -> Self {
+        let all_chunk_done = std::fs::exists(path.join(Self::get_filename_for_all_chunk_done()))
+            .expect("should have been able to check if all chunk are done");
+        assert!(
+            all_chunk_done,
+            "attempting to resume the merge while all chunks are not done"
+        );
+
+        let mut chunks_done = HashSet::new();
+        for i in 0..NB_FILE_IN_AN_INDEX {
+            let chunk_filename = Self::get_filename_for_merge(i);
+            let chunk_path = path.join(&chunk_filename);
+            let chunk_done = std::fs::exists(chunk_path)
+                .expect("should have been able to check if the chunk was done");
+            if chunk_done {
+                chunks_done.insert(i);
+            }
+        }
+        Self {
+            path,
+            inner: Merge { inner: chunks_done },
+        }
+    }
 }
 
 #[cfg(test)]

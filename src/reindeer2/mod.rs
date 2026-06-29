@@ -449,23 +449,58 @@ impl Reindeer2 {
                 );
                 panic!("The partial index's parameters does not match.");
             }
-            StartRestartOrError::Restart(crash_state) => Some(crash_state),
+            StartRestartOrError::Restart(crash_state) => {
+                match &crash_state {
+                    CrashState::Merge { still_to_be_done } => {
+                        let nb_merge_to_be_done = still_to_be_done.len();
+                        log::info!(
+                            "restarting the indexation from the merge step. Number of merge still to be done: {nb_merge_to_be_done}/{NB_FILE_IN_AN_INDEX}"
+                        );
+                    }
+                    CrashState::Chunk { last_done } => match last_done {
+                        None => {
+                            log::info!("restarting the indexation of the chunks");
+                        }
+                        Some(last_done) => {
+                            log::info!(
+                                "restarting the indexation of the chunks (last valid chunk: chunk {last_done})"
+                            );
+                        }
+                    },
+                };
+
+                Some(crash_state)
+            }
         };
-        dbg!(&crash_state);
+
+        let nb_chunk = split_fof(&file_paths, chunks_size)?.len();
+
         let (dir_path, saves_path) = match crash_state {
-            None => Self::build_setup(
-                parameters,
-                &self.index_dir,
-                file_of_file_name,
-                &mut file_paths,
-                sort_files_by_size,
-            )?,
-            Some(_) => Self::build_restore(
-                parameters,
-                &self.index_dir,
-                &mut file_paths,
-                sort_files_by_size,
-            )?,
+            None => {
+                let setup_results = Self::build_setup(
+                    parameters,
+                    &self.index_dir,
+                    file_of_file_name,
+                    &mut file_paths,
+                    sort_files_by_size,
+                    nb_chunk,
+                )?;
+                // write metadata info to disk
+                self.indexed_file_names = get_file_names(&file_paths);
+                self.save_infos_to_disk()?;
+                setup_results
+            }
+            Some(_) => {
+                let setup_results = Self::build_restore(
+                    parameters,
+                    &self.index_dir,
+                    &mut file_paths,
+                    sort_files_by_size,
+                )?;
+                // self.indexed_file_names = get_file_names(&file_paths);
+
+                setup_results
+            }
         };
 
         let chunks = split_fof(&file_paths, chunks_size)?;
@@ -562,6 +597,7 @@ impl Reindeer2 {
             }
         }
 
+        let saves = Saves::<Merge>::from_disk_state(saves_path.clone());
         // Merge the chunk-based bloom filters, if needed
         if chunks.len() > 1 {
             merge::merge_all_partitions_of_chunks(
@@ -571,13 +607,10 @@ impl Reindeer2 {
                 parameters.abundance_number.get(),
                 &color_chunks,
                 parameters.partition_number,
+                saves,
             )
             .map_err(|e| {
                 log::error!("Merge of intermediate files failed: {e}");
-                e
-            })?;
-            merge::remove_merged_partitions(&dir_path, color_chunks.len()).map_err(|e| {
-                log::error!("Cleanup of intermediate files failed: {e}");
                 e
             })?;
         }
@@ -796,6 +829,22 @@ impl Reindeer2 {
                 }
             }
 
+            store_atomics_to_disk(
+                saves_path,
+                chunk_i,
+                &total_kmers,
+                &atomic_dense_kmers_count,
+                &atomic_sparse_kmers_count,
+            );
+
+            #[cfg(any(debug_assertions, test))]
+            store_debug_atomics_to_disk(
+                saves_path,
+                chunk_i,
+                &atomic_sparse_one_seen,
+                &atomic_sparse_fp_seen,
+            );
+
             write_kmer_counts_to_disk_after_chunk_done(saves_path, &kmer_counts_vector, chunk_i)?;
             store_atomics_to_disk(
                 saves_path,
@@ -804,12 +853,20 @@ impl Reindeer2 {
                 &atomic_dense_kmers_count,
                 &atomic_sparse_kmers_count,
             );
+
+            #[cfg(feature = "self-destruct")]
+            if let Some(FailIndexation::Chunk(fail_chunk)) = &self.parameters.fail
+                && *fail_chunk == chunk_i
+            {
+                panic!("indexation failed on chunk {fail_chunk} as planned")
+            }
+
             saves.one_chunk_done(chunk_i);
             log::trace!("Chunk {} done", chunk_i);
         }
 
         #[cfg(not(any(debug_assertions, test)))]
-        return Ok(DebugInfos {});
+        return Ok(DebugInfos { kmer_counts_vector });
 
         #[cfg(any(debug_assertions, test))]
         return Ok(DebugInfos {
@@ -828,7 +885,8 @@ impl Reindeer2 {
         file_of_file_name: &str,
         file_paths: &mut Vec<String>,
         sort_files_by_size: bool,
-    ) -> io::Result<(/*IndexationLocalVariables,*/ String, PathBuf)> {
+        nb_chunk: usize,
+    ) -> io::Result<(String, PathBuf)> {
         // TODO better error handling
         let (_, dir_path, saves_path) = create_dir_and_files(
             parameters.partition_number,
@@ -842,25 +900,13 @@ impl Reindeer2 {
             e
         })?;
 
-        // let kmer_counts_vector: Arc<Mutex<Vec<usize>>> =
-        //     Arc::new(Mutex::new(vec![0; parameters.nb_color]));
+        {
+            let path = saves_path.join("nb_chunk");
+            fs::write(path, nb_chunk.to_string())
+                .expect("Should be able to write the number of chunk in the save file");
+        }
 
-        // #[cfg(any(debug_assertions, test))]
-        // let atomic_sparse_one_seen: atomic::AtomicU64 = atomic::AtomicU64::new(0);
-
-        // #[cfg(any(debug_assertions, test))]
-        // let atomic_sparse_fp_seen: atomic::AtomicU64 = atomic::AtomicU64::new(0);
-
-        Ok((
-            // IndexationLocalVariables {
-            //     kmer_counts_vector,
-            //     #[cfg(any(debug_assertions, test))]
-            //     atomic_sparse_one_seen,
-            //     #[cfg(any(debug_assertions, test))]
-            //     atomic_sparse_fp_seen,
-            // },
-            dir_path, saves_path,
-        ))
+        Ok((dir_path, saves_path))
     }
 
     fn build_restore(
@@ -882,57 +928,8 @@ impl Reindeer2 {
             e
         })?;
 
-        // let kmer_counts_vector = match crash_state {
-        //     CrashState::Chunk { last_done } => {
-        //         let kmer_counts_vector = load_kmer_counts_vector_written_after_chunk(
-        //             index_dir,
-        //             last_done,
-        //             parameters.nb_color,
-        //         )?;
-
-        //         #[cfg(any(debug_assertions, test))]
-        //         let (atomic_sparse_one_seen, atomic_sparse_fp_seen) = load_atomics_from_disk(&saves_path, last_done);
-
-        //         kmer_counts_vector
-        //     }
-        //     CrashState::Merge { still_to_be_done } => {
-        //         let kmer_counts_vector = load_kmer_counts_vector(index_dir)?;
-
-        //         #[cfg(any(debug_assertions, test))]
-        //         let (atomic_sparse_one_seen, atomic_sparse_fp_seen) = load_atomics_from_disk(&saves_path, last_done);
-
-        //         kmer_counts_vector
-        //     }
-        // };
-
-        // #[cfg(any(debug_assertions, test))]
-
-        // #[cfg(any(debug_assertions, test))]
-        // let atomic_sparse_fp_seen: atomic::AtomicU64 = atomic::AtomicU64::new(0);
-        // let kmer_counts_vector: Arc<Mutex<Vec<usize>>> = Arc::new(Mutex::new(kmer_counts_vector))
-
-        Ok((
-            // IndexationLocalVariables {
-            //     kmer_counts_vector,
-            //     #[cfg(any(debug_assertions, test))]
-            //     atomic_sparse_one_seen,
-            //     #[cfg(any(debug_assertions, test))]
-            //     atomic_sparse_fp_seen,
-            // },
-            dir_path, saves_path,
-        ))
+        Ok((dir_path, saves_path))
     }
-
-    //     #[cfg(any(debug_assertions, test))]
-    //     fn get_kmer_counts_vector_and_atomics(crash_state: Option<CrashState>) -> Arc<Mutex<Vec<usize>>> {
-    // match crash_state {
-    //     None =>
-    //     Some(CrashState::Chunk { last_done }) => {
-    //         load_atomics_from_disk(&saves_path, last_done);
-    //     }
-
-    // }
-    // }
 
     // TODO store bf_dir in Reindeer2 ?
     /// Performs a query on the index and writes the results on the disk.
@@ -1196,7 +1193,7 @@ fn did_we_crash(
         return Ok(StartRestartOrError::Start);
     }
 
-    // creates a folder for the saves
+    // test for the save folder
     let saves_path = output_path.join("saves");
     if !(saves_path.try_exists()?) {
         return Ok(StartRestartOrError::IndexAlreadyExists);
