@@ -5,7 +5,7 @@ use std::{
     cmp::min,
     fs::{self, File},
     io::{self, BufRead, BufReader, BufWriter, Write},
-    path::Path,
+    path::{Path, PathBuf},
 };
 
 use crate::reindeer2::{
@@ -13,28 +13,29 @@ use crate::reindeer2::{
     merge::merge_partition_slices_interleaved,
 };
 
-fn read_lines_of_file_of_indexes(indexes_fof: &str) -> io::Result<Vec<String>> {
+fn read_lines_of_file_of_indexes(indexes_fof: &Path) -> io::Result<Vec<PathBuf>> {
     let file = File::open(indexes_fof)?;
     Ok(BufReader::new(file)
                 .lines()
                 .map(|line| {
                     line.unwrap_or_else(|_| {
-                        let msg = format!("Fatal error: when merging indexes, an error was encountered when reading the file {indexes_fof}.");
+                        let msg = format!("Fatal error: when merging indexes, an error was encountered when reading the file {}.", indexes_fof.display());
                         println!("{msg}");  // warn user
                         log::error!("{msg}");  // log error
                         // TODO discuss if we panic or exit
-                        panic!("should have been able to read file {}", indexes_fof);  // panic
+                        panic!("should have been able to read file {}", indexes_fof.display());  // panic
                     })
                 })
                 .map(|line| line.trim().to_string())
                 .filter(|line| !line.is_empty())
+                .map(PathBuf::from)
                 .collect())
 }
 
 /// Merges `tar_get` files `tar_get_file_id` from all indexes in `indexes` and produces a single tar_get file in the `output_dir` directory.
 fn merge_tar_get_files(
     indexes: &[Reindeer2],
-    output_dir: &str,
+    output_dir: &Path,
     tar_get_file_id: usize,
     nb_files_in_tar_get: u64,
     partitioned_bf_size: usize,
@@ -76,7 +77,7 @@ fn merge_tar_get_files(
                     tar_get::deserialize(reader, index, deserializer).unwrap_or_else(|err| {
                         panic!(
                             "should have been able to deserialize file {} from tar_get file {} from index {} ({})",
-                            index, tar_get_file_id, indexes[i].index_dir, err
+                            index, tar_get_file_id, indexes[i].index_dir.display(), err
                         )
                     });
                 (filter, *nb_color)
@@ -110,7 +111,7 @@ fn merge_tar_get_files(
 /// Merges an arbitrary number of indexes listed in the file `indexes_fof`. The new index is placed in `output_dir`.
 ///
 /// Each line of the fof is expected to the path to one index directory.
-pub fn merge_multiple_indexes(indexes_fof: &str, output_dir: &str) -> io::Result<()> {
+pub fn merge_multiple_indexes(indexes_fof: &Path, output_dir: &Path) -> io::Result<()> {
     // read the list of index directories.
     let index_dirs = read_lines_of_file_of_indexes(indexes_fof)?;
 
@@ -127,10 +128,10 @@ pub fn merge_multiple_indexes(indexes_fof: &str, output_dir: &str) -> io::Result
         ));
     }
 
-    let index_ref = Reindeer2::load_from_disk(&index_dirs[0]).unwrap_or_else(|_| {
+    let index_ref = Reindeer2::load_from_disk(index_dirs[0].clone()).unwrap_or_else(|_| {
         panic!(
             "should have been able to load index infos from disk {}",
-            &index_dirs[0]
+            &index_dirs[0].display()
         )
     });
 
@@ -138,10 +139,10 @@ pub fn merge_multiple_indexes(indexes_fof: &str, output_dir: &str) -> io::Result
     let indexes = index_dirs
         .iter()
         .map(|index_dir| {
-            Reindeer2::load_from_disk(index_dir).unwrap_or_else(|_| {
+            Reindeer2::load_from_disk(index_dir.clone()).unwrap_or_else(|_| {
                 panic!(
                     "should have been able to load index infos from disk {}",
-                    index_dir
+                    index_dir.display()
                 )
             })
         })
@@ -159,7 +160,8 @@ pub fn merge_multiple_indexes(indexes_fof: &str, output_dir: &str) -> io::Result
                 io::ErrorKind::InvalidInput,
                 format!(
                     "Index {} does not match parameters of the first index ({})",
-                    index_to_merge.index_dir, index_ref.index_dir
+                    index_to_merge.index_dir.display(),
+                    index_ref.index_dir.display()
                 ),
             ));
         }
@@ -227,14 +229,14 @@ pub fn merge_multiple_indexes(indexes_fof: &str, output_dir: &str) -> io::Result
     let index_merged = Reindeer2 {
         parameters,
         indexed_file_names,
-        index_dir: String::from(output_dir),
+        index_dir: output_dir.to_path_buf(),
     };
     index_merged.save_infos_to_disk()?;
 
     log::info!(
         "Successfully merged {} indexes into directory: {}",
         index_dirs.len(),
-        output_dir
+        output_dir.display()
     );
     Ok(())
 }

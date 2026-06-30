@@ -5,7 +5,7 @@ use std::{
     cmp::min,
     fs::File,
     io::{self, BufWriter, Write},
-    path::Path,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::Instant,
 };
@@ -37,8 +37,8 @@ pub fn remove_merged_partitions(
 
 /// Merges all partitions of an index being built.
 pub fn merge_all_partitions_of_chunks(
-    chunk_files_dir: &str,
-    output_dir: &str,
+    chunk_files_dir: &Path,
+    output_dir: &Path,
     partitioned_bf_size: usize,
     abundance_number: usize,
     color_counts_per_chunk: &[usize], // number of colors in each chunk
@@ -66,13 +66,13 @@ pub fn merge_all_partitions_of_chunks(
             u64::try_from(len).expect("should have less than u64::MAX partitions in a single file");
         let mut file = create_and_reserve_tar_get_file(&path, len);
 
-        let inpaths: Vec<String> = (0..nb_chunk)
+        let inpaths = (0..nb_chunk)
             .map(|chunk_id| {
-                format!(
-                    "{chunk_files_dir}/partition_bloom_filters_group{file_id}_chunk{chunk_id}.bin"
-                )
+                chunk_files_dir.join(format!(
+                    "partition_bloom_filters_group{file_id}_chunk{chunk_id}.bin"
+                ))
             })
-            .collect();
+            .collect_vec();
 
         let merge_result = range.try_for_each(|partition_idx| {
             let index = (partition_idx % nb_partition_in_a_file) as u64;
@@ -112,7 +112,7 @@ pub fn merge_all_partitions_of_chunks(
 
 /// Merges all filter from tar_get files chunk_files (on tar_get file per chunk) into a unique tar_get file.
 fn merge_into_single_tar_get_file(
-    chunk_files: &[String],
+    chunk_files: &[PathBuf],
     partitioned_bf_size: usize,
     abundance_number: usize,
     color_counts: &[usize], // number of colors for each chunk
@@ -134,8 +134,16 @@ fn merge_into_single_tar_get_file(
             |(chunk_file, nb_color)| match load_bloom_filter_from_big_file(chunk_file, index) {
                 Ok(filter) => (filter, *nb_color),
                 Err(e) => {
-                    log::error!("Failed to load Bloom filter {}: {}", chunk_file, e);
-                    panic!("Failed to load Bloom filter {}: {}", chunk_file, e);
+                    log::error!(
+                        "Failed to load Bloom filter {}: {}",
+                        chunk_file.display(),
+                        e
+                    );
+                    panic!(
+                        "Failed to load Bloom filter {}: {}",
+                        chunk_file.display(),
+                        e
+                    );
                 }
             },
         )
@@ -176,12 +184,12 @@ mod tests {
         use roaring::RoaringBitmap;
         use std::fs::create_dir_all;
 
-        let test_dir = random_directory.filename().to_str().unwrap();
+        let test_dir = random_directory.filename();
         create_dir_all(test_dir).expect("Failed to create test directory");
 
-        let chunk1_path = format!("{}/chunk1_p0.bin", test_dir);
-        let chunk2_path = format!("{}/chunk2_p0.bin", test_dir);
-        let chunk3_path = format!("{}/chunk3_p0.bin", test_dir);
+        let chunk1_path = test_dir.join("chunk1_p0.bin");
+        let chunk2_path = test_dir.join("chunk2_p0.bin");
+        let chunk3_path = test_dir.join("chunk3_p0.bin");
 
         let partitioned_bf_size = 2;
         let abundance_number = 3;

@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use crate::reindeer2::{
     BreakpointsNormalize, MatrixFormat, OutputFormat, kmer_counts::load_kmer_counts_vector,
 };
@@ -15,13 +17,13 @@ pub enum BreakpointsXorEnrichedNormalize {
 }
 
 impl BreakpointsNormalize {
-    fn enriched(&self, bf_dir: &str) -> BreakpointsXorEnrichedNormalize {
+    fn enriched(&self, index_dir: &Path) -> BreakpointsXorEnrichedNormalize {
         match self {
             BreakpointsNormalize::Breakpoints(penalty) => {
                 BreakpointsXorEnrichedNormalize::Breakpoints(*penalty)
             }
             BreakpointsNormalize::Normalize(normalized) => {
-                BreakpointsXorEnrichedNormalize::Normalize(load_kmer_count(*normalized, bf_dir))
+                BreakpointsXorEnrichedNormalize::Normalize(load_kmer_count(*normalized, index_dir))
             }
         }
     }
@@ -43,16 +45,16 @@ pub enum EnrichedMatrixFormat {
 }
 
 impl EnrichedMatrixFormat {
-    fn add_kmer_count(format_infos: MatrixFormat, bf_dir: &str) -> Self {
+    fn add_kmer_count(format_infos: MatrixFormat, index_dir: &Path) -> Self {
         match format_infos {
             MatrixFormat::Raw(raw_format_infos) => {
-                Self::Raw(raw_format_infos.map(|x| x.enriched(bf_dir)))
+                Self::Raw(raw_format_infos.map(|x| x.enriched(index_dir)))
             }
             MatrixFormat::Average { normalized } => Self::Average {
-                normalized: load_kmer_count_from_option(normalized, bf_dir),
+                normalized: load_kmer_count_from_option(normalized, index_dir),
             },
             MatrixFormat::Median { normalized } => Self::Median {
-                normalized: load_kmer_count_from_option(normalized, bf_dir),
+                normalized: load_kmer_count_from_option(normalized, index_dir),
             },
         }
     }
@@ -72,9 +74,9 @@ pub enum EnrichedOutputFormat {
 }
 
 // TODO rename ?
-fn load_kmer_count(normalize_value: u64, bf_dir: &str) -> KmerCountsAndNormalizeValue {
+fn load_kmer_count(normalize_value: u64, index_dir: &Path) -> KmerCountsAndNormalizeValue {
     KmerCountsAndNormalizeValue {
-        kmer_counts: load_kmer_counts_vector(bf_dir)
+        kmer_counts: load_kmer_counts_vector(index_dir)
             .expect("Failed to load from disk the kmer counts vector"),
         normalize_value,
     }
@@ -82,23 +84,23 @@ fn load_kmer_count(normalize_value: u64, bf_dir: &str) -> KmerCountsAndNormalize
 
 fn load_kmer_count_from_option(
     normalized: Option<u64>,
-    bf_dir: &str,
+    index_dir: &Path,
 ) -> Option<KmerCountsAndNormalizeValue> {
     // we need the count of kmers if we want to normalize them
-    normalized.map(|normalize_value| load_kmer_count(normalize_value, bf_dir))
+    normalized.map(|normalize_value| load_kmer_count(normalize_value, index_dir))
 }
 
 impl EnrichedOutputFormat {
-    pub fn from_pub_output_format(pub_output_format: OutputFormat, bf_dir: &str) -> Self {
+    pub fn from_pub_output_format(pub_output_format: OutputFormat, index_dir: &Path) -> Self {
         match pub_output_format {
             OutputFormat::AbundanceMatrix { format } => Self::AbundanceMatrix {
-                format: EnrichedMatrixFormat::add_kmer_count(format, bf_dir),
+                format: EnrichedMatrixFormat::add_kmer_count(format, index_dir),
             },
             OutputFormat::Colored { normalized } => Self::Colored {
-                normalized: load_kmer_count_from_option(normalized, bf_dir),
+                normalized: load_kmer_count_from_option(normalized, index_dir),
             },
             OutputFormat::Median { normalized } => Self::Median {
-                normalized: load_kmer_count_from_option(normalized, bf_dir),
+                normalized: load_kmer_count_from_option(normalized, index_dir),
             },
         }
     }

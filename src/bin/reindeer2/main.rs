@@ -7,18 +7,18 @@ use log::warn;
 use rand::Rng;
 use std::io::{self};
 use std::num::NonZero;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use cli::Cli;
 use cli::OutputFormatCli;
 use overflow_detection::{get_min_number_of_files, get_number_of_partitions};
 use reindeer2::{
-    BreakpointsNormalize, MatrixFormat, OutputFormat, Parameters, Reindeer2, SamplingStrategy,
-    merge::merge_multiple_indexes, read_fof_file,
+    BreakpointsNormalize, BuildArgs, MatrixFormat, OutputFormat, Parameters, Reindeer2,
+    SamplingStrategy, merge::merge_multiple_indexes, read_fof_file,
 };
 
-use crate::cli::{IndexArgs, InfosArgs, MergeArgs, QueryArgs, RenameArgs};
+use crate::cli::{IndexArgs, InfosArgs, MergeArgs, QueryArgs, RenameArgs, ResumeIndexationArgs};
 
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
@@ -104,6 +104,16 @@ fn validate_fail(
     }
 }
 
+#[cfg(feature = "self-destruct")]
+fn self_destruct_warn() {
+    log::warn!(
+        "You are using the \"self-destruct\" feature. Only use it for testing. Consider recompiling the tool without this feature."
+    );
+    println!(
+        "Warning: you are using the \"self-destruct\" feature. Only use it for testing. Consider recompiling the tool without this feature."
+    );
+}
+
 fn main() -> io::Result<()> {
     let args = Cli::parse();
     let env = env_logger::Env::default().default_filter_or("trace");
@@ -135,14 +145,7 @@ fn main() -> io::Result<()> {
             merge_explode_at_step,
         }) => {
             #[cfg(feature = "self-destruct")]
-            {
-                log::warn!(
-                    "You are using the \"self-destruct\" feature. Only use it for testing. Consider recompiling the tool without this feature."
-                );
-                println!(
-                    "Warning: you are using the \"self-destruct\" feature. Only use it for testing. Consider recompiling the tool without this feature."
-                );
-            }
+            self_destruct_warn();
 
             let sort_files_by_size = !no_sort_files_by_size;
             let dense_option = dense;
@@ -150,8 +153,6 @@ fn main() -> io::Result<()> {
             let output_dir = output_dir.unwrap_or_else(|| {
                 format!("RD2_index_{}", rand::rng().random::<u64>()) // Generate a unique directory name
             });
-            // let muset_option = args.muset;
-            // TODO add threads
 
             let bf_size = 1u64 << bloomfilter; // Bloom filter size as a power of 2
 
@@ -233,28 +234,6 @@ fn main() -> io::Result<()> {
 
             let start_time = Instant::now();
 
-            // if false {
-            //     //muset_option {
-
-            //     let (unitigs_file, matrix_file, color_nb) = explore_muset_dir(&input);
-
-            //     build_index_muset(
-            //         unitigs_file,
-            //         matrix_file,
-            //         kmer,
-            //         minimizer,
-            //         bf_size,
-            //         partitions,
-            //         color_nb,
-            //         abundance,
-            //         abundance_max,
-            //         &output_dir,
-            //         dense_option,
-            //         tolerated_number_of_zeros,
-            //         canonical,
-            //         debug,
-            //     )?;
-            // } else {
             // read the file of files  and extract file paths and color count
             let (file_paths, color_nb) = read_fof_file(&input).unwrap_or_else(|err| {
                 panic!("should have been able to read the input file {input} ({err})")
@@ -281,22 +260,23 @@ fn main() -> io::Result<()> {
                 #[cfg(feature = "self-destruct")]
                 fail: validate_fail(chunk_explode_at_step, merge_explode_at_step),
             };
+            let output_dir = PathBuf::from(output_dir);
             let mut index = Reindeer2::new(parameters, output_dir);
             let input_path = Path::new(&input);
             let input_file_name = input_path
                 .file_name()
                 .expect("impossible to extract the name of the input file")
                 .to_str()
-                .expect("the input file's name is not in UTF-8");
-            index.build(
-                input_file_name,
-                file_paths,
+                .expect("the input file's name is not in UTF-8")
+                .to_string();
+            let build_args = BuildArgs {
+                file_of_file_name: input_file_name,
                 sort_files_by_size,
                 chunks_size,
-                tolerated_number_of_zeros,
+                threshold: tolerated_number_of_zeros,
                 allow_count_right_after_angle_bracket,
-            )?;
-            // }
+            };
+            index.build(build_args, file_paths)?;
 
             log::info!("Indexing complete in {:.2?}", start_time.elapsed());
             if cfg!(unix) {
@@ -307,6 +287,26 @@ fn main() -> io::Result<()> {
                     memory_measure::format_int_with_spaces(memory_measure::get_max_rss())
                 );
             }
+        }
+        cli::Command::ResumeIndexation(ResumeIndexationArgs {
+            partial_index_directory,
+            #[cfg(feature = "self-destruct")]
+            chunk_explode_at_step,
+            #[cfg(feature = "self-destruct")]
+            merge_explode_at_step,
+        }) => {
+            #[cfg(feature = "self-destruct")]
+            self_destruct_warn();
+            let partial_index_directory = PathBuf::from(&partial_index_directory);
+            let build_args = Reindeer2::load_build_args(&partial_index_directory).unwrap_or_else(|| {
+                log::error!("No incomplete index found. Please check the index you are trying to resume exists and is incomplete.");
+        panic!(
+"Should have been able to load the build arguments from disk. Please check the index you are trying to resume exists and is incomplete."        )
+    });
+
+            let mut index = Reindeer2::load_from_disk(partial_index_directory)
+                .expect("should have been able to load index infos from disk");
+            // index.restart_build(build_args)?;
         }
 
         cli::Command::Query(QueryArgs {
@@ -324,7 +324,7 @@ fn main() -> io::Result<()> {
                 .build_global()
                 .expect("should have been able to set up the threads (maybe the setup function was called twice ?)");
 
-            let fasta_file = fasta;
+            let fasta_file = PathBuf::from(fasta);
             let index_dir = index;
             let output_format = output_format.to_output_format(normalize, breakpoints);
             let query_output = match output {
@@ -344,18 +344,20 @@ fn main() -> io::Result<()> {
             log::info!("Index directory: {}", index_dir);
 
             let start_time = Instant::now();
-            let index = Reindeer2::load_from_disk(&index_dir)
+            let index_dir = PathBuf::from(index_dir);
+            let query_output = Path::new(&query_output);
+            let index = Reindeer2::load_from_disk(index_dir.clone())
                 .expect("should have been able to load index infos from disk");
             index
                 .query(
                     &fasta_file,
                     &index_dir,
-                    &query_output,
+                    query_output,
                     output_format,
                     coverage,
                 )
                 .expect("Failed to query sequences");
-            log::info!("Results written to {}", query_output);
+            log::info!("Results written to {}", query_output.display());
             log::info!("Query complete in {:.2?}", start_time.elapsed());
         }
 
@@ -372,6 +374,8 @@ fn main() -> io::Result<()> {
             let output_dir = output_dir.unwrap_or_else(|| {
                 format!("RD2_index_{}", rand::rng().random::<u64>()) // Generate a unique directory name
             });
+            let output_dir = PathBuf::from(output_dir);
+            let file_of_indexes = PathBuf::from(file_of_indexes);
 
             let start_time = Instant::now();
             merge_multiple_indexes(&file_of_indexes, &output_dir)
@@ -380,8 +384,8 @@ fn main() -> io::Result<()> {
             log::info!("Merge complete in {:.2?}", start_time.elapsed());
         }
         cli::Command::Infos(InfosArgs { index }) => {
-            let index_dir = index;
-            let index = Reindeer2::load_from_disk(&index_dir)
+            let index_dir = PathBuf::from(index);
+            let index = Reindeer2::load_from_disk(index_dir)
                 .expect("should have been able to load index infos from disk");
             let infos = index.get_index_infos();
 
@@ -392,8 +396,8 @@ fn main() -> io::Result<()> {
             old_name,
             new_name,
         }) => {
-            let index_dir = index;
-            let mut index = Reindeer2::load_from_disk(&index_dir)
+            let index_dir = PathBuf::from(index);
+            let mut index = Reindeer2::load_from_disk(index_dir)
                 .expect("should have been able to load index infos from disk");
             let outcome = index
                 .rename(&old_name, new_name.clone())

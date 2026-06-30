@@ -23,6 +23,8 @@ pub enum Command {
     Merge(MergeArgs),
     /// Get infos about a REINDEER2 index
     Infos(InfosArgs),
+    /// Resume indexation after a crash
+    ResumeIndexation(ResumeIndexationArgs),
     /// Rename a dataset in a REINDEER 2 index
     Rename(RenameArgs),
 }
@@ -32,6 +34,23 @@ pub enum Command {
 //     MinimizerSampling { e: usize },
 //     KmerSampling,
 // }
+
+#[derive(Args, Debug)]
+pub struct ResumeIndexationArgs {
+    /// Sets the index output directory
+    #[arg(short = 'o', long = "output-dir", value_name = "OUT")]
+    pub partial_index_directory: String,
+
+    #[cfg(feature = "self-destruct")]
+    /// Test parameter: make the indexation fail after indexing a certain number of chunk.
+    #[arg(long, value_name = "kaboom_chunk")]
+    pub chunk_explode_at_step: Option<usize>,
+
+    #[cfg(feature = "self-destruct")]
+    /// Test parameter: make the indexation fail when merging a certain group of files.
+    #[arg(long, value_name = "kaboom_merge")]
+    pub merge_explode_at_step: Option<usize>,
+}
 
 #[derive(Args, Debug)]
 pub struct IndexArgs {

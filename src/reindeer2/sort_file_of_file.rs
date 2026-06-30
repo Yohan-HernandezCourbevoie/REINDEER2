@@ -1,11 +1,11 @@
-use std::fs;
+use std::{fs, path::PathBuf};
 
 use itertools::Itertools;
 use rayon::prelude::*;
 
 /// Sorts a list of file paths by the size of the files they point to (ascending).
 /// Paths that cannot be stat'd are placed at the end in their original relative order.
-pub fn sort_paths_by_file_size(paths: &mut Vec<String>) {
+pub fn sort_paths_by_file_size(paths: &mut Vec<PathBuf>) {
     // Gather sizes upfront to avoid redundant stat calls during sort comparisons
     let sizes: Vec<Option<u64>> = paths
         .par_iter()
@@ -40,11 +40,11 @@ mod tests {
     use tempfile::tempdir;
 
     // Helper: create a temp file with a specific size (in bytes)
-    fn make_temp_file(dir: &tempfile::TempDir, name: &str, size: u64) -> String {
+    fn make_temp_file(dir: &tempfile::TempDir, name: &str, size: u64) -> PathBuf {
         let path = dir.path().join(name);
         let data = vec![0u8; size as usize];
         fs::write(&path, data).unwrap();
-        path.to_str().unwrap().to_owned()
+        path
     }
 
     #[test]
@@ -91,7 +91,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let small = make_temp_file(&dir, "small.bin", 50);
         let large = make_temp_file(&dir, "large.bin", 150);
-        let ghost = "/nonexistent/path/ghost.bin".to_owned();
+        let ghost = PathBuf::from("/nonexistent/path/ghost.bin");
 
         let mut paths = vec![ghost.clone(), large.clone(), small.clone()];
         sort_paths_by_file_size(&mut paths);
@@ -105,8 +105,8 @@ mod tests {
     fn test_multiple_missing_paths_preserve_relative_order() {
         let dir = tempdir().unwrap();
         let real = make_temp_file(&dir, "real.bin", 100);
-        let ghost1 = "/nonexistent/ghost1.bin".to_owned();
-        let ghost2 = "/nonexistent/ghost2.bin".to_owned();
+        let ghost1 = PathBuf::from("/nonexistent/ghost1.bin");
+        let ghost2 = PathBuf::from("/nonexistent/ghost2.bin");
 
         let mut paths = vec![ghost1.clone(), real.clone(), ghost2.clone()];
         sort_paths_by_file_size(&mut paths);
@@ -133,7 +133,7 @@ mod tests {
 
     #[test]
     fn test_empty_input() {
-        let mut paths: Vec<String> = vec![];
+        let mut paths: Vec<PathBuf> = vec![];
         sort_paths_by_file_size(&mut paths);
         assert!(paths.is_empty());
     }

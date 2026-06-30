@@ -296,7 +296,7 @@ pub struct Reindeer2 {
     indexed_file_names: Vec<String>,
     /// Directory containing the index
     #[serde(skip)]
-    index_dir: String, // TODO use a path ?
+    index_dir: PathBuf,
 }
 
 // /// Declares a variable. The variable is declared as mut iif `#[cfg(any(debug_assertions, test))]`.
@@ -320,14 +320,14 @@ pub struct Infos {
     /// Vector of infos about a file. Each element is a tuple (file name, number of k-mers in the file).
     pub indexed_file_names: Vec<(String, usize)>,
     /// Directory contaning the index.
-    pub index_dir: String,
+    pub index_dir: PathBuf,
 }
 
 use std::fmt;
 
 impl fmt::Display for Infos {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(f, "index directory: \"{}\"", self.index_dir)?;
+        writeln!(f, "index directory: \"{}\"", self.index_dir.display())?;
         writeln!(f, "parameters: {:#?}", self.parameters)?;
         writeln!(f, "indexed filenames and k-mers: [")?;
         for (name, size) in &self.indexed_file_names {
@@ -335,6 +335,15 @@ impl fmt::Display for Infos {
         }
         writeln!(f, "]")
     }
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct BuildArgs {
+    pub file_of_file_name: String,
+    pub sort_files_by_size: bool,
+    pub chunks_size: usize,
+    pub threshold: usize,
+    pub allow_count_right_after_angle_bracket: bool,
 }
 
 // /// Local variables used for the chunk indexation
@@ -350,7 +359,7 @@ impl fmt::Display for Infos {
 
 impl Reindeer2 {
     /// Constructs a new index handle.
-    pub const fn new(parameters: Parameters, index_dir: String) -> Self {
+    pub const fn new(parameters: Parameters, index_dir: PathBuf) -> Self {
         Self {
             parameters,
             indexed_file_names: Vec::new(),
@@ -388,20 +397,51 @@ impl Reindeer2 {
         self.indexed_file_names = indexed_file_names;
     }
 
-    fn index_infos_file(bf_dir: &str) -> String {
-        format!("{}/index_info.json", bf_dir)
+    fn index_infos_file(index_dir: &Path) -> PathBuf {
+        index_dir.join("index_info.json")
+    }
+
+    fn get_saves_path(index_dir: &Path) -> PathBuf {
+        index_dir.join("saves")
+    }
+
+    fn get_build_args_path(index_dir: &Path) -> PathBuf {
+        Self::get_saves_path(index_dir).join("build_args.json")
+    }
+
+    pub fn load_build_args(index_dir: &Path) -> Option<BuildArgs> {
+        let save_path = Self::get_saves_path(index_dir);
+        if !save_path.exists() {
+            return None;
+        }
+
+        let build_path = Self::get_build_args_path(index_dir);
+        let file = File::open(build_path)
+            .expect("should have been able to read the build args from the index");
+        let reader = BufReader::new(file);
+        let build_args = serde_json::from_reader(reader)
+            .expect("should have been able to parse the build args from the index folder");
+        Some(build_args)
+    }
+
+    pub fn save_build_args(index_dir: &Path, build_args: &BuildArgs) -> io::Result<()> {
+        let output_path = Self::get_build_args_path(index_dir);
+        let file = File::create(&output_path)?;
+        let writer = BufWriter::new(file);
+        serde_json::to_writer(writer, build_args)
+            .expect("should have been able to serialize the build parameters");
+        Ok(())
     }
 
     /// Loads an index from the JSON file in the directory of the index
-    pub fn load_from_disk(bf_dir: impl Into<String>) -> io::Result<Self> {
-        let bf_dir = bf_dir.into();
-        log::info!("Loading index from disk ({})...", bf_dir);
-        let input_path = Self::index_infos_file(&bf_dir);
+    pub fn load_from_disk(index_dir: PathBuf) -> io::Result<Self> {
+        log::info!("Loading index from disk ({})...", index_dir.display());
+        let input_path = Self::index_infos_file(&index_dir);
         let file = File::open(input_path)?;
         let reader = BufReader::new(file);
         let mut rd2: Reindeer2 = serde_json::from_reader(reader)?;
-        debug_assert_eq!(rd2.index_dir, "");
-        rd2.index_dir = bf_dir;
+        debug_assert_eq!(rd2.index_dir, Path::new(""));
+        rd2.index_dir = index_dir;
         log::info!("Index loaded from disk.");
         Ok(rd2)
     }
@@ -420,16 +460,19 @@ impl Reindeer2 {
     /// Build the index by indexing the files in `file_paths` using the parameters passed during the construction of the struct.
     pub fn build(
         &mut self,
-        file_of_file_name: &str,
-        mut file_paths: Vec<String>,
-        sort_files_by_size: bool,
-        chunks_size: usize,
-        threshold: usize,
-        allow_count_right_after_angle_bracket: bool,
-    ) -> io::Result<(Vec<String>, String)> {
+        args: BuildArgs,
+        mut file_paths: Vec<PathBuf>,
+    ) -> io::Result<(Vec<PathBuf>, PathBuf)> {
+        let BuildArgs {
+            file_of_file_name,
+            sort_files_by_size,
+            chunks_size,
+            threshold,
+            allow_count_right_after_angle_bracket,
+        } = &args;
         let parameters = &self.parameters;
 
-        let chunks = split_fof(&file_paths, chunks_size)?;
+        let chunks = split_fof(&file_paths, *chunks_size)?;
 
         let previous_run_infos = did_we_crash(&self.index_dir, parameters, chunks.len())
             .expect("should have been able to read the output folder");
@@ -473,7 +516,7 @@ impl Reindeer2 {
             }
         };
 
-        let nb_chunk = split_fof(&file_paths, chunks_size)?.len();
+        let nb_chunk = split_fof(&file_paths, *chunks_size)?.len();
 
         let (dir_path, saves_path) = match crash_state {
             None => {
@@ -482,7 +525,7 @@ impl Reindeer2 {
                     &self.index_dir,
                     file_of_file_name,
                     &mut file_paths,
-                    sort_files_by_size,
+                    *sort_files_by_size,
                     nb_chunk,
                 )?;
                 // write metadata info to disk
@@ -495,7 +538,7 @@ impl Reindeer2 {
                     parameters,
                     &self.index_dir,
                     &mut file_paths,
-                    sort_files_by_size,
+                    *sort_files_by_size,
                 )?;
                 // self.indexed_file_names = get_file_names(&file_paths);
 
@@ -503,7 +546,10 @@ impl Reindeer2 {
             }
         };
 
-        let chunks = split_fof(&file_paths, chunks_size)?;
+        Self::save_build_args(Path::new(&self.index_dir), &args)
+            .expect("could not write the build arguments to disk");
+
+        let chunks = split_fof(&file_paths, *chunks_size)?;
         // the number of color in each chunck
         let color_chunks = chunks.iter().map(Vec::len).collect_vec();
         let base = compute_base(parameters.abundance_number, parameters.abundance_max);
@@ -543,10 +589,10 @@ impl Reindeer2 {
                         &dir_path,
                         &chunks,
                         &maybe_dense_indexes,
-                        threshold,
+                        *threshold,
                         &color_chunks,
                         base,
-                        allow_count_right_after_angle_bracket,
+                        *allow_count_right_after_angle_bracket,
                         maybe_crash,
                         &saves_path,
                     )
@@ -626,8 +672,8 @@ impl Reindeer2 {
 
     fn index_chunks(
         &self,
-        dir_path: &str,
-        chunks: &[Vec<String>],
+        dir_path: &Path,
+        chunks: &[Vec<PathBuf>],
         maybe_dense_indexes: &Option<Arc<DenseIndex>>,
         threshold: usize,
         color_chunks: &[usize],
@@ -686,7 +732,7 @@ impl Reindeer2 {
                             let reader = match read_file(path) {
                                 Ok(r) => r,
                                 Err(e) => {
-                                    log::error!("Failed to open file {}: {}", path, e);
+                                    log::error!("Failed to open file {}: {}", path.display(), e);
                                     return;
                                 }
                             };
@@ -795,16 +841,16 @@ impl Reindeer2 {
                                         )
                                     }
                                 } {
-                                    eprintln!("Error processing {}: {}", path, e);
+                                    eprintln!("Error processing {}: {}", path.display(), e);
                                 }
                             } else {
-                                eprintln!("Failed to determine header type for {}", path);
+                                eprintln!("Failed to determine header type for {}", path.display());
                             }
                         } else {
-                            eprintln!("Path {} exists but is not a file", path);
+                            eprintln!("Path {} exists but is not a file", path.display());
                         }
                     }
-                    Err(_) => eprintln!("Path {} does not exist", path),
+                    Err(_) => eprintln!("Path {} does not exist", path.display()),
                 }
             });
             #[cfg(any(debug_assertions, test))]
@@ -881,12 +927,12 @@ impl Reindeer2 {
 
     fn build_setup(
         parameters: &Parameters,
-        index_dir: &str,
+        index_dir: &Path,
         file_of_file_name: &str,
-        file_paths: &mut Vec<String>,
+        file_paths: &mut Vec<PathBuf>,
         sort_files_by_size: bool,
         nb_chunk: usize,
-    ) -> io::Result<(String, PathBuf)> {
+    ) -> io::Result<(PathBuf, PathBuf)> {
         // TODO better error handling
         let (_, dir_path, saves_path) = create_dir_and_files(
             parameters.partition_number,
@@ -911,11 +957,10 @@ impl Reindeer2 {
 
     fn build_restore(
         parameters: &Parameters,
-        index_dir: &str,
-        file_paths: &mut Vec<String>,
+        index_dir: &Path,
+        file_paths: &mut Vec<PathBuf>,
         sort_files_by_size: bool,
-        // crash_state: CrashState,
-    ) -> io::Result<(/*IndexationLocalVariables,*/ String, PathBuf)> {
+    ) -> io::Result<(PathBuf, PathBuf)> {
         // TODO better error handling
         let (_, dir_path, saves_path) = get_dir_and_files(
             parameters.partition_number,
@@ -935,9 +980,9 @@ impl Reindeer2 {
     /// Performs a query on the index and writes the results on the disk.
     pub fn query(
         &self,
-        fasta_file: &str,
-        bf_dir: &str,
-        output_file: &str,
+        fasta_file: &Path,
+        bf_dir: &Path,
+        output_file: &Path,
         output_format: OutputFormat,
         coverage: f32,
     ) -> io::Result<()> {
@@ -993,7 +1038,7 @@ impl Reindeer2 {
     // TODO use compile time to decide wether to sort the output or not
     fn query_single_fasta_batch<S>(
         &self,
-        bf_dir: &str,
+        bf_dir: &Path,
         base: f64,
         batch: &[fasta::Record],
         sampler: &S,
@@ -1107,24 +1152,24 @@ fn replace_first_if_not_already_in(
     ReplaceOutcome::NotFound
 }
 
-fn get_file_names(file_paths: &[String]) -> Vec<String> {
+fn get_file_names(file_paths: &[PathBuf]) -> Vec<String> {
     file_paths
         .iter()
         .map(|file_path| {
             // get the file name, excluding everything after the first "."
-            let name = Path::new(file_path)
+            let name = file_path
                 .file_prefix()
                 .unwrap_or_else(|| {
                     panic!(
                         "should have been able to extact the name of the file {}",
-                        file_path
+                        file_path.display()
                     )
                 })
                 .to_str()
                 .unwrap_or_else(|| {
                     panic!(
                         "should have been able to convert the filename {} to UTF-8",
-                        file_path
+                        file_path.display()
                     )
                 });
             String::from(name)
@@ -1179,14 +1224,13 @@ enum StartRestartOrError {
 
 /// detects if the tool was already ran before
 fn did_we_crash(
-    output_dir: &str,
+    index_dir: &Path,
     parameters: &Parameters,
     nb_chunk: usize,
 ) -> io::Result<StartRestartOrError> {
-    let output_path = Path::new(output_dir);
-    let index_dir = match output_path.is_relative() {
-        true => std::env::current_dir()?.join(output_path),
-        false => output_path.to_path_buf(),
+    let index_dir = match index_dir.is_relative() {
+        true => std::env::current_dir()?.join(index_dir),
+        false => index_dir.to_path_buf(),
     };
 
     if !(index_dir.try_exists()?) {
@@ -1194,7 +1238,7 @@ fn did_we_crash(
     }
 
     // test for the save folder
-    let saves_path = output_path.join("saves");
+    let saves_path = index_dir.join("saves");
     if !(saves_path.try_exists()?) {
         return Ok(StartRestartOrError::IndexAlreadyExists);
     }
@@ -1207,7 +1251,7 @@ fn did_we_crash(
         nb_chunk
     };
 
-    let input_path = Reindeer2::index_infos_file(output_dir);
+    let input_path = Reindeer2::index_infos_file(&index_dir);
     let file = File::open(input_path)?;
     let reader = BufReader::new(file);
     let rd2: Reindeer2 = serde_json::from_reader(reader)?;
@@ -1228,35 +1272,33 @@ fn did_we_crash(
 // TODO error handling
 fn get_dir_and_files(
     num_partition: usize,
-    output_dir: &str,
-    files: &mut Vec<String>,
+    output_dir: &Path,
+    files: &mut Vec<PathBuf>,
     sort_files_by_size: bool,
-) -> io::Result<(Vec<String>, String, PathBuf)> {
-    let output_path = Path::new(output_dir);
-    let partition_dir = match output_path.is_relative() {
-        true => std::env::current_dir()?.join(output_path),
-        false => output_path.to_path_buf(),
+) -> io::Result<(Vec<String>, PathBuf, PathBuf)> {
+    let partition_dir = match output_dir.is_relative() {
+        true => std::env::current_dir()?.join(output_dir),
+        false => output_dir.to_path_buf(),
     };
 
     if sort_files_by_size {
         sort_paths_by_file_size(files);
     }
 
-    let saves_path = output_path.join("saves");
+    let saves_path = output_dir.join("saves");
     let file_paths = Vec::with_capacity(num_partition);
 
-    let partition_dir_string = partition_dir.to_string_lossy().into_owned();
-    Ok((file_paths, partition_dir_string, saves_path))
+    Ok((file_paths, partition_dir, saves_path))
 }
 
 // TODO error handling
 fn create_dir_and_files(
     num_partition: usize,
-    output_dir: &str,
+    output_dir: &Path,
     file_of_file_name: &str,
-    files: &mut Vec<String>,
+    files: &mut Vec<PathBuf>,
     sort_files_by_size: bool,
-) -> io::Result<(Vec<String>, String, PathBuf)> {
+) -> io::Result<(Vec<String>, PathBuf, PathBuf)> {
     let output_path = Path::new(output_dir);
     let partition_dir = match output_path.is_relative() {
         true => std::env::current_dir()?.join(output_path),
@@ -1277,7 +1319,12 @@ fn create_dir_and_files(
     let file = fs::File::create(fof_path)?;
     let mut writer = BufWriter::new(file);
     for file in files {
-        writeln!(writer, "{file}")?;
+        writeln!(
+            writer,
+            "{}",
+            file.to_str()
+                .expect("some path in the file of file are not UTF-8")
+        )?;
     }
     writer.flush()?;
 
@@ -1286,8 +1333,7 @@ fn create_dir_and_files(
     fs::create_dir_all(&saves_path)?;
 
     let file_paths = Vec::with_capacity(num_partition);
-    let partition_dir_string = partition_dir.to_string_lossy().into_owned();
-    Ok((file_paths, partition_dir_string, saves_path))
+    Ok((file_paths, partition_dir, saves_path))
     /* For instance, if this is the complete structure,
                             c0  c1  c2  c3
             color 0   abund 0   0   1   1
@@ -1345,20 +1391,20 @@ fn create_dir_and_files(
 // --- FOF MANAGEMENT ---
 
 /// Reads a file of file and return each lines, along with the number of lines in it.
-pub fn read_fof_file(file_path: &str) -> io::Result<(Vec<String>, usize)> {
+pub fn read_fof_file(file_path: &str) -> io::Result<(Vec<PathBuf>, usize)> {
     let file = File::open(file_path)?;
     let reader = BufReader::new(file);
     let mut file_paths = Vec::new();
     let mut color_number = 0;
     for line in reader.lines() {
         let line = line?;
-        file_paths.push(line.trim().to_string());
+        file_paths.push(PathBuf::from(line.trim().to_string()));
         color_number += 1;
     }
     Ok((file_paths, color_number))
 }
 
-fn split_fof(lines: &[String], number_of_chunks: usize) -> io::Result<Vec<Vec<String>>> {
+fn split_fof(lines: &[PathBuf], number_of_chunks: usize) -> io::Result<Vec<Vec<PathBuf>>> {
     let number_colors = lines.len();
 
     // Determine split_factor
@@ -1378,40 +1424,11 @@ fn split_fof(lines: &[String], number_of_chunks: usize) -> io::Result<Vec<Vec<St
     Ok(fof_chunks)
 }
 
-// // TODO discuss: used to return a Result, but only the OK variant was returnd
-// pub fn explore_muset_dir(dir_str: &str) -> (String, String, usize) {
-//     let dir_path = Path::new(dir_str);
-//     if !dir_path.is_dir() {
-//     }
-//     let unitigs_path = dir_path.join("unitigs.fa");
-//     if !unitigs_path.exists() {
-//         panic!("File not found : {:#?}", unitigs_path);
-//     }
-//     let abundance_path = dir_path.join("unitigs.abundance.mat");
-//     if !abundance_path.exists() {
-//         panic!("File not found : {:#?}", return StartRe
-
-//     let reader = BufReader::new(
-//         File::open(&abundance_path).expect(&format!("Failed to open {:#?}", abundance_path)),
-//     );
-//     let err = &format!("Failed to read {:#?}", abundance_path);
-//     let firstline = reader.lines().next().expect(err).expect(err);
-
-//     // number of color == number of \t in the first line ?
-//     // TODO check it's the same
-//     let color_nb = firstline.chars().filter(|c| *c == '\t').count();
-//     (
-//         unitigs_path.to_string_lossy().to_string(),
-//         abundance_path.to_string_lossy().to_string(),
-//         color_nb,
-//     )
-// }
-
 // --- FASTA FILES PARSING ---
 
 // TOUN
 // TODO verif lecture fichiers compresses
-fn is_gz_file(file_path: &str) -> io::Result<bool> {
+fn is_gz_file(file_path: &Path) -> io::Result<bool> {
     if file_path.ends_with(".gz") {
         return Ok(true);
     }
@@ -1427,7 +1444,7 @@ fn is_gz_file(file_path: &str) -> io::Result<bool> {
 
 // TOUN
 /// detects input zst format by magic bytes
-fn is_zst_file(file_path: &str) -> io::Result<bool> {
+fn is_zst_file(file_path: &Path) -> io::Result<bool> {
     let mut file = File::open(file_path)?;
     let mut magic = [0u8; 4];
     file.read_exact(&mut magic)?;
@@ -1435,7 +1452,7 @@ fn is_zst_file(file_path: &str) -> io::Result<bool> {
 }
 
 /// reads input decompressing if in zst or gz format
-fn read_file(file_path: &str) -> io::Result<Box<dyn BufRead>> {
+fn read_file(file_path: &Path) -> io::Result<Box<dyn BufRead>> {
     /* Marchet C. */
     if is_zst_file(file_path)? {
         let file = File::open(file_path)?;
@@ -1461,7 +1478,7 @@ enum HeaderType {
 fn get_first_header_type(
     record: &fasta::Record,
     allow_count_right_after_angle_bracket: bool,
-    path: &str,
+    path: &Path,
 ) -> Option<(HeaderType, bool)> {
     // if we are allowed to search for a header in the id of a record
     // (an id being the part right after the angle bracket of a record)
@@ -1475,14 +1492,14 @@ fn get_first_header_type(
         Some(header) => match determine_header_type(header) {
             Ok(ht) => Some((ht, false)),
             Err(e) => {
-                log::error!("Unsupported header type ({}): {}", path, e);
+                log::error!("Unsupported header type ({}): {}", path.display(), e);
                 None
             }
         },
         None => {
             log::error!(
                 "Unsupported header type ({}): no desc in record {}",
-                path,
+                path.display(),
                 record
             );
             None
@@ -1911,7 +1928,7 @@ mod tests {
 
     #[apply(findere_fixture)]
     fn test_write_and_read_metadata(#[case] z: usize, random_directory: AutoRemoveDirectory) {
-        let bf_dir = random_directory.filename().to_str().unwrap();
+        let bf_dir = random_directory.filename();
         let parameters = Parameters {
             k: 31,
             m: 15,
@@ -1931,12 +1948,12 @@ mod tests {
         };
         let indexed_file_names = vec![String::from("a"), String::from("b")];
 
-        let mut expected = Reindeer2::new(parameters, String::from(bf_dir));
+        let mut expected = Reindeer2::new(parameters, bf_dir.to_path_buf());
         expected.set_indexed_file_names(indexed_file_names);
         fs::create_dir_all(bf_dir).expect("Failed to create test directory");
         expected.save_infos_to_disk().unwrap();
 
-        let actual = Reindeer2::load_from_disk(bf_dir).unwrap();
+        let actual = Reindeer2::load_from_disk(bf_dir.to_path_buf()).unwrap();
         assert_eq!(actual, expected);
     }
 
@@ -1950,28 +1967,26 @@ mod tests {
         sort_files_by_size: bool,
         query_file_id: usize,
         test_dir: impl Into<String>,
-    ) -> String {
-        let test_dir: String = test_dir.into();
-        let index_path = Path::new(&test_dir)
-            .join("index")
-            .to_string_lossy()
-            .to_string();
-        let mut index = Reindeer2::new(parameters, index_path);
+    ) -> PathBuf {
+        let file_paths = file_paths.iter().map(|x| PathBuf::from(x)).collect_vec();
+        let test_dir = PathBuf::from(test_dir.into());
+        let index_path = Path::new(&test_dir).join("index");
+        let mut index = Reindeer2::new(parameters, index_path.to_path_buf());
+        let build_args = BuildArgs {
+            file_of_file_name: String::from("fof"),
+            sort_files_by_size,
+            allow_count_right_after_angle_bracket: false,
+            chunks_size,
+            threshold,
+        };
         let (_file_paths, index_dir) = index
-            .build(
-                "fof",
-                file_paths.clone(),
-                sort_files_by_size,
-                chunks_size,
-                threshold,
-                false,
-            )
+            .build(build_args, file_paths.clone())
             .expect("Failed to build index");
 
-        let query_results_path = format!("{}/query_results.csv", test_dir);
+        let query_results_path = test_dir.join("query_results.csv");
 
-        let index_from_disk =
-            Reindeer2::load_from_disk(&index_dir).expect("Failed to load index infos from disk");
+        let index_from_disk = Reindeer2::load_from_disk(PathBuf::from(&index_dir))
+            .expect("Failed to load index infos from disk");
         index_from_disk
             .query(
                 &file_paths[query_file_id],
@@ -2005,19 +2020,17 @@ mod tests {
         #[values(true, false)] sort_files_by_size: bool,
         random_directory: AutoRemoveDirectory,
     ) {
-        let test_dir = random_directory.filename().to_str().unwrap();
+        let test_dir = random_directory.filename();
         fs::create_dir_all(test_dir).expect("Failed to create test directory");
-        let index_dir = Path::new(test_dir)
-            .join("index_dir")
-            .to_string_lossy()
-            .to_string();
+        let index_dir = Path::new(test_dir).join("index_dir");
 
-        let fof_path = format!("{}/fof.txt", test_dir);
-        let file1_path = format!("{}/file1Q.fa", test_dir);
+        let fof_path = test_dir.join("fof.txt");
+        let file1_path = test_dir.join("file1Q.fa");
 
         {
             let mut fof_file = File::create(&fof_path).expect("Failed to create fof.txt");
-            writeln!(fof_file, "{}", file1_path).expect("Failed to write to fof.txt");
+            writeln!(fof_file, "{}", file1_path.to_str().unwrap())
+                .expect("Failed to write to fof.txt");
         }
 
         {
@@ -2050,22 +2063,22 @@ mod tests {
         let chunks_size = 128;
         let threshold = parameters.nb_color;
 
-        let mut index = Reindeer2::new(parameters, String::from(&index_dir));
+        let mut index = Reindeer2::new(parameters, index_dir);
+        let build_args = BuildArgs {
+            file_of_file_name: String::from("fof"),
+            chunks_size,
+            allow_count_right_after_angle_bracket: false,
+            sort_files_by_size,
+            threshold,
+        };
         let (_file_paths, index_dir) = index
-            .build(
-                "fof",
-                vec![file1_path.clone()],
-                sort_files_by_size,
-                chunks_size,
-                threshold,
-                false,
-            )
+            .build(build_args, vec![file1_path.clone()])
             .expect("Failed to build index");
 
-        let query_results_path = format!("{}/query_results.csv", index_dir);
+        let query_results_path = index_dir.join("query_results.csv");
 
-        let index_from_disk =
-            Reindeer2::load_from_disk(&index_dir).expect("Failed to load index infos from disk");
+        let index_from_disk = Reindeer2::load_from_disk(PathBuf::from(&index_dir))
+            .expect("Failed to load index infos from disk");
         index_from_disk
             .query(
                 &file1_path,
@@ -3222,7 +3235,10 @@ mod tests {
 
         let file = File::open(&fof_path)?;
         let reader = BufReader::new(file);
-        let lines: Vec<String> = reader.lines().collect::<Result<_, _>>()?;
+        let lines: Vec<PathBuf> = reader
+            .lines()
+            .map(|line| line.map(PathBuf::from))
+            .collect::<Result<_, _>>()?;
 
         // Test with chunks_size = 2
         let chunks_size = 2;
@@ -3950,11 +3966,11 @@ mod tests {
         #[values(true, false)] sort_files_by_size: bool,
         random_directory: AutoRemoveDirectory,
     ) {
-        let test_dir = random_directory.filename().to_str().unwrap();
+        let test_dir = random_directory.filename();
         fs::create_dir_all(test_dir).expect("Failed to create test directory");
 
-        let fasta_path = format!("{}/test.fasta", test_dir);
-        let output_path = format!("{}/colored_graph_output.fasta", test_dir);
+        let fasta_path = test_dir.join("test.fasta");
+        let output_path = test_dir.join("colored_graph_output.fasta");
 
         {
             let mut file = File::create(&fasta_path).expect("Failed to create test.fasta");
@@ -3986,26 +4002,23 @@ mod tests {
         let threshold = parameters.nb_color;
         let _batch_size = 2;
 
-        let index_path = Path::new(&test_dir)
-            .join("index")
-            .to_string_lossy()
-            .to_string();
+        let index_path = Path::new(&test_dir).join("index");
 
         let mut index = Reindeer2::new(parameters, index_path.clone());
 
+        let build_args = BuildArgs {
+            file_of_file_name: String::from("fof"),
+            sort_files_by_size,
+            chunks_size,
+            allow_count_right_after_angle_bracket: false,
+            threshold,
+        };
         let (_file_paths, index_dir) = index
-            .build(
-                "fof",
-                vec![fasta_path.clone()],
-                sort_files_by_size,
-                chunks_size,
-                threshold,
-                false,
-            )
+            .build(build_args, vec![fasta_path.clone()])
             .expect("Failed to build index");
 
         let index_from_disk =
-            Reindeer2::load_from_disk(&index_dir).expect("Failed to load index infos from disk");
+            Reindeer2::load_from_disk(index_dir).expect("Failed to load index infos from disk");
         index_from_disk
             .query(
                 &fasta_path,
@@ -4058,11 +4071,11 @@ mod tests {
         #[values(true, false)] sort_files_by_size: bool,
         random_directory: AutoRemoveDirectory,
     ) {
-        let test_dir = random_directory.filename().to_str().unwrap();
+        let test_dir = random_directory.filename();
         // fs::create_dir_all(test_dir).expect("Failed to create test directory");
 
-        let file1_path = String::from("tests/unit_tests_data/random_seq_with_revcomp.fa");
-        let file2_path = String::from("tests/unit_tests_data/random_seq.fa");
+        let file1_path = PathBuf::from("tests/unit_tests_data/random_seq_with_revcomp.fa");
+        let file2_path = PathBuf::from("tests/unit_tests_data/random_seq.fa");
         let file_paths = vec![file1_path, file2_path];
 
         let parameters = Parameters {
@@ -4085,21 +4098,21 @@ mod tests {
         let chunks_size = 128;
         let threshold = parameters.nb_color;
 
-        let mut index = Reindeer2::new(parameters, String::from(test_dir));
+        let mut index = Reindeer2::new(parameters, test_dir.to_path_buf());
+        let build_args = BuildArgs {
+            file_of_file_name: String::from("fof"),
+            sort_files_by_size,
+            chunks_size,
+            threshold,
+            allow_count_right_after_angle_bracket: false,
+        };
         let (_, index_dir) = index
-            .build(
-                "fof",
-                file_paths.clone(),
-                sort_files_by_size,
-                chunks_size,
-                threshold,
-                false,
-            )
+            .build(build_args, file_paths.clone())
             .expect("Failed to build index");
 
-        let query_results_path = format!("{}/query_results.csv", index_dir);
+        let query_results_path = test_dir.join("query_results.csv");
 
-        let index_from_disk = Reindeer2::load_from_disk(&index_dir).unwrap();
+        let index_from_disk = Reindeer2::load_from_disk(index_dir.clone()).unwrap();
         index_from_disk
             .query(
                 &file_paths[1],
@@ -4135,15 +4148,12 @@ shared_revcomp_with_other_test_file\t0-19:3\t0-19:10",
         #[values(true, false)] sort_files_by_size: bool,
         random_directory: AutoRemoveDirectory,
     ) {
-        let test_dir = random_directory.filename().to_str().unwrap();
+        let test_dir = random_directory.filename();
         fs::create_dir_all(test_dir).expect("Failed to create test directory");
-        let index_path = Path::new(&test_dir)
-            .join("index")
-            .to_string_lossy()
-            .to_string();
+        let index_path = test_dir.join("index");
 
-        let file1_path = String::from("tests/unit_tests_data/random_seq_with_revcomp.fa");
-        let file2_path = String::from("tests/unit_tests_data/random_seq.fa");
+        let file1_path = PathBuf::from("tests/unit_tests_data/random_seq_with_revcomp.fa");
+        let file2_path = PathBuf::from("tests/unit_tests_data/random_seq.fa");
         let file_paths = vec![file2_path, file1_path];
 
         let parameters = Parameters {
@@ -4167,20 +4177,20 @@ shared_revcomp_with_other_test_file\t0-19:3\t0-19:10",
         let threshold = parameters.nb_color;
 
         let mut index = Reindeer2::new(parameters, index_path);
+        let build_args = BuildArgs {
+            file_of_file_name: String::from("fof"),
+            sort_files_by_size,
+            chunks_size,
+            threshold,
+            allow_count_right_after_angle_bracket: false,
+        };
         let (_, index_dir) = index
-            .build(
-                "fof",
-                file_paths.clone(),
-                sort_files_by_size,
-                chunks_size,
-                threshold,
-                false,
-            )
+            .build(build_args, file_paths.clone())
             .expect("Failed to build index");
 
-        let query_results_path = format!("{}/query_results.csv", index_dir);
+        let query_results_path = test_dir.join("query_results.csv");
 
-        let index_from_disk = Reindeer2::load_from_disk(&index_dir).unwrap();
+        let index_from_disk = Reindeer2::load_from_disk(index_dir.clone()).unwrap();
         index_from_disk
             .query(
                 &file_paths[0],
@@ -4228,15 +4238,12 @@ shared_revcomp_with_other_test_file\t0-19:10\t0-19:3",
         #[values(true, false)] sort_files_by_size: bool,
         random_directory: AutoRemoveDirectory,
     ) {
-        let test_dir = random_directory.filename().to_str().unwrap();
+        let test_dir = random_directory.filename();
         fs::create_dir_all(test_dir).expect("Failed to create test directory");
-        let index_path = Path::new(&test_dir)
-            .join("index")
-            .to_string_lossy()
-            .to_string();
+        let index_path = test_dir.join("index");
 
-        let file1_path = String::from("tests/unit_tests_data/random_seq_with_revcomp.fa");
-        let file2_path = String::from("tests/unit_tests_data/duplication.fa");
+        let file1_path = PathBuf::from("tests/unit_tests_data/random_seq_with_revcomp.fa");
+        let file2_path = PathBuf::from("tests/unit_tests_data/duplication.fa");
         let file_paths = vec![file1_path, file2_path];
 
         let parameters = Parameters {
@@ -4260,24 +4267,24 @@ shared_revcomp_with_other_test_file\t0-19:10\t0-19:3",
         let threshold = parameters.nb_color;
 
         let mut index = Reindeer2::new(parameters, index_path.clone());
+        let build_args = BuildArgs {
+            file_of_file_name: String::from("fof"),
+            sort_files_by_size,
+            chunks_size,
+            threshold,
+            allow_count_right_after_angle_bracket: false,
+        };
         let (_, index_dir) = index
-            .build(
-                "fof",
-                file_paths.clone(),
-                sort_files_by_size,
-                chunks_size,
-                threshold,
-                false,
-            )
+            .build(build_args, file_paths.clone())
             .expect("Failed to build index");
 
-        let query_results_path = format!("{}/query_results.csv", index_dir);
+        let query_results_path = test_dir.join("query_results.csv");
 
-        let index_from_disk = Reindeer2::load_from_disk(&index_path).unwrap();
+        let index_from_disk = Reindeer2::load_from_disk(index_dir.clone()).unwrap();
         index_from_disk
             .query(
                 &file_paths[1],
-                &index_path,
+                &index_dir,
                 &query_results_path,
                 OutputFormat::AbundanceMatrix {
                     format: MatrixFormat::Raw(None),
@@ -4306,10 +4313,12 @@ header_0\t0-69:*\t0-69:1",
         #[values(true, false)] sort_files_by_size: bool,
         random_directory: AutoRemoveDirectory,
     ) {
-        let test_dir = random_directory.filename().to_str().unwrap();
+        let test_dir = random_directory.filename();
+        fs::create_dir_all(test_dir).expect("Failed to create test directory");
+        let index_path = test_dir.join("index");
 
-        let file1_path = String::from("tests/unit_tests_data/random_seq_with_revcomp.fa");
-        let file2_path = String::from("tests/unit_tests_data/random_seq.fa");
+        let file1_path = PathBuf::from("tests/unit_tests_data/random_seq_with_revcomp.fa");
+        let file2_path = PathBuf::from("tests/unit_tests_data/random_seq.fa");
         let file_paths = vec![file1_path, file2_path];
 
         let parameters = Parameters {
@@ -4332,21 +4341,21 @@ header_0\t0-69:*\t0-69:1",
         let chunks_size = 128;
         let threshold = parameters.nb_color;
 
-        let mut index = Reindeer2::new(parameters, String::from(test_dir));
+        let mut index = Reindeer2::new(parameters, index_path.clone());
+        let build_args = BuildArgs {
+            file_of_file_name: String::from("fof"),
+            sort_files_by_size,
+            chunks_size,
+            threshold,
+            allow_count_right_after_angle_bracket: false,
+        };
         let (_, index_dir) = index
-            .build(
-                "fof",
-                file_paths.clone(),
-                sort_files_by_size,
-                chunks_size,
-                threshold,
-                false,
-            )
+            .build(build_args, file_paths.clone())
             .expect("Failed to build index");
 
-        let query_results_path = format!("{}/query_results.csv", index_dir);
+        let query_results_path = test_dir.join("query_results.csv");
 
-        let index_from_disk = Reindeer2::load_from_disk(&index_dir).unwrap();
+        let index_from_disk = Reindeer2::load_from_disk(index_path).unwrap();
         index_from_disk
             .query(
                 &file_paths[1],
@@ -4396,26 +4405,26 @@ shared_revcomp_with_other_test_file\t0-19:*\t0-19:10",
         #[values(true, false)] sort_files_by_size: bool,
         random_directory: AutoRemoveDirectory,
     ) -> io::Result<()> {
-        let test_dir = random_directory.filename().to_str().unwrap();
-        let index1_files_dir = format!("{}/index1_files", test_dir);
-        let index2_files_dir = format!("{}/index2_files", test_dir);
-        let index1_index_dir = format!("{}/index1_index", test_dir);
-        let index2_index_dir = format!("{}/index2_index", test_dir);
-        let merged_index_dir = format!("{}/merged_index", test_dir);
-        let indexes_fof = format!("{}/indexes.txt", test_dir);
+        let test_dir = random_directory.filename();
+        let index1_files_dir = test_dir.join("index1_files");
+        let index2_files_dir = test_dir.join("index2_files");
+        let index1_index_dir = test_dir.join("index1_index");
+        let index2_index_dir = test_dir.join("index2_index");
+        let merged_index_dir = test_dir.join("merged_index");
+        let indexes_fof = test_dir.join("indexes.txt");
 
         fs::create_dir_all(&index1_files_dir)?;
         fs::create_dir_all(&index2_files_dir)?;
 
-        let file1_path = format!("{}/file1.fa", index1_files_dir);
+        let file1_path = index1_files_dir.join("file1.fa");
         {
             let mut file = File::create(&file1_path)?;
             writeln!(file, ">seq1 ka:f:30")?;
             writeln!(file, "TAGAAGGCGTGAGTCTTAGCT")?;
         }
 
-        let file2_path = format!("{}/file2.fa", index2_files_dir);
-        let file3_path = format!("{}/file3.fa", index2_files_dir);
+        let file2_path = index2_files_dir.join("file2.fa");
+        let file3_path = index2_files_dir.join("file3.fa");
         {
             let mut file = File::create(&file2_path)?;
             writeln!(file, ">seq2 ka:f:30")?;
@@ -4455,39 +4464,32 @@ shared_revcomp_with_other_test_file\t0-19:*\t0-19:10",
 
         // for index1, color count = 1
         let index1_file_paths = vec![file1_path.clone()];
-        let mut index = Reindeer2::new(parameters.clone(), String::from(&index1_index_dir));
-        index.build(
-            "fof",
-            index1_file_paths,
+        let mut index = Reindeer2::new(parameters.clone(), index1_index_dir.clone());
+        let build_args = BuildArgs {
+            file_of_file_name: String::from("fof"),
             sort_files_by_size,
             chunks_size,
-            tolerated_number_of_zeros,
-            false,
-        )?;
+            threshold: tolerated_number_of_zeros,
+            allow_count_right_after_angle_bracket: false,
+        };
+        index.build(build_args.clone(), index1_file_paths)?;
 
         //index2, color count = 2
         parameters.nb_color = 2;
         let index2_file_paths = vec![file2_path.clone(), file3_path.clone()];
-        let mut index = Reindeer2::new(parameters.clone(), String::from(&index2_index_dir));
-        index.build(
-            "fof",
-            index2_file_paths,
-            sort_files_by_size,
-            chunks_size,
-            tolerated_number_of_zeros,
-            false,
-        )?;
+        let mut index = Reindeer2::new(parameters.clone(), index2_index_dir.clone());
+        index.build(build_args, index2_file_paths)?;
 
         {
             let mut fof = File::create(&indexes_fof)?;
-            writeln!(fof, "{}", index1_index_dir)?;
-            writeln!(fof, "{}", index2_index_dir)?;
+            writeln!(fof, "{}", index1_index_dir.to_str().unwrap())?;
+            writeln!(fof, "{}", index2_index_dir.to_str().unwrap())?;
         }
 
         merge_multiple_indexes(&indexes_fof, &merged_index_dir)
             .expect("Failed to merge the test indexes");
 
-        let merged_index = Reindeer2::load_from_disk(&merged_index_dir)
+        let merged_index = Reindeer2::load_from_disk(merged_index_dir)
             .expect("Failed to read the merged index metadata)");
         assert_eq!(
             merged_index.parameters.nb_color, 3,
@@ -4504,10 +4506,9 @@ shared_revcomp_with_other_test_file\t0-19:*\t0-19:10",
         let total_capacity: u64 = (0..NB_FILE_IN_AN_INDEX)
             .map(|i| {
                 if i < parameters.partition_number {
-                    let path = format!(
-                        "{}/partition_bloom_filters_group{}.bin",
-                        merged_index.index_dir, i
-                    );
+                    let path = merged_index
+                        .index_dir
+                        .join(format!("partition_bloom_filters_group{i}.bin"));
                     let file = File::open(path).unwrap();
                     let mut reader = BufReader::new(file);
                     let metadata = tar_get::get_metadata(&mut reader).unwrap();

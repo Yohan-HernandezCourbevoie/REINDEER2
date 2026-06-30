@@ -6,11 +6,11 @@ use std::{
 };
 
 pub fn write_kmer_counts_to_disk(
-    dir_path: &str,
+    dir_path: &Path,
     kmer_counts_vector: &Arc<Mutex<Vec<usize>>>,
 ) -> io::Result<()> {
     // OPTIMIZE we may be able to drop the lock before writing to disk
-    let file_path = Path::new(dir_path).join("kmer_counts_per_color.bin");
+    let file_path = dir_path.join("kmer_counts_per_color.bin");
     let file = File::create(&file_path)?;
     let mut writer = BufWriter::new(file);
     let mut locked_vector = kmer_counts_vector.lock().expect(
@@ -31,7 +31,7 @@ pub fn write_kmer_counts_to_disk_after_chunk_done(
     nb_chunk_done: usize,
 ) -> io::Result<()> {
     // OPTIMIZE we may be able to drop the lock before writing to disk
-    let file_path = Path::new(saves_path).join(format!(
+    let file_path = saves_path.join(format!(
         "kmer_counts_per_color_after_chunk_{nb_chunk_done}.bin"
     ));
     let file = File::create(&file_path)?;
@@ -47,8 +47,8 @@ pub fn write_kmer_counts_to_disk_after_chunk_done(
     Ok(())
 }
 
-pub fn load_kmer_counts_vector(dir_path: &str) -> io::Result<Vec<usize>> {
-    let mut file = File::open(Path::new(dir_path).join("kmer_counts_per_color.bin"))?;
+pub fn load_kmer_counts_vector(dir_path: &Path) -> io::Result<Vec<usize>> {
+    let mut file = File::open(dir_path.join("kmer_counts_per_color.bin"))?;
     // Read the rest of the file to deserialize the hashmap
     let mut buffer = Vec::new();
     file.read_to_end(&mut buffer)?;
