@@ -10,6 +10,9 @@ use std::{
     time::Instant,
 };
 
+#[cfg(feature = "self-destruct")]
+use crate::FailIndexation;
+
 use crate::reindeer2::{
     NB_FILE_IN_AN_INDEX, create_and_reserve_tar_get_file,
     merge::merge_partition_slices_interleaved,
@@ -44,6 +47,7 @@ pub fn merge_all_partitions_of_chunks(
     color_counts_per_chunk: &[usize], // number of colors in each chunk
     num_partitions: usize,
     mut saves: Saves<Merge>,
+    #[cfg(feature = "self-destruct")] fail: &Option<FailIndexation>,
 ) -> io::Result<()> {
     let start_time = Instant::now();
 
@@ -90,6 +94,12 @@ pub fn merge_all_partitions_of_chunks(
         let mut saves = saves_arc.lock().expect(
             "fatal error: a thread holding the mutex panicked, so this thread will panic as well",
         );
+        #[cfg(feature = "self-destruct")]
+        if let Some(FailIndexation::Merge(fail_merge)) = fail
+            && *fail_merge == file_id
+        {
+            panic!("indexation failed on merge {fail_merge} as planned")
+        }
         saves.one_merge_done(file_id);
 
         // remove the intermedite partitions after the merge

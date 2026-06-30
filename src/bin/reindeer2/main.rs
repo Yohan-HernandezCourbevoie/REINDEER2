@@ -290,6 +290,8 @@ fn main() -> io::Result<()> {
         }
         cli::Command::ResumeIndexation(ResumeIndexationArgs {
             partial_index_directory,
+            file_of_file,
+            threads,
             #[cfg(feature = "self-destruct")]
             chunk_explode_at_step,
             #[cfg(feature = "self-destruct")]
@@ -297,16 +299,32 @@ fn main() -> io::Result<()> {
         }) => {
             #[cfg(feature = "self-destruct")]
             self_destruct_warn();
+
+            rayon::ThreadPoolBuilder::new()
+                    .num_threads(threads)
+                    .build_global()
+                    .expect("should have been able to set up the threads (maybe the setup function was called twice ?)");
+
             let partial_index_directory = PathBuf::from(&partial_index_directory);
             let build_args = Reindeer2::load_build_args(&partial_index_directory).unwrap_or_else(|| {
                 log::error!("No incomplete index found. Please check the index you are trying to resume exists and is incomplete.");
+
+
         panic!(
 "Should have been able to load the build arguments from disk. Please check the index you are trying to resume exists and is incomplete."        )
     });
-
+            // read the file of files  and extract file paths and color count
+            let (file_paths, _) = read_fof_file(&file_of_file).unwrap_or_else(|err| {
+                panic!("should have been able to read the input file {file_of_file} ({err})")
+            });
             let mut index = Reindeer2::load_from_disk(partial_index_directory)
                 .expect("should have been able to load index infos from disk");
-            // index.restart_build(build_args)?;
+            index.restart_build(
+                build_args,
+                file_paths,
+                #[cfg(feature = "self-destruct")]
+                validate_fail(chunk_explode_at_step, merge_explode_at_step),
+            )?;
         }
 
         cli::Command::Query(QueryArgs {

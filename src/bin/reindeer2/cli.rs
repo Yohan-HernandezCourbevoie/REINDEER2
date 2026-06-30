@@ -37,9 +37,17 @@ pub enum Command {
 
 #[derive(Args, Debug)]
 pub struct ResumeIndexationArgs {
-    /// Sets the index output directory
-    #[arg(short = 'o', long = "output-dir", value_name = "OUT")]
+    /// The incomplete index directory
+    #[arg(short = 'i', long = "index-dir", value_name = "INDEX_DIR")]
     pub partial_index_directory: String,
+
+    /// A file of files where each line is the path to a multi-FASTA file of unitigs (Logan format).
+    #[arg(short = 'I', long = "file-of-file", value_name = "INPUT")]
+    pub file_of_file: String,
+
+    /// Define the number of threads available
+    #[arg(short, long, value_name = "THREADS", default_value_t = 7)]
+    pub threads: usize,
 
     #[cfg(feature = "self-destruct")]
     /// Test parameter: make the indexation fail after indexing a certain number of chunk.
@@ -66,7 +74,7 @@ pub struct IndexArgs {
     #[arg(short, long, value_name = "MINSIZE", default_value_t = 15)]
     pub minimizer: usize,
 
-    /// Define a number of threads available
+    /// Define the number of threads available
     #[arg(short, long, value_name = "THREADS", default_value_t = 7)]
     pub threads: usize,
 
@@ -170,7 +178,7 @@ pub struct QueryArgs {
     #[arg(short = 'f', long, value_enum, default_value_t = OutputFormatCli::Median)]
     pub output_format: OutputFormatCli,
 
-    /// Define a number of threads available
+    /// Define the number of threads available
     #[arg(short, long, value_name = "THREADS", default_value_t = 7)]
     pub threads: usize,
 
@@ -207,7 +215,7 @@ pub struct MergeArgs {
     #[arg(short = 'o', long = "output-dir", value_name = "OUT")]
     pub output_dir: Option<String>,
 
-    /// Define a number of threads available
+    /// Define the number of threads available
     #[arg(short, long, value_name = "THREADS", default_value_t = 1)]
     pub threads: usize,
 }
@@ -222,7 +230,7 @@ pub struct RenameArgs {
     #[arg(short, long, value_name = "OLD")]
     pub old_name: String,
 
-    /// Define a number of threads available
+    /// Define the number of threads available
     #[arg(short, long, value_name = "NEW")]
     pub new_name: String,
 }

@@ -456,32 +456,30 @@ impl Reindeer2 {
         // log::info!("Index information written to {}", output_path);
         Ok(())
     }
-
-    /// Build the index by indexing the files in `file_paths` using the parameters passed during the construction of the struct.
-    pub fn build(
+    pub fn restart_build(
         &mut self,
         args: BuildArgs,
-        mut file_paths: Vec<PathBuf>,
+        file_paths: Vec<PathBuf>,
+        #[cfg(feature = "self-destruct")] fail: Option<FailIndexation>,
     ) -> io::Result<(Vec<PathBuf>, PathBuf)> {
-        let BuildArgs {
-            file_of_file_name,
-            sort_files_by_size,
-            chunks_size,
-            threshold,
-            allow_count_right_after_angle_bracket,
-        } = &args;
-        let parameters = &self.parameters;
-
-        let chunks = split_fof(&file_paths, *chunks_size)?;
-
-        let previous_run_infos = did_we_crash(&self.index_dir, parameters, chunks.len())
+        #[cfg(feature = "self-destruct")]
+        {
+            self.parameters.fail = fail
+        }
+        let chunks = split_fof(&file_paths, args.chunks_size)?;
+        let previous_run_infos = did_we_crash(&self.index_dir, &self.parameters, chunks.len())
             .expect("should have been able to read the output folder");
 
         let crash_state = match previous_run_infos {
-            StartRestartOrError::Start => None,
+            StartRestartOrError::Start => {
+                let msg = "The path to the incomplete index does not exists.";
+                log::error!("{msg}");
+                panic!("{msg}");
+            }
             StartRestartOrError::IndexAlreadyExists => {
-                log::error!("The output folder already exists. Remove it.");
-                panic!("The output folder already exists. Remove it.");
+                let msg = "The output folder already exists. Remove it.";
+                log::error!("{msg}");
+                panic!("{msg}");
             }
             StartRestartOrError::PartialIndexAlreadyExistsWithDifferentParameters {
                 parameters_on_disk,
@@ -515,7 +513,59 @@ impl Reindeer2 {
                 Some(crash_state)
             }
         };
+        self.build_or_restart_build(args, file_paths, crash_state)
+    }
 
+    /// Build the index by indexing the files in `file_paths` using the parameters passed during the construction of the struct.
+    pub fn build(
+        &mut self,
+        args: BuildArgs,
+        file_paths: Vec<PathBuf>,
+    ) -> io::Result<(Vec<PathBuf>, PathBuf)> {
+        let chunks = split_fof(&file_paths, args.chunks_size)?;
+        let previous_run_infos = did_we_crash(&self.index_dir, &self.parameters, chunks.len())
+            .expect("should have been able to read the output folder");
+
+        let crash_state = match previous_run_infos {
+            StartRestartOrError::Start => None,
+            StartRestartOrError::IndexAlreadyExists => {
+                log::error!("The output folder already exists. Remove it.");
+                panic!("The output folder already exists. Remove it.");
+            }
+            StartRestartOrError::PartialIndexAlreadyExistsWithDifferentParameters {
+                parameters_on_disk: _,
+            } => {
+                log::error!(
+                    "The output folder contains an incomplete index. Maybe you intended to resume the indexation? If so, note that the parameters given do not match the parameters of the index on disk."
+                );
+                // TODO reformulate
+                panic!(
+                    "The output folder contains an incomplete index. Moreover, the index parameters are different from the ones given."
+                );
+            }
+            StartRestartOrError::Restart(_crash_state) => {
+                let msg = "The output folder contains an incomplete index.";
+                log::error!("{msg}");
+                panic!("{msg}");
+            }
+        };
+        self.build_or_restart_build(args, file_paths, crash_state)
+    }
+
+    pub fn build_or_restart_build(
+        &mut self,
+        args: BuildArgs,
+        mut file_paths: Vec<PathBuf>,
+        crash_state: Option<CrashState>,
+    ) -> io::Result<(Vec<PathBuf>, PathBuf)> {
+        let BuildArgs {
+            file_of_file_name,
+            sort_files_by_size,
+            chunks_size,
+            threshold,
+            allow_count_right_after_angle_bracket,
+        } = &args;
+        let parameters = &self.parameters;
         let nb_chunk = split_fof(&file_paths, *chunks_size)?.len();
 
         let (dir_path, saves_path) = match crash_state {
@@ -654,6 +704,8 @@ impl Reindeer2 {
                 &color_chunks,
                 parameters.partition_number,
                 saves,
+                #[cfg(feature = "self-destruct")]
+                &self.parameters.fail,
             )
             .map_err(|e| {
                 log::error!("Merge of intermediate files failed: {e}");
