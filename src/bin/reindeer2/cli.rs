@@ -23,6 +23,8 @@ pub enum Command {
     Merge(MergeArgs),
     /// Get infos about a REINDEER2 index
     Infos(InfosArgs),
+    /// Resume indexation after a crash
+    ResumeIndexation(ResumeIndexationArgs),
     /// Rename a dataset in a REINDEER 2 index
     Rename(RenameArgs),
 }
@@ -32,6 +34,31 @@ pub enum Command {
 //     MinimizerSampling { e: usize },
 //     KmerSampling,
 // }
+
+#[derive(Args, Debug)]
+pub struct ResumeIndexationArgs {
+    /// The incomplete index directory
+    #[arg(short = 'i', long = "index-dir", value_name = "INDEX_DIR")]
+    pub partial_index_directory: String,
+
+    /// A file of files where each line is the path to a multi-FASTA file of unitigs (Logan format).
+    #[arg(short = 'I', long = "file-of-file", value_name = "INPUT")]
+    pub file_of_file: String,
+
+    /// Define the number of threads available
+    #[arg(short, long, value_name = "THREADS", default_value_t = 7)]
+    pub threads: usize,
+
+    #[cfg(feature = "self-destruct")]
+    /// Test parameter: make the indexation fail after indexing a certain number of chunk.
+    #[arg(long, value_name = "kaboom_chunk")]
+    pub chunk_explode_at_step: Option<usize>,
+
+    #[cfg(feature = "self-destruct")]
+    /// Test parameter: make the indexation fail when merging a certain group of files.
+    #[arg(long, value_name = "kaboom_merge")]
+    pub merge_explode_at_step: Option<usize>,
+}
 
 #[derive(Args, Debug)]
 pub struct IndexArgs {
@@ -47,7 +74,7 @@ pub struct IndexArgs {
     #[arg(short, long, value_name = "MINSIZE", default_value_t = 15)]
     pub minimizer: usize,
 
-    /// Define a number of threads available
+    /// Define the number of threads available
     #[arg(short, long, value_name = "THREADS", default_value_t = 7)]
     pub threads: usize,
 
@@ -116,6 +143,16 @@ pub struct IndexArgs {
     /// This speeds up multithreaded indexation, because the files in each chunk of work are less imbalanced.
     #[arg(long, default_value_t = false)]
     pub no_sort_files_by_size: bool,
+
+    #[cfg(feature = "self-destruct")]
+    /// Test parameter: make the indexation fail after indexing a certain number of chunk.
+    #[arg(long, value_name = "kaboom_chunk")]
+    pub chunk_explode_at_step: Option<usize>,
+
+    #[cfg(feature = "self-destruct")]
+    /// Test parameter: make the indexation fail when merging a certain group of files.
+    #[arg(long, value_name = "kaboom_merge")]
+    pub merge_explode_at_step: Option<usize>,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, ValueEnum)]
@@ -141,7 +178,7 @@ pub struct QueryArgs {
     #[arg(short = 'f', long, value_enum, default_value_t = OutputFormatCli::Median)]
     pub output_format: OutputFormatCli,
 
-    /// Define a number of threads available
+    /// Define the number of threads available
     #[arg(short, long, value_name = "THREADS", default_value_t = 7)]
     pub threads: usize,
 
@@ -178,7 +215,7 @@ pub struct MergeArgs {
     #[arg(short = 'o', long = "output-dir", value_name = "OUT")]
     pub output_dir: Option<String>,
 
-    /// Define a number of threads available
+    /// Define the number of threads available
     #[arg(short, long, value_name = "THREADS", default_value_t = 1)]
     pub threads: usize,
 }
@@ -193,7 +230,7 @@ pub struct RenameArgs {
     #[arg(short, long, value_name = "OLD")]
     pub old_name: String,
 
-    /// Define a number of threads available
+    /// Define the number of threads available
     #[arg(short, long, value_name = "NEW")]
     pub new_name: String,
 }

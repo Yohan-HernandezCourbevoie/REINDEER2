@@ -1,10 +1,10 @@
 mod common;
 
-use std::num::NonZero;
+use std::{num::NonZero, path::PathBuf};
 
 use common::{AutoRemoveDirectory, AutoRemoveFile, check_number_of_partitions, is_all_same};
 
-use reindeer2::{OutputFormat, Parameters, Reindeer2, read_fof_file};
+use reindeer2::{BuildArgs, OutputFormat, Parameters, Reindeer2, read_fof_file};
 
 fn get_input_fof() -> String {
     String::from("tests/chunk_data/fof.txt")
@@ -14,8 +14,8 @@ fn get_output_dir() -> AutoRemoveDirectory {
     AutoRemoveDirectory::create_random()
 }
 
-fn get_query() -> String {
-    String::from("tests/chunk_data/file1.fa")
+fn get_query() -> PathBuf {
+    PathBuf::from("tests/chunk_data/file1.fa")
 }
 
 fn wrong_capacity() -> usize {
@@ -43,6 +43,8 @@ fn no_effect_chunk() {
         sampling_strategy: None,
         findere_z: 4,
         capacity: wrong_capacity(),
+        #[cfg(feature = "self-destruct")]
+        fail: None,
     };
     assert_eq!(parameters.nb_color, 4);
 
@@ -57,21 +59,26 @@ fn no_effect_chunk() {
     let mut query_results = vec![];
     for chunks_size in 1..parameters.nb_color {
         let index_dir = get_output_dir();
-        let mut index = Reindeer2::new(parameters.clone(), String::from(index_dir.filename()));
+        let mut index = Reindeer2::new(parameters.clone(), index_dir.filename().to_path_buf());
         let index_dir_name = index_dir.filename();
         let threshold = 0;
         let paths = file_paths.clone();
 
-        index
-            .build("fof", paths, false, chunks_size, threshold, false)
-            .unwrap();
+        let build_args = BuildArgs {
+            file_of_file_name: String::from("fof"),
+            sort_files_by_size: false,
+            chunks_size,
+            threshold,
+            allow_count_right_after_angle_bracket: false,
+        };
+        index.build(build_args, paths).unwrap();
 
         let coverage = 0.5;
         let output_format = OutputFormat::AbundanceMatrix {
             format: reindeer2::MatrixFormat::Raw(None),
         };
         let query_output =
-            AutoRemoveFile::create_from_path(format!("{}_query_results.csv", index_dir_name));
+            AutoRemoveFile::create_from_path(&index_dir_name.join("query_results.csv"));
         let query_output_name = query_output.filename();
 
         index

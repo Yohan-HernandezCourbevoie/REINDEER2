@@ -114,7 +114,7 @@ impl Filters {
         */
     }
 
-    pub fn write_to_disk_tar_get_files(self, output_dir: &str) -> std::io::Result<()> {
+    pub fn write_to_disk_tar_get_files(self, output_dir: &Path) -> std::io::Result<()> {
         let nb_partition = self.data.len();
         let nb_partition_in_a_file = nb_partition.div_ceil(NB_FILE_IN_AN_INDEX);
         (0..NB_FILE_IN_AN_INDEX)
@@ -123,7 +123,7 @@ impl Filters {
                 let range_start = nb_partition_in_a_file * file_id;
                 let range_end = min(nb_partition_in_a_file * (file_id + 1), nb_partition);
                 let range = range_start..range_end;
-                let path = Path::new(output_dir)
+                let path = output_dir
                     .join(format!("partition_bloom_filters_group{file_id}.bin"));
                 let len: usize = range
                     .try_len()
@@ -147,7 +147,7 @@ impl Filters {
     // TODO very similar to write_to_disk_tar_get_files
     pub fn write_to_disk_tar_get_files_single_chunk(
         self,
-        output_dir: &str,
+        output_dir: &Path,
         chunk_id: &usize,
     ) -> std::io::Result<()> {
         let nb_partition = self.data.len();
@@ -158,8 +158,7 @@ impl Filters {
                 let range_start = nb_partition_in_a_file * file_id;
                 let range_end = min(nb_partition_in_a_file * (file_id + 1), nb_partition);
                 let range = range_start..range_end;
-                let path = Path::new(output_dir)
-                    .join(format!("partition_bloom_filters_group{file_id}_chunk{chunk_id}.bin"));
+let path = output_dir                    .join(format!("partition_bloom_filters_group{file_id}_chunk{chunk_id}.bin"));
                 let len: usize = range
                     .try_len()
                     .expect("range object should have a known length");
@@ -182,7 +181,7 @@ impl Filters {
 
 /// Loads a Bloom filter from disk.
 pub fn load_bloom_filter_from_big_file(
-    file_path: &str,
+    file_path: &Path,
     index: u64,
 ) -> std::io::Result<RoaringBitmap> {
     let file = File::open(file_path)?;
@@ -191,8 +190,13 @@ pub fn load_bloom_filter_from_big_file(
         let slice: &[u8] = &reader;
         RoaringBitmap::deserialize_from(slice)
     };
-    let bitmap = tar_get::deserialize(reader, index, deserializer)
-        .unwrap_or_else(|_| panic!("should have been able to load index {index} from {file_path}")); // TODO error handling
+    let bitmap = tar_get::deserialize(reader, index, deserializer).unwrap_or_else(|_| {
+        panic!(
+            "should have been able to load index {} from {}",
+            index,
+            file_path.display()
+        )
+    }); // TODO error handling
     Ok(bitmap)
 }
 

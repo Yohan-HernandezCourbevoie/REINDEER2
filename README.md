@@ -54,7 +54,6 @@ General parameters:
 - `-a, --abundance` the abundance granularity (number of levels or discretized abundance values) (default: 255) (see ![the relation between abundance levels and approximation ratio](/doc/levels_and_approximation.pdf))
 - `-A, --abundance-max` the maximal abundance to take into account
 - `-d, --dense` (true/false) allows to index dense k-mers - shared k-mers among datasets - more efficiently (default: false)
-<!-- - `-u, --muset` (true/false) the index takes as input the output directory of Muset, containing at least 'unitigs.fa' and 'unitigs.abundance.mat' (default: false) -->
 - `-t, --threads` the maximal number of threads used (default: 1)
 - `--stranded` use non-canonical version of k-mers (default: false)
 - `-c, --chunks-size` number of datasets treated at a time, affecting RAM consumption (default: 128)

@@ -2,10 +2,7 @@ mod approx_abundance;
 mod findere;
 pub mod format;
 
-use std::collections::HashMap;
-use std::fs::File;
-use std::io::{self, Read};
-use std::path::Path;
+use std::{collections::HashMap, path::Path};
 
 use crate::reindeer2::{NB_FILE_IN_AN_INDEX, UppercaseAsciiSeq};
 
@@ -71,7 +68,7 @@ pub fn fold_into_hashmap(
     partition_index: usize,
     smers: Vec<(usize, u32, u64)>,
     base: f64,
-    bf_dir: &str,
+    bf_dir: &Path,
     bf_size: u64,
     partition_number: usize,
     color_number: usize,
@@ -82,13 +79,13 @@ pub fn fold_into_hashmap(
     let nb_partition_in_a_file = partition_number.div_ceil(NB_FILE_IN_AN_INDEX);
     let group = partition_index / nb_partition_in_a_file;
     let index = partition_index % nb_partition_in_a_file;
-    let path_bf = format!("{}/partition_bloom_filters_group{}.bin", bf_dir, group);
+    let path_bf = bf_dir.join(format!("partition_bloom_filters_group{}.bin", group));
     let maybe_bf = load_bloom_filter_from_big_file(&path_bf, index as u64); // TODO conversion error, expect
 
     if let Ok(bitmap) = maybe_bf {
         let hashmap: DenseIndexPartition = if is_dense {
             let path_dense_index =
-                format!("{}/partition_dense_index_p{}.bin", bf_dir, partition_index);
+                bf_dir.join(format!("partition_dense_index_p{}.bin", partition_index));
             DenseIndexPartition::load_from_disk(&path_dense_index).unwrap_or_else(|_| {
                 panic!(
                     "Failed to load dense index for partition {}",
@@ -202,21 +199,6 @@ pub fn update_color_abundances(
             query_smer(bitmap, base_position, abundance_number, base, color);
         color_abundances[color].push((smer_position, smer_approx_abundance));
     }
-}
-
-pub fn load_kmer_counts_vector(dir_path: &str) -> io::Result<Vec<usize>> {
-    let mut file = File::open(Path::new(dir_path).join("kmer_counts_per_color.bin"))?;
-
-    // Read the rest of the file to deserialize the hashmap
-    let mut buffer = Vec::new();
-    file.read_to_end(&mut buffer)?;
-    let counts_vector = bincode::deserialize_from(&buffer[..]).map_err(|_| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            "Failed to deserialize the counts vector",
-        )
-    })?;
-    Ok(counts_vector)
 }
 
 // /// Formats a fasta header by removing the first `>` and taking up to the first space (excluded).
