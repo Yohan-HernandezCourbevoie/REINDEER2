@@ -1,19 +1,37 @@
-# REINDEER 2
+# REINDEER 2 <!-- omit from toc -->
 
 REINDEER 2 is an efficient and scalable k-mer abundance index.
 
+- [Pre-processing](#pre-processing)
+- [Installation](#installation)
+  - [Requirements](#requirements)
+  - [Compilation](#compilation)
+- [Usage](#usage)
+  - [Index](#index)
+  - [Query](#query)
+  - [Resume-indexation](#resume-indexation)
+  - [Infos](#infos)
+  - [Rename](#rename)
+- [Example](#example)
+    - [Index](#index-1)
+    - [Query (results: CSV)](#query-results-csv)
+    - [Query (results: colored graph FASTA)](#query-results-colored-graph-fasta)
+    - [Infos](#infos-1)
+
+
 ## Pre-processing
+
 
 As REINDEER 2 only indexes unitig files, a pre-processing step is necessary. This can be done using assembly tools such as [GGCAT](https://github.com/algbio/ggcat).
 
-For public datasets, the sequencing files may already have been processed into unitigs by the [Logan project](https://github.com/IndexThePlanet/Logan). These files are freely available and can be downloaded by following [these steps](https://github.com/IndexThePlanet/Logan/blob/main/Accessions.md).   
+For public datasets, the sequencing files may already have been processed into unitigs by the [Logan project](https://github.com/IndexThePlanet/Logan). These files are freely available and can be downloaded by following [these steps](https://github.com/IndexThePlanet/Logan/blob/main/Accessions.md). 
 
 ## Installation
 
 ### Requirements
 
-- cargo >= 1.81.0
-- rustc >= 1.81.0
+- cargo >= 1.91.1
+- rustc >= 1.91.1
 
 ### Compilation
 
@@ -54,7 +72,7 @@ General parameters:
 - `-a, --abundance` the abundance granularity (number of levels or discretized abundance values) (default: 255) (see ![the relation between abundance levels and approximation ratio](/doc/levels_and_approximation.pdf))
 - `-A, --abundance-max` the maximal abundance to take into account
 - `-d, --dense` (true/false) allows to index dense k-mers - shared k-mers among datasets - more efficiently (default: false)
-- `-t, --threads` the maximal number of threads used (default: 1)
+- `-t, --threads` the maximal number of threads used (default: 7)
 - `--stranded` use non-canonical version of k-mers (default: false)
 - `-c, --chunks-size` number of datasets treated at a time, affecting RAM consumption (default: 128)
 - `--abundance-min` minimum abundance for a k-mer to be indexed (default: 0, i.e., index all k-mers)
@@ -67,7 +85,6 @@ Advanced parameters:
 
 <!-- The value of the number of partitions is important when building large indexes. -->
 \* More information on how to choose the right parameters [here](doc/parameters.md).
-
 
 ### Query
 Warning: REINDEER 2's query results do not respect the order given in the indexed file of file. Please parse the query output rather than assuming the query will repect the order of the indexed file of file.
@@ -84,9 +101,22 @@ For **query** mode, the parameters are the FASTA file containing the sequence(s)
     - `matrix-median`: for each color, for each queried sequence, write a tsv containing the median of k-mers.
     - `matrix-average`: for each color, for each queried sequence, write a tsv containing the average of k-mers.
 - `--breakpoints <penalty>`: Reindeer2 will apply the `PELT` algorithm to detect breakpoints in the abundances of k-mers. Reindeer will then report the position of such breakpoints in the query. This option is only available if the output format is `matrix-raw`. **Warning:** using this options significantly slows down the query.
-- `-t, --threads` the maximal number of threads used (default: 1)
+- `-t, --threads` the maximal number of threads used (default: 7)
 - `--normalize <N>`: normalize abundances based on sequencing depth estimates. The calculation is _normalized\_abundance = raw\_abundance / number\_of\_kmers\_in\_the\_dataset * N_. No normalization by default. If `--normalize` is passed without an argument, `N` defaults to 1\_000\_000. This option is incompatible with `--breakpoints`.
 - `-C, --coverage-min` minimum proportion of kmers that must be present in the query sequence in order to propose an abundance value
+
+### Resume-indexation
+
+The **resume-indexation** mode allows to complete an index if the indexation crashed.
+
+For this mode, the mandatory parameters are the path to the incomplete index and the file of files (a plain text file where each line represents a unitigs file). Note that you have to give the same file of file and the indexation step that crashed.
+
+`reindeer2 resume-indexation --index-dir <INDEX_DIR> --file-of-file <INPUT>`
+
+Re-using the **resume-indexation** mode after a crash of the **resume-indexation** mode is allowed.
+
+General parameters:
+- `-t, --threads` the maximal number of threads used (default: 7)
 
 ### Infos
 
@@ -117,13 +147,13 @@ To illustrate how REINDEER2 works, examples are available in the folder `tests/s
 
 The commands are launched from the REINDEER2 main directory.
 
-#### INDEX
+#### Index
 How to build the index:
 ```
 reindeer2 index --input test_files/fof.txt --kmer 31 --output-dir ../index_test
 ```
 
-#### QUERY (results: CSV)
+#### Query (results: CSV)
 With the command:
 ```
 reindeer2 query --fasta test_files/file1Q.fa --index ../index_test
@@ -139,7 +169,7 @@ header,file,abundance
 ```
 
 
-#### QUERY (results: colored graph FASTA)
+#### Query (results: colored graph FASTA)
 With the command:
 ```
 reindeer2 query --fasta test_files/file1Q.fa --index ../index_test --output-format colored 
@@ -155,7 +185,7 @@ AAAAAAAAAAAAAAAAAAAAACACAGATCAT
 AAAAAAAAAAAAAAAAAAAAAACAAAAAGAA
 ```
 
-#### INFOS
+#### Infos
 With the command:
 ```
 reindeer2 index --input test_files/fof.txt --kmer 31 --output-dir ../index_test
@@ -180,8 +210,8 @@ parameters: Parameters {
     capacity: 2,
 }
 indexed filenames and k-mers: [
-  ("file1Q", 0),
-  ("file2Q", 1000),
+  ("file1Q", 1560),
+  ("file2Q", 2004),
 ]
 ```
 
