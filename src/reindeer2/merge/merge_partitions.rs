@@ -3,6 +3,7 @@ use rayon::prelude::*;
 use roaring::RoaringBitmap;
 use std::{
     cmp::min,
+    collections::HashSet,
     fs::File,
     io::{self, BufWriter, Write},
     path::{Path, PathBuf},
@@ -16,31 +17,57 @@ use crate::FailIndexation;
 use crate::reindeer2::{
     NB_FILE_IN_AN_INDEX, create_and_reserve_tar_get_file,
     merge::merge_partition_slices_interleaved,
+    remove_if_exists,
     saves::{Merge, Saves},
     storage::filters::load_bloom_filter_from_big_file,
 };
+
 /// Removes partitions (they are unecessary after a merge).
 pub fn remove_merged_partitions(
-    chunk_files_dir: &str,
+    index_dir: &Path,
     nb_chunk: usize, // number of colors in each chunk
 ) -> io::Result<()> {
     (0..NB_FILE_IN_AN_INDEX)
         .into_par_iter()
         .try_for_each(|file_id| {
-            for chunk_id in 0..nb_chunk {
-                let path = format!(
-                    "{chunk_files_dir}/partition_bloom_filters_group{file_id}_chunk{chunk_id}.bin"
-                );
-                std::fs::remove_file(path)?;
+            let chunk_files = paths_of_partitions(index_dir, file_id, nb_chunk);
+            for chunk_file in chunk_files {
+                remove_if_exists(chunk_file)?;
             }
             Ok::<(), io::Error>(())
         })?;
     Ok(())
 }
 
+/// Removes partitions (they are unecessary after a merge).
+pub fn remove_done_merged_partitions(
+    index_dir: &Path,
+    nb_chunk: usize, // number of colors in each chunk
+    merges_done: &HashSet<usize>,
+) -> io::Result<()> {
+    merges_done.into_par_iter().try_for_each(|file_id| {
+        let chunk_files = paths_of_partitions(index_dir, *file_id, nb_chunk);
+        for chunk_file in chunk_files {
+            remove_if_exists(chunk_file)?;
+        }
+        Ok::<(), io::Error>(())
+    })?;
+    Ok(())
+}
+
+fn paths_of_partitions(index_dir: &Path, file_id: usize, nb_chunk: usize) -> Vec<PathBuf> {
+    (0..nb_chunk)
+        .map(|chunk_id| {
+            index_dir.join(format!(
+                "partition_bloom_filters_group{file_id}_chunk{chunk_id}.bin"
+            ))
+        })
+        .collect()
+}
+
 /// Merges all partitions of an index being built.
 pub fn merge_all_partitions_of_chunks(
-    chunk_files_dir: &Path,
+    index_dir: &Path,
     output_dir: &Path,
     partitioned_bf_size: usize,
     abundance_number: usize,
@@ -53,7 +80,11 @@ pub fn merge_all_partitions_of_chunks(
 
     let nb_chunk = color_counts_per_chunk.len();
     let nb_partition_in_a_file = num_partitions.div_ceil(NB_FILE_IN_AN_INDEX);
+    let merges_done = saves.get_merge_done();
+    remove_done_merged_partitions(index_dir, nb_chunk, &merges_done)?;
+
     let still_to_be_merge = saves.get_still_to_be_merged();
+
     let saves_arc = Arc::new(Mutex::new(&mut saves));
 
     still_to_be_merge.into_par_iter().try_for_each(|file_id| {
@@ -70,18 +101,11 @@ pub fn merge_all_partitions_of_chunks(
             u64::try_from(len).expect("should have less than u64::MAX partitions in a single file");
         let mut file = create_and_reserve_tar_get_file(&path, len);
 
-        let inpaths = (0..nb_chunk)
-            .map(|chunk_id| {
-                chunk_files_dir.join(format!(
-                    "partition_bloom_filters_group{file_id}_chunk{chunk_id}.bin"
-                ))
-            })
-            .collect_vec();
-
+        let chunk_files = paths_of_partitions(index_dir, file_id, nb_chunk);
         let merge_result = range.try_for_each(|partition_idx| {
             let index = (partition_idx % nb_partition_in_a_file) as u64;
             merge_into_single_tar_get_file(
-                &inpaths,
+                &chunk_files,
                 partitioned_bf_size,
                 abundance_number,
                 color_counts_per_chunk,
@@ -94,16 +118,25 @@ pub fn merge_all_partitions_of_chunks(
         let mut saves = saves_arc.lock().expect(
             "fatal error: a thread holding the mutex panicked, so this thread will panic as well",
         );
+
+        // the user has requested to crash indexation
+        // at this point, almost everything was written to disk, so this is the best time to crash
+        // as the user can test recovery from the most complete state
         #[cfg(feature = "self-destruct")]
         if let Some(FailIndexation::Merge(fail_merge)) = fail
             && *fail_merge == file_id
         {
             panic!("indexation failed on merge {fail_merge} as planned")
         }
+
+        // At this point, we can remove the intermedite partitions to free some disk space.
+        // However, doing so means waiting a bit before being able to write the file indicating this merge is done.
+        // This might give enough time for another thread to make us crash (e.g. by requesting too much RAM), making us waste a lots of time.
+        // Thus, we signal right now that the merge is done, and only after we do trghe cleanup.
+        // Of course, this means we can't assume the cleanup was done when a merge is said to be done, and that is why we start the merge by removing all potential leftovers.
         saves.one_merge_done(file_id);
 
-        // remove the intermedite partitions after the merge
-        for path in inpaths {
+        for path in chunk_files {
             std::fs::remove_file(path)?;
         }
 
@@ -111,10 +144,12 @@ pub fn merge_all_partitions_of_chunks(
     })?;
 
     let elapsed_time = start_time.elapsed();
+    remove_merged_partitions(index_dir, nb_chunk)?;
     log::info!(
         "All partitions merged and written to disk in {:.2?}",
         elapsed_time
     );
+
     saves.merge_all_done();
 
     Ok(())

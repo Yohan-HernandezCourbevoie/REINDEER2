@@ -6,8 +6,8 @@
 
 // deny the use of unwrap: use expect instead
 #![cfg_attr(not(test), deny(clippy::unwrap_used))]
-// #![deny(dead_code)]
-// #![deny(unused)]
+#![deny(dead_code)]
+#![deny(unused)]
 #![deny(clippy::allow_attributes_without_reason)]
 #![warn(clippy::missing_const_for_fn)]
 mod reindeer2;
