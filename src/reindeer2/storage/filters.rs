@@ -58,7 +58,7 @@ impl Filters {
             let mut bloom_filter = self.data[partition_index]
                 .lock()
                 .expect("Failed to lock bloom filter");
-            // TODO this takes a lot of time
+            // OPTIMIZE this takes a lot of time
             bloom_filter.extend(kmer_hashes_to_update);
         }
     }
@@ -118,7 +118,7 @@ impl Filters {
         let nb_partition = self.data.len();
         let nb_partition_in_a_file = nb_partition.div_ceil(NB_FILE_IN_AN_INDEX);
         (0..NB_FILE_IN_AN_INDEX)
-            .into_par_iter() // TODO
+            .into_par_iter()
             .for_each(|file_id| {
                 let range_start = nb_partition_in_a_file * file_id;
                 let range_end = min(nb_partition_in_a_file * (file_id + 1), nb_partition);
@@ -153,12 +153,12 @@ impl Filters {
         let nb_partition = self.data.len();
         let nb_partition_in_a_file = nb_partition.div_ceil(NB_FILE_IN_AN_INDEX);
         (0..NB_FILE_IN_AN_INDEX)
-            .into_par_iter() // TODO
+            .into_par_iter()
             .for_each(|file_id| {
                 let range_start = nb_partition_in_a_file * file_id;
                 let range_end = min(nb_partition_in_a_file * (file_id + 1), nb_partition);
                 let range = range_start..range_end;
-let path = output_dir                    .join(format!("partition_bloom_filters_group{file_id}_chunk{chunk_id}.bin"));
+            let path = output_dir.join(format!("partition_bloom_filters_group{file_id}_chunk{chunk_id}.bin"));
                 let len: usize = range
                     .try_len()
                     .expect("range object should have a known length");

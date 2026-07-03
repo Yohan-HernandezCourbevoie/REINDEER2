@@ -166,8 +166,11 @@ pub enum OutputFormat {
 #[cfg(feature = "self-destruct")]
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[cfg_attr(any(test, debug_assertions), derive(PartialEq))]
+/// Represents a request to make the index fail at a certain stage.
 pub enum FailIndexation {
+    /// Request to make the indexation fail during the chunk phase (value is the chunk that should fail)
     Chunk(usize),
+    /// Request to make the indexation fail during the merge phase (value is the merge that should fail)
     Merge(usize),
 }
 
@@ -204,6 +207,7 @@ pub struct Parameters {
     /// The index will contains (k-z)-mers, and reconstruct k-mers on the fly.
     /// This allows to decrease the false positive rate of queries.
     pub findere_z: usize,
+    /// Maximum number of file in the index
     pub capacity: usize,
     #[cfg(feature = "self-destruct")]
     #[derivative(PartialEq = "ignore")]
@@ -330,24 +334,22 @@ impl fmt::Display for Infos {
 }
 
 #[derive(Serialize, Deserialize, Clone)]
+/// Arguments for the build methods of `Reindeer2`.
+///
+/// They are groupped together in a struct to make it easier to save them on disk in case of a crash.
 pub struct BuildArgs {
+    /// The name of the input file of file.
     pub file_of_file_name: String,
+    /// Wether the indexation process is allowed to (and will) sort the input files by their size.
+    /// This sorting will be reflected on the order of the column during the query, so that the query output stays consistent.
+    /// Sorting allows for a speedup at indexation time, as the files in a chunk require approximately the same amount of work.
     pub sort_files_by_size: bool,
+    /// The maximal size of a chunk
     pub chunks_size: usize,
     pub threshold: usize,
+    /// Allows to deviate from the standard input by accepting the count to be right after the angle bracket in the fasta header.
     pub allow_count_right_after_angle_bracket: bool,
 }
-
-// /// Local variables used for the chunk indexation
-// /// Since the chunk indexation is allowed to crash, we must be able to restore them
-// /// This is easier if all the lacal variables are in this struct
-// pub struct IndexationLocalVariables {
-//     kmer_counts_vector: Arc<Mutex<Vec<usize>>>,
-//     #[cfg(any(debug_assertions, test))]
-//     atomic_sparse_one_seen: AtomicU64,
-//     #[cfg(any(debug_assertions, test))]
-//     atomic_sparse_fp_seen: AtomicU64,
-// }
 
 impl Reindeer2 {
     /// Constructs a new index handle.
@@ -401,8 +403,12 @@ impl Reindeer2 {
         Self::get_saves_path(index_dir).join("build_args.json")
     }
 
+    /// Loads the arguments passed to the build function.
+    ///
+    /// Returns the arguments if the build crashed. Returns None otherwise.
     pub fn load_build_args(index_dir: &Path) -> Option<BuildArgs> {
         let save_path = Self::get_saves_path(index_dir);
+        // the save paths does not exists => either the index is done, or this is not an index folder
         if !save_path.exists() {
             return None;
         }
@@ -416,6 +422,7 @@ impl Reindeer2 {
         Some(build_args)
     }
 
+    /// Saves the arguments passed to the build function to disk, so that they can be retrieved in case of a crash.
     pub fn save_build_args(index_dir: &Path, build_args: &BuildArgs) -> io::Result<()> {
         let output_path = Self::get_build_args_path(index_dir);
         let file = File::create(&output_path)?;
@@ -448,6 +455,8 @@ impl Reindeer2 {
         // log::info!("Index information written to {}", output_path);
         Ok(())
     }
+
+    /// Resume the build after a crash.
     pub fn restart_build(
         &mut self,
         args: BuildArgs,
@@ -544,7 +553,8 @@ impl Reindeer2 {
         self.build_or_restart_build(args, file_paths, crash_state)
     }
 
-    pub fn build_or_restart_build(
+    /// Method containing the common behavior between the first indexation and the resumed indexation.
+    fn build_or_restart_build(
         &mut self,
         args: BuildArgs,
         mut file_paths: Vec<PathBuf>,
@@ -1139,6 +1149,9 @@ impl Reindeer2 {
         fimpera(smer_res, parameters.findere_z)
     }
 
+    /// Renames a dataset in the index.
+    ///
+    /// This method will fail if the new name already exists.
     pub fn rename(&mut self, old_name: &str, new_name: String) -> io::Result<ReplaceOutcome> {
         let outcome =
             replace_first_if_not_already_in(&mut self.indexed_file_names, old_name, new_name);
@@ -1150,8 +1163,11 @@ impl Reindeer2 {
 /// Outcome of trying to replace a name in an index
 #[derive(Debug, PartialEq)]
 pub enum ReplaceOutcome {
+    /// The name to that was supposed to be replaced was not found
     NotFound,
+    /// The destination name would appear more than once in the index
     WouldAppearMoreThanOnce,
+    /// The name was sucessfully replaced
     Replaced,
 }
 
@@ -1569,7 +1585,7 @@ fn extract_count_from_logan_header(header: &str) -> Result<u16, io::Error> {
 
 // --- ABUNDANCE ENCODING ---
 
-pub fn compute_log_abundance(value: NonZero<u16>, base: f64, max: NonZero<u16>) -> u16 {
+fn compute_log_abundance(value: NonZero<u16>, base: f64, max: NonZero<u16>) -> u16 {
     assert!(base > 0.0, "base must be greater than 0");
     let value = value.get();
     let max = max.get();
@@ -1584,20 +1600,8 @@ pub fn compute_log_abundance(value: NonZero<u16>, base: f64, max: NonZero<u16>) 
     }
 }
 
-pub fn approximate_value(log_value: u16, base: f64) -> u16 {
-    if base <= 0.0 {
-        panic!("base must be greater than 0");
-    }
-    let threshold = 1.0 / (base - 1.0);
-    let logf = log_value as f64;
-    if logf < threshold {
-        log_value + 1
-    } else {
-        (base.powf((logf + 1.0) - threshold) * threshold) as u16
-    }
-}
-
 // TOUN
+/// Computes the base required to encode `abundance_number` levels of abundances, the maximum level representing the value `abundance_max`.
 pub fn compute_base(abundance_number: NonZero<usize>, abundance_max: NonZero<u16>) -> f64 {
     let abundance_numberf = abundance_number.get() as f64;
     const TOL: f64 = 1e-9;
@@ -1803,38 +1807,6 @@ mod tests {
         let value = NonZero::new(8).unwrap();
         let max = NonZero::new(65535).unwrap();
         compute_log_abundance(value, 0.0, max);
-    }
-
-    #[test]
-    fn test_approximate_value_with_positive_values() {
-        let result = approximate_value(3, 2.0);
-        assert_eq!(result, 8, "expected 2^3 to be 8");
-    }
-
-    #[test]
-    #[should_panic(expected = "base must be greater than 0")]
-    fn test_approximate_value_with_zero_base() {
-        approximate_value(3, 0.0);
-    }
-
-    #[test]
-    fn test_approximate_value_with_fractional_base() {
-        let base = 2.0f64.sqrt();
-        // with sqrt(2), when the approximation increase by 2, the abundance should double
-        // since log_{sqrt(2)} (x) = 2 log_2(x)
-        let result1 = approximate_value(6, base);
-        let result2 = approximate_value(8, base);
-        let result3 = approximate_value(10, base);
-        assert_eq!(
-            result2 / 2,
-            result1,
-            "check approximation consistency with base sqrt(2)"
-        );
-        assert_eq!(
-            result3 / 2,
-            result2,
-            "check approximation consistency with base sqrt(2)"
-        );
     }
 
     #[test]

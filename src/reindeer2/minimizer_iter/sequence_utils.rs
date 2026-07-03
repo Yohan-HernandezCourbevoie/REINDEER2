@@ -155,11 +155,7 @@ pub fn new_sk_iterator<const CANONICAL: bool>(
     let k = minimizer_size + width as usize - 1;
 
     let (min_pos_vec, sks_pos_vec) = if CANONICAL {
-        canonical_minimizer_and_superkmer_positions(
-            seq,
-            k, // TODO ask
-            minimizer_size,
-        )
+        canonical_minimizer_and_superkmer_positions(seq, k, minimizer_size)
     } else {
         minimizer_and_superkmer_positions(seq, k, minimizer_size)
     };

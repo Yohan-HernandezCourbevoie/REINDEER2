@@ -138,10 +138,8 @@ pub fn fold_into_hashmap(
             let entry = local_results
                 .entry(sequence_id)
                 .or_insert_with(|| vec![Vec::new(); color_number]);
-            // FIXME: remove, maybe replace by something else ?
             for (color_idx, approx_values) in approximate_counts.into_iter().enumerate() {
                 entry[color_idx].push(
-                    // FIXME: don't we take one the smallest first element ?
                     *ApproxAbundance::select_abundance_from_candidates(&approx_values)
                         .expect("An abundance vector returned empty"),
                 );
