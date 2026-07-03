@@ -20,8 +20,8 @@ use reindeer2::{
 
 use crate::cli::{IndexArgs, InfosArgs, MergeArgs, QueryArgs, RenameArgs, ResumeIndexationArgs};
 
-#[global_allocator]
-static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+// #[global_allocator]
+// static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 impl OutputFormatCli {
     fn to_output_format(self, normalized: Option<u64>, breakpoints: Option<f64>) -> OutputFormat {
