@@ -28,24 +28,25 @@ is_same_query_output=$?
 rm -r ./integration_test_index 
 rm -r output_before_rename.txt
 rm -r output_after_rename.txt
+rm -r $QUERY_OUTPUT
 
 # Compare
 if [[ "$RD2OUTPUT" == *"$EXPECTED_OUTPUT"* ]]; then
-    exit 0
+    :
 else
     echo "Test failed"
     exit 1
 fi
 
 if [ $is_same_before_rename -eq 0 ]; then
-    exit 0
+    :
 else
     echo "Test failed"
     exit 1
 fi
 
 if [ $is_same_after_rename -eq 0 ]; then
-    exit 0
+    :
 else
     echo "Test failed"
     exit 1

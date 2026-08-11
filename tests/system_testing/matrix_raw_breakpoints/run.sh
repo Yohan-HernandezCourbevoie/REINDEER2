@@ -13,7 +13,7 @@ cd $LOCAL_FOLDER
 cargo build --quiet
 
 RUST_LOG=warn $reindeer2 index --input $INPUT_FOF -k 31 -o integration_test_index --no-sort-files-by-size
-RUST_LOG=warn $reindeer2 query --fasta $QUERY_INPUT --index ./integration_test_index --output-format matrix-raw --breakpoints 0.3 --output $QUERY_OUTPUT
+RUST_LOG=warn $reindeer2 query --fasta $QUERY_INPUT --index ./integration_test_index --output-format matrix-raw --breakpoints 0.3 --output $QUERY_OUTPUT -C 0
 
 python3 check_files_are_similar.py $QUERY_OUTPUT $EXPECTED_QUERY_OUTPUT
 is_same=$?
