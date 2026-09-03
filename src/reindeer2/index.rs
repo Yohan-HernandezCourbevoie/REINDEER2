@@ -3,6 +3,7 @@ use log::warn;
 use std::collections::HashMap;
 use std::io;
 use std::num::NonZero;
+use std::path::Path;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, atomic};
 
@@ -17,7 +18,7 @@ use crate::reindeer2::{dense_index::DenseIndex, storage::filters::Filters};
 // --- INDEX FUNCTIONS ---
 
 pub fn process_fasta_file<S>(
-    path: &str,
+    path: &Path,
     maybe_dense_indexes: &Option<Arc<DenseIndex>>,
     bloom_filters: &Filters,
     k: usize,
@@ -81,7 +82,8 @@ where
                             Ok(iterator) => iterator,
                             Err(KmerMinimizerIteratorError::SequenceTooSmall { k }) => {
                                 eprintln!(
-                                    "Warning: when indexing file {path}, the read {seq_str} will be ignored. To be indexed, its length (={}) must be greater or equal to k (={})",
+                                    "Warning: when indexing file {}, the read {seq_str} will be ignored. To be indexed, its length (={}) must be greater or equal to k (={})",
+                                    path.display(),
                                     seq_str.len(),
                                     k
                                 );
