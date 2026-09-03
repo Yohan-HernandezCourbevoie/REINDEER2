@@ -80,7 +80,7 @@ pub fn fold_into_hashmap(
     let group = partition_index / nb_partition_in_a_file;
     let index = partition_index % nb_partition_in_a_file;
     let path_bf = bf_dir.join(format!("partition_bloom_filters_group{}.bin", group));
-    let maybe_bf = load_bloom_filter_from_big_file(&path_bf, index as u64); // TODO conversion error, expect
+    let maybe_bf = load_bloom_filter_from_big_file(&path_bf, index as u64);
 
     if let Ok(bitmap) = maybe_bf {
         let hashmap: DenseIndexPartition = if is_dense {
