@@ -7,6 +7,12 @@ This project does **not** adheres to Semantic Versioning.
 
 ## [Unreleased]
 
+## [1.1.7] - 2026-09-03
+
+### Added
+
+- Add `resume-indexation` option
+
 ## [1.1.6] - 2026-06-16
 
 ### Changed

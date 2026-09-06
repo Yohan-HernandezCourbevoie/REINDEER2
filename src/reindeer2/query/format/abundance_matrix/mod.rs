@@ -14,6 +14,7 @@
 
 mod cell_computation;
 
+/// The separator between the columns of the output file
 pub const SEPARATOR: &str = "\t";
 
 use std::fmt::Display;

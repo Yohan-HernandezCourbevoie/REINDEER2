@@ -34,11 +34,10 @@ fn count_to_string_with_star_normalized(
         } else {
             let normalized_count =
                 value as f64 / kmer_counts[color_id] as f64 * (*normalize_value as f64);
-            // TODO discuss: might be zero, but only after normlization
             normalized_count.to_string()
         }
     } else {
-        String::from("/") // TODO discuss
+        String::from("/")
     }
 }
 
@@ -50,7 +49,7 @@ fn count_to_string_with_star(count: ApproxAbundance) -> String {
             value.to_string()
         }
     } else {
-        String::from("/") // TODO discuss
+        String::from("/")
     }
 }
 
@@ -101,6 +100,8 @@ fn get_full_header(record: &fasta::Record) -> String {
 
     format!(">{} {}", id, desc).trim().to_string()
 }
+
+/// Writes the header of the output in the writer. The header depends on the output format.
 pub fn write_header(
     index_file_names: &[String],
     output_format: &EnrichedOutputFormat,
@@ -120,6 +121,7 @@ pub fn write_header(
     Ok(())
 }
 
+/// Writes the result of the query of a batch of fasta records in the writer.
 pub fn write_kmer_query(
     batch: &[fasta::Record],
     output_format: &EnrichedOutputFormat,

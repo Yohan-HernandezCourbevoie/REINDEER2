@@ -62,7 +62,7 @@ impl DenseIndexPartition {
         self.data.get(kmer)
     }
 
-    pub fn load_from_disk(file_path: &str) -> std::io::Result<Self> {
+    pub fn load_from_disk(file_path: &Path) -> std::io::Result<Self> {
         let mut file = File::open(file_path)?;
         let mut buffer = Vec::new();
         file.read_to_end(&mut buffer)?;
@@ -140,10 +140,9 @@ impl DenseIndex {
         Self { data }
     }
 
-    pub fn write_to_disk(&self, dir_path: &str) -> std::io::Result<()> {
+    pub fn write_to_disk(&self, dir_path: &Path) -> std::io::Result<()> {
         for (partition_id, partition) in self.data.iter().enumerate() {
-            let file_path =
-                Path::new(dir_path).join(format!("partition_dense_index_p{}.bin", partition_id));
+            let file_path = dir_path.join(format!("partition_dense_index_p{partition_id}.bin"));
             let file = File::create(&file_path)?;
             let mut writer: BufWriter<File> = BufWriter::new(file);
             let mut partition = partition.lock().expect("fatal error: a thread holding the mutex panicked, so this thread will panic as well");

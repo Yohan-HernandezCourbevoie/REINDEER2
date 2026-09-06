@@ -8,7 +8,7 @@ pub struct AutoRemoveDirectory {
 
 impl AutoRemoveDirectory {
     /// Creates a new random direcory name that will be removed on `drop`.
-    /// The directory is *not* created, but is expected to exist before `drop`.
+    /// The underlying directory is *not* created, but is expected to exist before `drop`.
     pub fn create_random() -> Self {
         let my_uuid = uuid::Uuid::new_v4();
         let filename = format!("{my_uuid}");
@@ -19,7 +19,7 @@ impl AutoRemoveDirectory {
 
     // /// Wraps a direcory that will be removed on `drop`.
     // /// # Warning
-    // /// This will remove the directory.
+    // /// This will end up removing the directory.
     // pub fn create_from_path(path: String) -> Self {
     //     Self { path }
     // }

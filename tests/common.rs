@@ -1,6 +1,9 @@
 //! Common utilities for integration tests
 
-use std::io::BufRead;
+use std::{
+    io::BufRead,
+    path::{Path, PathBuf},
+};
 
 use uuid::Uuid;
 
@@ -45,7 +48,7 @@ pub fn check_number_of_partitions<P: AsRef<std::path::Path>>(
 
 /// Wraps a directory and remove it when it is `drop`.
 pub struct AutoRemoveDirectory {
-    path: String,
+    path: PathBuf,
 }
 
 impl AutoRemoveDirectory {
@@ -53,7 +56,9 @@ impl AutoRemoveDirectory {
     pub fn create_random() -> Self {
         let my_uuid = Uuid::new_v4();
         let filename = format!("{my_uuid}");
-        Self { path: filename }
+        Self {
+            path: PathBuf::from(filename),
+        }
     }
 
     // /// Wraps a direcory that will be removed on `drop`.
@@ -63,7 +68,7 @@ impl AutoRemoveDirectory {
     //     Self { path }
     // }
 
-    pub fn filename(&self) -> &str {
+    pub fn filename(&self) -> &Path {
         &self.path
     }
 }
@@ -76,7 +81,7 @@ impl Drop for AutoRemoveDirectory {
 
 /// Wraps a file and remove it when it is `drop`.
 pub struct AutoRemoveFile {
-    path: String,
+    path: PathBuf,
 }
 
 impl AutoRemoveFile {
@@ -90,11 +95,13 @@ impl AutoRemoveFile {
     /// Wraps a file that will be removed on `drop`.
     /// # Warning
     /// This will remove the file.
-    pub fn create_from_path(path: String) -> Self {
-        Self { path }
+    pub fn create_from_path(path: &Path) -> Self {
+        Self {
+            path: PathBuf::from(path),
+        }
     }
 
-    pub fn filename(&self) -> &str {
+    pub fn filename(&self) -> &Path {
         &self.path
     }
 }

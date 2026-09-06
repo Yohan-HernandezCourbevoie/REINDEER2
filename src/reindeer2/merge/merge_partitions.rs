@@ -3,91 +3,161 @@ use rayon::prelude::*;
 use roaring::RoaringBitmap;
 use std::{
     cmp::min,
+    collections::HashSet,
     fs::File,
     io::{self, BufWriter, Write},
-    path::Path,
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex},
     time::Instant,
 };
 
+#[cfg(feature = "self-destruct")]
+use crate::FailIndexation;
+
 use crate::reindeer2::{
     NB_FILE_IN_AN_INDEX, create_and_reserve_tar_get_file,
-    merge::merge_partition_slices_interleaved, storage::filters::load_bloom_filter_from_big_file,
+    merge::merge_partition_slices_interleaved,
+    remove_if_exists,
+    saves::{Merge, Saves},
+    storage::filters::load_bloom_filter_from_big_file,
 };
 
 /// Removes partitions (they are unecessary after a merge).
 pub fn remove_merged_partitions(
-    chunk_files_dir: &str,
+    index_dir: &Path,
     nb_chunk: usize, // number of colors in each chunk
 ) -> io::Result<()> {
     (0..NB_FILE_IN_AN_INDEX)
         .into_par_iter()
         .try_for_each(|file_id| {
-            for chunk_id in 0..nb_chunk {
-                let path = format!(
-                    "{chunk_files_dir}/partition_bloom_filters_group{file_id}_chunk{chunk_id}.bin"
-                );
-                std::fs::remove_file(path)?;
+            let chunk_files = paths_of_partitions(index_dir, file_id, nb_chunk);
+            for chunk_file in chunk_files {
+                remove_if_exists(chunk_file)?;
             }
             Ok::<(), io::Error>(())
         })?;
     Ok(())
 }
 
+/// Removes partitions (they are unecessary after a merge).
+pub fn remove_done_merged_partitions(
+    index_dir: &Path,
+    nb_chunk: usize, // number of colors in each chunk
+    merges_done: &HashSet<usize>,
+) -> io::Result<()> {
+    merges_done.into_par_iter().try_for_each(|file_id| {
+        let chunk_files = paths_of_partitions(index_dir, *file_id, nb_chunk);
+        for chunk_file in chunk_files {
+            remove_if_exists(chunk_file)?;
+        }
+        Ok::<(), io::Error>(())
+    })?;
+    Ok(())
+}
+
+fn paths_of_partitions(index_dir: &Path, file_id: usize, nb_chunk: usize) -> Vec<PathBuf> {
+    (0..nb_chunk)
+        .map(|chunk_id| {
+            index_dir.join(format!(
+                "partition_bloom_filters_group{file_id}_chunk{chunk_id}.bin"
+            ))
+        })
+        .collect()
+}
+
 /// Merges all partitions of an index being built.
 pub fn merge_all_partitions_of_chunks(
-    chunk_files_dir: &str,
-    output_dir: &str,
+    index_dir: &Path,
+    output_dir: &Path,
     partitioned_bf_size: usize,
     abundance_number: usize,
     color_counts_per_chunk: &[usize], // number of colors in each chunk
     num_partitions: usize,
+    mut saves: Saves<Merge>,
+    #[cfg(feature = "self-destruct")] fail: &Option<FailIndexation>,
 ) -> io::Result<()> {
     let start_time = Instant::now();
 
     let nb_chunk = color_counts_per_chunk.len();
     let nb_partition_in_a_file = num_partitions.div_ceil(NB_FILE_IN_AN_INDEX);
+    let merges_done = saves.get_merge_done();
+    remove_done_merged_partitions(index_dir, nb_chunk, &merges_done)?;
 
-    (0..NB_FILE_IN_AN_INDEX)
-        .into_par_iter()
-        .try_for_each(|file_id| {
-            let range_start = nb_partition_in_a_file * file_id;
-            let range_end = min(nb_partition_in_a_file * (file_id + 1), num_partitions);
-            let mut range = range_start..range_end;
+    let still_to_be_merge = saves.get_still_to_be_merged();
 
-            let path =
-                Path::new(output_dir).join(format!("partition_bloom_filters_group{file_id}.bin"));
-            let len: usize = range
-                .try_len()
-                .expect("range object should have a known length");
-            let len = u64::try_from(len)
-                .expect("should have less than u64::MAX partitions in a single file");
-            let mut file = create_and_reserve_tar_get_file(&path, len);
+    let saves_arc = Arc::new(Mutex::new(&mut saves));
 
-            let inpaths: Vec<String> = (0..nb_chunk)
-                .map(|chunk_id|
-                    format!("{chunk_files_dir}/partition_bloom_filters_group{file_id}_chunk{chunk_id}.bin")
-                )
-                .collect();
+    still_to_be_merge.into_par_iter().try_for_each(|file_id| {
+        let range_start = nb_partition_in_a_file * file_id;
+        let range_end = min(nb_partition_in_a_file * (file_id + 1), num_partitions);
+        let mut range = range_start..range_end;
 
-            range.try_for_each(|partition_idx| {
-                let index = (partition_idx % nb_partition_in_a_file) as u64;
-                merge_into_single_tar_get_file(&inpaths, partitioned_bf_size, abundance_number, color_counts_per_chunk,index,  &mut file)?;
-                Ok::<(), io::Error>(())
-            })
-        })?;
+        let path =
+            Path::new(output_dir).join(format!("partition_bloom_filters_group{file_id}.bin"));
+        let len: usize = range
+            .try_len()
+            .expect("range object should have a known length");
+        let len =
+            u64::try_from(len).expect("should have less than u64::MAX partitions in a single file");
+        let mut file = create_and_reserve_tar_get_file(&path, len);
+
+        let chunk_files = paths_of_partitions(index_dir, file_id, nb_chunk);
+        let merge_result = range.try_for_each(|partition_idx| {
+            let index = (partition_idx % nb_partition_in_a_file) as u64;
+            merge_into_single_tar_get_file(
+                &chunk_files,
+                partitioned_bf_size,
+                abundance_number,
+                color_counts_per_chunk,
+                index,
+                &mut file,
+            )?;
+            Ok::<(), io::Error>(())
+        });
+
+        let mut saves = saves_arc.lock().expect(
+            "fatal error: a thread holding the mutex panicked, so this thread will panic as well",
+        );
+
+        // the user has requested to crash indexation
+        // at this point, almost everything was written to disk, so this is the best time to crash
+        // as the user can test recovery from the most complete state
+        #[cfg(feature = "self-destruct")]
+        if let Some(FailIndexation::Merge(fail_merge)) = fail
+            && *fail_merge == file_id
+        {
+            panic!("indexation failed on merge {fail_merge} as planned")
+        }
+
+        // At this point, we can remove the intermedite partitions to free some disk space.
+        // However, doing so means waiting a bit before being able to write the file indicating this merge is done.
+        // This might give enough time for another thread to make us crash (e.g. by requesting too much RAM), making us waste a lots of time.
+        // Thus, we signal right now that the merge is done, and only after we do trghe cleanup.
+        // Of course, this means we can't assume the cleanup was done when a merge is said to be done, and that is why we start the merge by removing all potential leftovers.
+        saves.one_merge_done(file_id);
+
+        for path in chunk_files {
+            std::fs::remove_file(path)?;
+        }
+
+        merge_result
+    })?;
 
     let elapsed_time = start_time.elapsed();
+    remove_merged_partitions(index_dir, nb_chunk)?;
     log::info!(
         "All partitions merged and written to disk in {:.2?}",
         elapsed_time
     );
+
+    saves.merge_all_done();
 
     Ok(())
 }
 
 /// Merges all filter from tar_get files chunk_files (on tar_get file per chunk) into a unique tar_get file.
 fn merge_into_single_tar_get_file(
-    chunk_files: &[String],
+    chunk_files: &[PathBuf],
     partitioned_bf_size: usize,
     abundance_number: usize,
     color_counts: &[usize], // number of colors for each chunk
@@ -109,8 +179,16 @@ fn merge_into_single_tar_get_file(
             |(chunk_file, nb_color)| match load_bloom_filter_from_big_file(chunk_file, index) {
                 Ok(filter) => (filter, *nb_color),
                 Err(e) => {
-                    log::error!("Failed to load Bloom filter {}: {}", chunk_file, e);
-                    panic!("Failed to load Bloom filter {}: {}", chunk_file, e);
+                    log::error!(
+                        "Failed to load Bloom filter {}: {}",
+                        chunk_file.display(),
+                        e
+                    );
+                    panic!(
+                        "Failed to load Bloom filter {}: {}",
+                        chunk_file.display(),
+                        e
+                    );
                 }
             },
         )
@@ -151,12 +229,12 @@ mod tests {
         use roaring::RoaringBitmap;
         use std::fs::create_dir_all;
 
-        let test_dir = random_directory.filename().to_str().unwrap();
+        let test_dir = random_directory.filename();
         create_dir_all(test_dir).expect("Failed to create test directory");
 
-        let chunk1_path = format!("{}/chunk1_p0.bin", test_dir);
-        let chunk2_path = format!("{}/chunk2_p0.bin", test_dir);
-        let chunk3_path = format!("{}/chunk3_p0.bin", test_dir);
+        let chunk1_path = test_dir.join("chunk1_p0.bin");
+        let chunk2_path = test_dir.join("chunk2_p0.bin");
+        let chunk3_path = test_dir.join("chunk3_p0.bin");
 
         let partitioned_bf_size = 2;
         let abundance_number = 3;
