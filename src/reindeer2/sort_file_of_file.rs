@@ -3,7 +3,7 @@ use std::{fs, path::PathBuf};
 use itertools::Itertools;
 use rayon::prelude::*;
 
-/// Sorts a list of file paths by the size of the files they point to (ascending).
+/// Sorts a list of file paths by the size of the files they point to (descending).
 /// Paths that cannot be stat'd are placed at the end in their original relative order.
 pub fn sort_paths_by_file_size(paths: &mut Vec<PathBuf>) {
     // Gather sizes upfront to avoid redundant stat calls during sort comparisons
@@ -20,7 +20,7 @@ pub fn sort_paths_by_file_size(paths: &mut Vec<PathBuf>) {
     let mut indexed = sizes.into_iter().enumerate().collect_vec();
 
     indexed.sort_by(|(_, a), (_, b)| match (a, b) {
-        (Some(sa), Some(sb)) => sa.cmp(sb),
+        (Some(sa), Some(sb)) => sb.cmp(sa), // Descending order
         (Some(_), None) => std::cmp::Ordering::Less,
         (None, Some(_)) => std::cmp::Ordering::Greater,
         (None, None) => std::cmp::Ordering::Equal,
@@ -48,7 +48,7 @@ mod tests {
     }
 
     #[test]
-    fn test_sorts_ascending_by_size() {
+    fn test_sorts_descending_by_size() {
         let dir = tempdir().unwrap();
         let small = make_temp_file(&dir, "small.bin", 100);
         let medium = make_temp_file(&dir, "medium.bin", 200);
@@ -57,7 +57,7 @@ mod tests {
         let mut paths = vec![large.clone(), small.clone(), medium.clone()];
         sort_paths_by_file_size(&mut paths);
 
-        assert_eq!(paths, vec![small, medium, large]);
+        assert_eq!(paths, vec![large, medium, small]);
     }
 
     #[test]
@@ -70,7 +70,7 @@ mod tests {
         let mut paths = vec![a.clone(), b.clone(), c.clone()];
         sort_paths_by_file_size(&mut paths);
 
-        assert_eq!(paths, vec![a, b, c]);
+        assert_eq!(paths, vec![c, b, a]);
     }
 
     #[test]
@@ -83,7 +83,7 @@ mod tests {
         let mut paths = vec![c.clone(), b.clone(), a.clone()];
         sort_paths_by_file_size(&mut paths);
 
-        assert_eq!(paths, vec![a, b, c]);
+        assert_eq!(paths, vec![c, b, a]);
     }
 
     #[test]
@@ -96,8 +96,8 @@ mod tests {
         let mut paths = vec![ghost.clone(), large.clone(), small.clone()];
         sort_paths_by_file_size(&mut paths);
 
-        assert_eq!(paths[0], small);
-        assert_eq!(paths[1], large);
+        assert_eq!(paths[0], large);
+        assert_eq!(paths[1], small);
         assert_eq!(paths[2], ghost); // missing file pushed to the end
     }
 
@@ -158,6 +158,6 @@ mod tests {
         let mut paths = vec![small.clone(), empty.clone()];
         sort_paths_by_file_size(&mut paths);
 
-        assert_eq!(paths, vec![empty, small]);
+        assert_eq!(paths, vec![small, empty]);
     }
 }

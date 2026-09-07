@@ -4,7 +4,6 @@ mod kmer_counts;
 mod merge;
 mod minimizer_iter;
 pub mod query;
-mod save_atomics;
 mod saves;
 mod sort_file_of_file;
 mod storage;
@@ -4122,16 +4121,27 @@ mod tests {
         // Validate the results written to the query result file
         let actual = fs::read_to_string(&query_results_path).unwrap();
         let actual = actual.trim();
-
-        let expected = String::from(
-            "query\trandom_seq_with_revcomp\trandom_seq
+        let expected = if sort_files_by_size {
+            String::from(
+                "query\trandom_seq\trandom_seq_with_revcomp
+header_0\t0-69:1\t0-69:*
+header_1\t0-69:1\t0-69:*
+header_2\t0-69:1\t0-69:*
+header_3\t0-69:1\t0-69:*
+header_4\t0-69:1\t0-69:*
+shared_revcomp_with_other_test_file\t0-19:10\t0-19:3",
+            )
+        } else {
+            String::from(
+                "query\trandom_seq_with_revcomp\trandom_seq
 header_0\t0-69:*\t0-69:1
 header_1\t0-69:*\t0-69:1
 header_2\t0-69:*\t0-69:1
 header_3\t0-69:*\t0-69:1
 header_4\t0-69:*\t0-69:1
 shared_revcomp_with_other_test_file\t0-19:3\t0-19:10",
-        );
+            )
+        };
 
         assert_equal_sorted_content_with_equal_header(&expected, actual);
     }
@@ -4148,7 +4158,7 @@ shared_revcomp_with_other_test_file\t0-19:3\t0-19:10",
 
         let file1_path = PathBuf::from("tests/unit_tests_data/random_seq_with_revcomp.fa");
         let file2_path = PathBuf::from("tests/unit_tests_data/random_seq.fa");
-        let file_paths = vec![file2_path, file1_path];
+        let file_paths = vec![file1_path, file2_path];
 
         let parameters = Parameters {
             k: 31,
@@ -4187,7 +4197,7 @@ shared_revcomp_with_other_test_file\t0-19:3\t0-19:10",
         let index_from_disk = Reindeer2::load_from_disk(index_dir.clone()).unwrap();
         index_from_disk
             .query(
-                &file_paths[0],
+                &file_paths[1],
                 &index_dir,
                 &query_results_path,
                 OutputFormat::AbundanceMatrix {
@@ -4203,16 +4213,6 @@ shared_revcomp_with_other_test_file\t0-19:3\t0-19:10",
 
         let expected = if sort_files_by_size {
             String::from(
-                "query\trandom_seq_with_revcomp\trandom_seq
-header_0\t0-69:*\t0-69:1
-header_1\t0-69:*\t0-69:1
-header_2\t0-69:*\t0-69:1
-header_3\t0-69:*\t0-69:1
-header_4\t0-69:*\t0-69:1
-shared_revcomp_with_other_test_file\t0-19:3\t0-19:10",
-            )
-        } else {
-            String::from(
                 "query\trandom_seq\trandom_seq_with_revcomp
 header_0\t0-69:1\t0-69:*
 header_1\t0-69:1\t0-69:*
@@ -4220,6 +4220,16 @@ header_2\t0-69:1\t0-69:*
 header_3\t0-69:1\t0-69:*
 header_4\t0-69:1\t0-69:*
 shared_revcomp_with_other_test_file\t0-19:10\t0-19:3",
+            )
+        } else {
+            String::from(
+                "query\trandom_seq_with_revcomp\trandom_seq
+header_0\t0-69:*\t0-69:1
+header_1\t0-69:*\t0-69:1
+header_2\t0-69:*\t0-69:1
+header_3\t0-69:*\t0-69:1
+header_4\t0-69:*\t0-69:1
+shared_revcomp_with_other_test_file\t0-19:3\t0-19:10",
             )
         };
 
@@ -4291,12 +4301,21 @@ shared_revcomp_with_other_test_file\t0-19:10\t0-19:3",
         let actual = fs::read_to_string(&query_results_path).unwrap();
         let actual = actual.trim();
 
-        let expected = String::from(
-            "query\trandom_seq_with_revcomp\tduplication
+        let expected = if sort_files_by_size {
+            String::from(
+                "query\tduplication\trandom_seq_with_revcomp
+header_0\t0-69:1\t0-69:*
+header_0\t0-69:1\t0-69:*
+header_0\t0-69:1\t0-69:*",
+            )
+        } else {
+            String::from(
+                "query\trandom_seq_with_revcomp\tduplication
 header_0\t0-69:*\t0-69:1
 header_0\t0-69:*\t0-69:1
 header_0\t0-69:*\t0-69:1",
-        );
+            )
+        };
 
         assert_equal_sorted_content_with_equal_header(&expected, actual);
     }
@@ -4365,15 +4384,27 @@ header_0\t0-69:*\t0-69:1",
         // Validate the results written to the query result file
         let actual = fs::read_to_string(&query_results_path).unwrap();
         let actual = actual.trim();
-        let expected = String::from(
-            "query\trandom_seq_with_revcomp\trandom_seq
+        let expected = if sort_files_by_size {
+            String::from(
+                "query\trandom_seq\trandom_seq_with_revcomp
+header_0\t0-69:1\t0-69:*
+header_1\t0-69:1\t0-69:*
+header_2\t0-69:1\t0-69:*
+header_3\t0-69:1\t0-69:*
+header_4\t0-69:1\t0-69:*
+shared_revcomp_with_other_test_file\t0-19:10\t0-19:*",
+            )
+        } else {
+            String::from(
+                "query\trandom_seq_with_revcomp\trandom_seq
 header_0\t0-69:*\t0-69:1
 header_1\t0-69:*\t0-69:1
 header_2\t0-69:*\t0-69:1
 header_3\t0-69:*\t0-69:1
 header_4\t0-69:*\t0-69:1
 shared_revcomp_with_other_test_file\t0-19:*\t0-19:10",
-        );
+            )
+        };
 
         assert_equal_sorted_content_with_equal_header(&expected, actual);
     }
