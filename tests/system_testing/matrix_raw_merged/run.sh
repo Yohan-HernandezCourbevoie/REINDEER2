@@ -16,7 +16,7 @@ cargo build --quiet
 RUST_LOG=warn $reindeer2 index --threads 7 --input $INPUT_FOF_0 -k 31 --nb-file-capacity 2 -o integration_test_index_0
 RUST_LOG=warn $reindeer2 index --threads 7 --input $INPUT_FOF_1 -k 31 --nb-file-capacity 2 -o integration_test_index_1
 RUST_LOG=warn $reindeer2 merge --threads 7 --file-of-indexes $INPUT_FOF_INDEXES -o integration_test_index
-RUST_LOG=warn $reindeer2 query --fasta $QUERY_INPUT --index ./integration_test_index --output-format matrix-raw --output $QUERY_OUTPUT
+RUST_LOG=warn $reindeer2 query --fasta $QUERY_INPUT --index ./integration_test_index --output-format matrix-raw --output $QUERY_OUTPUT -C 0
 
 python3 files_equal.py $QUERY_OUTPUT $EXPECTED_QUERY_OUTPUT
 is_same=$?
